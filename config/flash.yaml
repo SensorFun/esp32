@@ -1,0 +1,9 @@
+defaults:
+  - firmware
+  - override hydra/job_logging: disabled
+  - override hydra/hydra_logging: disabled
+  - _self_
+
+# null selects a programming port automatically; override with port=... .
+port: null
+baud: 460800

@@ -1,0 +1,15 @@
+# Board id -> programming-port USB identity, tab-separated.
+#
+# This identifies the UART/USB-Serial-JTAG bridge used to flash each board,
+# not the board's own USB-OTG image stream (that identity comes from
+# CONFIG_TINYUSB_DESC_PRODUCT_STRING in the board's sdkconfig.defaults and
+# only exists once our firmware is already running). The bridge's vendor:
+# product id and product string are fixed by that chip, unrelated to our
+# firmware config. tools/flash.py uses these identities to select the matching
+# board when multiple programming ports are connected. Verify a board's actual
+# values (cat /sys/class/tty/ttyUSB*/device
+# or .../ttyACM*/device idVendor, idProduct, product) before adding a row.
+#
+# board_id	vendor:product	product string	serial
+esp32p4_waveshare_wifi6_dev_kit	1a86:55d3	USB Single Serial	""
+esp32s3n16r8_espressif_cam	1a86:55d3	USB Single Serial	""

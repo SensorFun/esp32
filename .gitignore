@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+projects/*/sdkconfig
+projects/*/sdkconfig.old
+projects/*/build/
+projects/*/managed_components/
+

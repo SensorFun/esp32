@@ -1,0 +1,4 @@
+ARG IDF_IMAGE=espressif/idf:v6.1
+FROM ${IDF_IMAGE}
+ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
+WORKDIR /workspace

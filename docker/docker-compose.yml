@@ -1,0 +1,28 @@
+services:
+  esp32-base:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.base
+    image: esp32-base:latest
+    deploy:
+      replicas: 0
+
+  esp32-dev:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.dev
+      additional_contexts:
+        esp32-base: service:esp32-base
+      args:
+        BASE_IMAGE: esp32-base
+        HOST_USER: ${HOST_USER}
+        HOST_UID: ${HOST_UID}
+        HOST_GID: ${HOST_GID}
+    image: esp32-dev:latest
+    profiles: [development]
+    init: true
+    working_dir: /workspace
+    user: ${HOST_USER}
+    volumes:
+      - ${WORKSPACE_SOURCE}:/workspace:cached
+

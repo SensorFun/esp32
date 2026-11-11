@@ -1,0 +1,6 @@
+services:
+  esp32-dev:
+    devices:
+      - ${ESP32_PORT}:${ESP32_PORT}
+    group_add:
+      - ${SERIAL_GID}

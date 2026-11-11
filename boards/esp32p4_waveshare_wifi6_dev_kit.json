@@ -1,0 +1,4 @@
+{
+  "target": "esp32p4",
+  "sdkconfig_defaults": []
+}

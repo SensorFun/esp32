@@ -1,0 +1,13 @@
+# Shared firmware selection. Override these with project=... board=... .
+project: hello_world
+board: esp32s3_seeed_cam
+dry_run: false
+
+hydra:
+  run:
+    dir: ${hydra:runtime.cwd}/build/hydra/${hydra:job.name}
+  sweep:
+    dir: ${hydra:runtime.cwd}/build/hydra/${hydra:job.name}/multirun
+  output_subdir: null
+  job:
+    chdir: false

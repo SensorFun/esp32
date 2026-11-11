@@ -1,0 +1,23 @@
+ARG BASE_IMAGE=esp32-base
+FROM ${BASE_IMAGE}
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    clang-format clang-tidy git python3-venv sudo \
+    && rm -rf /var/lib/apt/lists/*
+ARG HOST_USER
+ARG HOST_UID
+ARG HOST_GID
+RUN if id ubuntu >/dev/null 2>&1; then userdel --remove ubuntu; fi \
+    && if ! getent group "${HOST_GID}"; then groupadd --gid "${HOST_GID}" "${HOST_USER}"; fi \
+    && useradd --uid "${HOST_UID}" --gid "${HOST_GID}" --create-home --shell /bin/bash "${HOST_USER}" \
+    && printf '%s ALL=(root) NOPASSWD:ALL\n' "${HOST_USER}" > "/etc/sudoers.d/${HOST_USER}" \
+    && chmod 0440 "/etc/sudoers.d/${HOST_USER}" \
+    && chown -R "${HOST_UID}:${HOST_GID}" "/home/${HOST_USER}" /opt/esp/python_env
+COPY pyproject.toml README.md /opt/esp32-workspace/
+COPY python /opt/esp32-workspace/python
+RUN /bin/bash -c "source /opt/esp/idf/export.sh && python -m pip install --no-cache-dir /opt/esp32-workspace"
+# Prefer the mounted workspace sources when running the installed CLI.
+ENV PYTHONPATH=/workspace/python
+ENV ESP32_IN_DOCKER=1
+USER ${HOST_USER}
+WORKDIR /workspace
