@@ -1,0 +1,6 @@
+# @package _global_
+
+defaults:
+  - /frame_grabber: ov3660
+  - /lens: "62"
+  - _self_

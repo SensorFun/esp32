@@ -75,7 +75,6 @@ class FirmwareToolTests(unittest.TestCase):
             "sys.exit(17 if 'run' in sys.argv else 0)\n"
         )
         fake.chmod(0o755)
-        self.env.pop("ESP32_PORT", None)
         for tool in ("build",):
             with self.subTest(tool=tool):
                 self.log.unlink(missing_ok=True)

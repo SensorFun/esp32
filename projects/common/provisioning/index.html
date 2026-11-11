@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wi-Fi setup</title>
+<style>
+:root{font:16px system-ui,sans-serif;color:#172535;background:#eef2f6}body{max-width:420px;margin:8vh auto;padding:24px;background:white;border-radius:16px}h1{font-size:1.6rem}label{display:block;margin:20px 0 7px}input,select,button{font:inherit;box-sizing:border-box;padding:12px;border:1px solid #b7c3cf;border-radius:8px}input,select{width:100%}.row{display:flex;gap:8px}.row select{min-width:0}button{cursor:pointer;background:#174bc4;color:white;border:0}button:disabled{opacity:.55;cursor:wait}#save{width:100%;margin-top:24px}#status{min-height:3em;overflow-wrap:anywhere}small{color:#526173}[hidden]{display:none}
+</style>
+<h1>Connect to Wi-Fi</h1>
+<p>Select your Wi-Fi network.</p>
+<form id="setup">
+<label for="ssid">Network name</label>
+<div class="row"><select id="ssid" name="ssid" required><option value="" disabled selected>Choose a network</option><option value="manual">Other network…</option></select><button id="refresh" type="button">Refresh</button></div>
+<div id="manual-network" hidden>
+<label for="manual-ssid">Network name</label>
+<input id="manual-ssid" autocomplete="off" disabled>
+</div>
+<label for="password">Password</label>
+<input id="password" name="password" type="password" autocomplete="new-password">
+<small>Leave empty for an open network.</small>
+<button id="save" type="submit">Save and connect</button>
+</form>
+<p id="status" role="status" aria-live="polite"></p>
+<script>
+const form=document.querySelector('#setup'),ssid=document.querySelector('#ssid'),manual=document.querySelector('#manual-ssid'),manualNetwork=document.querySelector('#manual-network'),password=document.querySelector('#password'),refresh=document.querySelector('#refresh'),save=document.querySelector('#save'),status=document.querySelector('#status');
+let polling=false,pollFailures=0,networks=[];
+function selectedNetwork(){if(ssid.value==='manual')return manual.value;if(ssid.value==='')return '';return networks[Number(ssid.value)]||'';}
+function updateManual(){const show=ssid.value==='manual';manualNetwork.hidden=!show;manual.disabled=!show;manual.required=show;}
+async function request(path,options={}){const response=await fetch(path,{cache:'no-store',...options});const data=await response.json();if(!response.ok){const error=Error(data.error||'Request failed');error.status=response.status;throw error;}return data;}
+async function scan(){
+    refresh.disabled=true;status.textContent='Scanning…';
+    const previous=selectedNetwork(),wasManual=ssid.value==='manual';
+    try{
+        const data=await request('/api/scan');networks=data.ssids;ssid.replaceChildren();
+        const placeholder=document.createElement('option');placeholder.value='';placeholder.textContent=networks.length?'Choose a network':'No networks found';placeholder.disabled=true;ssid.append(placeholder);
+        networks.forEach((name,index)=>{const option=document.createElement('option');option.value=String(index);option.textContent=name;ssid.append(option);});
+        const other=document.createElement('option');other.value='manual';other.textContent='Other network…';ssid.append(other);
+        const index=networks.indexOf(previous);ssid.value=wasManual?'manual':index>=0?String(index):'';updateManual();
+        status.textContent=networks.length?'Choose your network from the list.':'No networks found. Choose Other network to enter a hidden network.';
+    }catch(error){status.textContent=error.message;}finally{refresh.disabled=false;}
+}
+async function watch(){try{const data=await request('/api/status');pollFailures=0;if(data.state==='connected'){status.textContent='Connected. Your settings are saved. Reconnect to your normal Wi-Fi; setup will close shortly.';polling=false;return;}if(data.state==='provisioning'){status.textContent='Could not connect. Check the network name and password, then try again.';polling=false;save.disabled=false;refresh.disabled=false;return;}status.textContent='Connecting…';}catch(error){if(error.status){status.textContent=error.message;polling=false;save.disabled=false;refresh.disabled=false;}else{status.textContent='Setup connection lost. If setup Wi-Fi disappears, reconnect to your normal network. Otherwise reconnect here and try again.';if(++pollFailures>=3){polling=false;save.disabled=false;refresh.disabled=false;}}}if(polling)setTimeout(watch,1500);}
+ssid.addEventListener('change',updateManual);
+refresh.addEventListener('click',scan);
+form.addEventListener('submit',async event=>{event.preventDefault();const name=selectedNetwork();if(!name){status.textContent='Choose a network or enter its name.';return;}save.disabled=true;refresh.disabled=true;status.textContent='Connecting…';try{await request('/api/connect',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({ssid:name,password:password.value})});password.value='';pollFailures=0;polling=true;setTimeout(watch,1000);}catch(error){status.textContent=error.message;save.disabled=false;refresh.disabled=false;}});
+scan();
+</script>
+</html>

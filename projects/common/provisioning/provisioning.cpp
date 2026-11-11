@@ -1,0 +1,425 @@
+#include "provisioning.h"
+#include "credentials.h"
+#include "request_address.h"
+
+#include <algorithm>
+#include <atomic>
+#include <cstdio>
+#include <cstring>
+#include <string>
+#include <vector>
+
+#include "driver/gpio.h"
+#include "esp_check.h"
+#include "esp_event.h"
+#include "esp_http_server.h"
+#include "esp_log.h"
+#include "esp_netif.h"
+#include "esp_random.h"
+#include "esp_system.h"
+#include "esp_wifi.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/event_groups.h"
+#include "freertos/queue.h"
+#include "freertos/task.h"
+#include "lwip/sockets.h"
+#include "nvs.h"
+#include "nvs_flash.h"
+
+namespace {
+using provisioning::Credentials;
+constexpr char TAG[] = "provisioning";
+constexpr char NVS_NAMESPACE[] = "wifi_setup";
+constexpr char NVS_KEY[] = "credentials";
+constexpr EventBits_t CONNECTED = BIT0, DISCONNECTED = BIT1, RESET = BIT2;
+constexpr uint32_t CONNECT_TIMEOUT_MS = 20000;
+enum class State { starting, connecting, provisioning, connected, storage_error };
+std::atomic<State> state{State::starting};
+std::atomic<bool> submitting{false};
+EventGroupHandle_t events = nullptr;
+QueueHandle_t requests = nullptr;
+esp_netif_t *station_netif = nullptr, *ap_netif = nullptr;
+httpd_handle_t server = nullptr;
+provisioning_config_t options{};
+char ap_address[16]{};
+bool ap_active = false;
+
+extern const unsigned char html_start[] asm("_binary_index_html_start");
+extern const unsigned char html_end[] asm("_binary_index_html_end");
+
+void wipe(Credentials &credentials) {
+    volatile unsigned char *bytes = reinterpret_cast<volatile unsigned char *>(&credentials);
+    for (size_t i = 0; i < sizeof(credentials); ++i) bytes[i] = 0;
+}
+
+esp_err_t load_credentials(Credentials &credentials) {
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle);
+    if (err != ESP_OK) return err;
+    size_t size = sizeof(credentials);
+    err = nvs_get_blob(handle, NVS_KEY, &credentials, &size);
+    nvs_close(handle);
+    if (err != ESP_OK) return err;
+    if (size != sizeof(credentials) || credentials.ssid[32] != '\0' ||
+        credentials.password[64] != '\0' ||
+        !provisioning::valid_credentials(credentials.ssid, credentials.password)) {
+        wipe(credentials);
+        return ESP_ERR_INVALID_ARG;
+    }
+    return ESP_OK;
+}
+
+esp_err_t save_credentials(const Credentials &credentials) {
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
+    if (err != ESP_OK) return err;
+    err = nvs_set_blob(handle, NVS_KEY, &credentials, sizeof(credentials));
+    if (err == ESP_OK) err = nvs_commit(handle);
+    nvs_close(handle);
+    return err;
+}
+
+void forget_and_restart() {
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
+    if (err == ESP_OK) {
+        err = nvs_erase_key(handle, NVS_KEY);
+        if (err == ESP_ERR_NVS_NOT_FOUND) err = ESP_OK;
+        if (err == ESP_OK) err = nvs_commit(handle);
+        nvs_close(handle);
+    }
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Could not clear saved setup (%s)", esp_err_to_name(err));
+        return;
+    }
+    ESP_LOGI(TAG, "Saved Wi-Fi cleared; restarting setup");
+    vTaskDelay(pdMS_TO_TICKS(500));
+    esp_restart();
+}
+
+void wifi_event(void *, esp_event_base_t base, int32_t id, void *) {
+    if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
+        xEventGroupSetBits(events, CONNECTED);
+    } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
+        xEventGroupClearBits(events, CONNECTED);
+        xEventGroupSetBits(events, DISCONNECTED);
+    }
+}
+
+void response_headers(httpd_req_t *request) {
+    httpd_resp_set_hdr(request, "Cache-Control", "no-store");
+    httpd_resp_set_hdr(request, "X-Content-Type-Options", "nosniff");
+    httpd_resp_set_hdr(request, "Referrer-Policy", "no-referrer");
+}
+
+esp_err_t json_response(httpd_req_t *request, const char *status, const char *body) {
+    response_headers(request);
+    httpd_resp_set_status(request, status);
+    httpd_resp_set_type(request, "application/json");
+    return httpd_resp_sendstr(request, body);
+}
+
+bool setup_request(httpd_req_t *request) {
+    sockaddr_storage local{};
+    socklen_t length = sizeof(local);
+    if (getsockname(httpd_req_to_sockfd(request), reinterpret_cast<sockaddr *>(&local), &length) != 0 ||
+        !provisioning::matches_setup_address(local, esp_ip4addr_aton(ap_address))) return false;
+    // Restrict HTTP to the setup address, preventing LAN access and DNS rebinding.
+    char host[32]{};
+    if (httpd_req_get_hdr_value_str(request, "Host", host, sizeof(host)) != ESP_OK) return false;
+    if (std::strcmp(host, ap_address) != 0 && std::string(host) != std::string(ap_address) + ":80") return false;
+    const size_t origin_length = httpd_req_get_hdr_value_len(request, "Origin");
+    if (origin_length) {
+        char origin[48]{};
+        if (httpd_req_get_hdr_value_str(request, "Origin", origin, sizeof(origin)) != ESP_OK) return false;
+        const std::string expected = std::string("http://") + host;
+        if (origin != expected) return false;
+    }
+    return true;
+}
+
+esp_err_t page(httpd_req_t *request) {
+    if (!setup_request(request)) return json_response(request, "403 Forbidden", "{\"error\":\"Use the setup Wi-Fi address\"}");
+    response_headers(request);
+    httpd_resp_set_hdr(request, "Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'");
+    httpd_resp_set_type(request, "text/html; charset=utf-8");
+    return httpd_resp_send(request, reinterpret_cast<const char *>(html_start), html_end - html_start - 1);
+}
+
+esp_err_t scan(httpd_req_t *request) {
+    if (!setup_request(request)) return json_response(request, "403 Forbidden", "{\"error\":\"Use setup Wi-Fi\"}");
+    if (state.load() != State::provisioning || submitting.load()) {
+        return json_response(request, "409 Conflict", "{\"error\":\"Wait for the connection attempt to finish\"}");
+    }
+    wifi_scan_config_t config{};
+    config.show_hidden = true;
+    esp_err_t err = esp_wifi_scan_start(&config, true);
+    if (err != ESP_OK) return json_response(request, "503 Service Unavailable", "{\"error\":\"Scan unavailable; try again\"}");
+    uint16_t count = 0;
+    err = esp_wifi_scan_get_ap_num(&count);
+    if (err != ESP_OK) {
+        esp_wifi_clear_ap_list();
+        return json_response(request, "503 Service Unavailable", "{\"error\":\"Scan failed\"}");
+    }
+    std::vector<std::string> names;
+    for (uint16_t i = 0; i < count; ++i) {
+        wifi_ap_record_t record{};
+        err = esp_wifi_scan_get_ap_record(&record);
+        if (err != ESP_OK) break;
+        const char *ssid = reinterpret_cast<const char *>(record.ssid);
+        std::string name(ssid, strnlen(ssid, 32));
+        if (!name.empty() && std::find(names.begin(), names.end(), name) == names.end()) names.push_back(name);
+    }
+    esp_wifi_clear_ap_list();
+    if (err != ESP_OK) return json_response(request, "503 Service Unavailable", "{\"error\":\"Scan failed\"}");
+    std::string body = "{\"ssids\":[";
+    for (size_t i = 0; i < names.size(); ++i) {
+        if (i) body += ',';
+        body += provisioning::json_quote(names[i]);
+    }
+    body += "]}";
+    return json_response(request, "200 OK", body.c_str());
+}
+
+esp_err_t status(httpd_req_t *request) {
+    if (!setup_request(request)) return json_response(request, "403 Forbidden", "{\"error\":\"Use setup Wi-Fi\"}");
+    const State current = state.load();
+    if (current == State::storage_error) return json_response(request, "500 Internal Server Error", "{\"error\":\"Could not save Wi-Fi settings; try again\"}");
+    const char *body = current == State::connected ? "{\"state\":\"connected\"}" :
+        (current == State::connecting || submitting.load()) ? "{\"state\":\"connecting\"}" : "{\"state\":\"provisioning\"}";
+    return json_response(request, "200 OK", body);
+}
+
+esp_err_t connect_request(httpd_req_t *request) {
+    if (!setup_request(request)) return json_response(request, "403 Forbidden", "{\"error\":\"Use setup Wi-Fi\"}");
+    if (state.load() == State::connecting || submitting.exchange(true)) {
+        return json_response(request, "409 Conflict", "{\"error\":\"Connection already in progress\"}");
+    }
+    char type[64]{};
+    if (httpd_req_get_hdr_value_str(request, "Content-Type", type, sizeof(type)) != ESP_OK ||
+        std::strcmp(type, "application/x-www-form-urlencoded") != 0 ||
+        request->content_len == 0 || request->content_len > 512) {
+        submitting = false;
+        return json_response(request, "400 Bad Request", "{\"error\":\"Invalid setup request\"}");
+    }
+    char body[513]{};
+    size_t received = 0;
+    while (received < request->content_len) {
+        const int count = httpd_req_recv(request, body + received, request->content_len - received);
+        if (count <= 0) {
+            submitting = false;
+            return json_response(request, "408 Request Timeout", "{\"error\":\"Setup request timed out\"}");
+        }
+        received += count;
+    }
+    Credentials credentials{};
+    const bool valid = provisioning::parse_credentials(std::string_view(body, received), credentials);
+    std::memset(body, 0, sizeof(body));
+    if (!valid) {
+        submitting = false;
+        return json_response(request, "400 Bad Request", "{\"error\":\"Use a 1–32 byte network name and an empty, 8–63 byte, or 64 hex-digit password\"}");
+    }
+    const bool queued = xQueueSend(requests, &credentials, 0) == pdTRUE;
+    wipe(credentials);
+    if (!queued) {
+        submitting = false;
+        return json_response(request, "409 Conflict", "{\"error\":\"Setup is busy; try again\"}");
+    }
+    return json_response(request, "202 Accepted", "{\"state\":\"connecting\"}");
+}
+
+void start_setup() {
+    if (ap_active) { state = State::provisioning; return; }
+    uint8_t random[2];
+    esp_fill_random(random, sizeof(random));
+    char name[32];
+    std::snprintf(name, sizeof(name), "ESP32-Setup-%02X%02X", random[0], random[1]);
+    wifi_config_t config{};
+    std::memcpy(config.ap.ssid, name, std::strlen(name));
+    config.ap.ssid_len = std::strlen(name);
+    config.ap.authmode = WIFI_AUTH_OPEN;
+    config.ap.max_connection = 2;
+    config.ap.channel = 1;
+    esp_wifi_disconnect();
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &config));
+    esp_netif_ip_info_t ip{};
+    ESP_ERROR_CHECK(esp_netif_get_ip_info(ap_netif, &ip));
+    std::snprintf(ap_address, sizeof(ap_address), IPSTR, IP2STR(&ip.ip));
+    httpd_config_t http = HTTPD_DEFAULT_CONFIG();
+    http.stack_size = 6144;
+    http.recv_wait_timeout = 5;
+    http.send_wait_timeout = 5;
+    http.lru_purge_enable = true;
+    ESP_ERROR_CHECK(httpd_start(&server, &http));
+    const httpd_uri_t routes[] = {
+        {.uri="/", .method=HTTP_GET, .handler=page, .user_ctx=nullptr},
+        {.uri="/api/scan", .method=HTTP_GET, .handler=scan, .user_ctx=nullptr},
+        {.uri="/api/status", .method=HTTP_GET, .handler=status, .user_ctx=nullptr},
+        {.uri="/api/connect", .method=HTTP_POST, .handler=connect_request, .user_ctx=nullptr},
+    };
+    for (const auto &route : routes) ESP_ERROR_CHECK(httpd_register_uri_handler(server, &route));
+    ap_active = true;
+    state = State::provisioning;
+    ESP_LOGI(TAG, "Setup Wi-Fi: %s (no password) | http://%s", name, ap_address);
+}
+
+void apply_credentials(const Credentials &credentials) {
+    esp_wifi_scan_stop();
+    esp_wifi_disconnect();
+    wifi_config_t config{};
+    std::memcpy(config.sta.ssid, credentials.ssid, std::strlen(credentials.ssid));
+    std::memcpy(config.sta.password, credentials.password, std::strlen(credentials.password));
+    config.sta.pmf_cfg.capable = true;
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &config));
+    std::memset(config.sta.password, 0, sizeof(config.sta.password));
+    xEventGroupClearBits(events, CONNECTED | DISCONNECTED);
+    state = State::connecting;
+    esp_wifi_connect();
+}
+
+void supervisor(void *) {
+    Credentials pending{};
+    bool save_pending = false;
+    TickType_t started = xTaskGetTickCount(), last_attempt = started, close_ap = 0;
+    if (load_credentials(pending) == ESP_OK) {
+        apply_credentials(pending);
+        wipe(pending);
+    } else start_setup();
+    for (;;) {
+        if (xEventGroupGetBits(events) & RESET) {
+            xEventGroupClearBits(events, RESET);
+            forget_and_restart();
+        }
+        Credentials next{};
+        if (xQueueReceive(requests, &next, pdMS_TO_TICKS(100)) == pdTRUE) {
+            pending = next;
+            wipe(next);
+            save_pending = true;
+            apply_credentials(pending);
+            started = last_attempt = xTaskGetTickCount();
+            submitting = false;
+        }
+        const TickType_t now = xTaskGetTickCount();
+        const State current = state.load();
+        const EventBits_t bits = xEventGroupGetBits(events);
+        if (current == State::connecting) {
+            if (bits & CONNECTED) {
+                if (save_pending && save_credentials(pending) != ESP_OK) {
+                    ESP_LOGE(TAG, "Could not persist Wi-Fi settings");
+                    state = State::storage_error;
+                } else {
+                    state = State::connected;
+                    ESP_LOGI(TAG, "Wi-Fi connected; settings ready");
+                    close_ap = now;
+                }
+                save_pending = false;
+                wipe(pending);
+            } else if (now - started >= pdMS_TO_TICKS(CONNECT_TIMEOUT_MS)) {
+                esp_wifi_disconnect();
+                save_pending = false;
+                wipe(pending);
+                ESP_LOGW(TAG, "Wi-Fi connection unavailable; opening setup");
+                start_setup();
+            } else if ((bits & DISCONNECTED) && now - last_attempt >= pdMS_TO_TICKS(1000)) {
+                xEventGroupClearBits(events, DISCONNECTED);
+                esp_wifi_connect();
+                last_attempt = now;
+            }
+        } else if (current == State::connected) {
+            if (!(bits & CONNECTED)) {
+                state = State::connecting;
+                started = last_attempt = now;
+                esp_wifi_connect();
+            } else if (ap_active && now - close_ap >= pdMS_TO_TICKS(5000)) {
+                ESP_ERROR_CHECK(httpd_stop(server));
+                server = nullptr;
+                ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+                ap_active = false;
+                ESP_LOGI(TAG, "Setup Wi-Fi closed");
+            }
+        }
+    }
+}
+
+void button_task(void *) {
+    const gpio_num_t pin = static_cast<gpio_num_t>(options.reset_gpio);
+    TickType_t pressed_at = 0;
+    bool pressed = false, armed = false;
+    for (;;) {
+        if (gpio_get_level(pin) == 0) {
+            if (!pressed) { pressed_at = xTaskGetTickCount(); pressed = true; }
+            if (!armed && xTaskGetTickCount() - pressed_at >= pdMS_TO_TICKS(options.reset_hold_ms)) {
+                armed = true;
+                ESP_LOGI(TAG, "Release setup button to forget Wi-Fi and restart");
+            }
+        } else {
+            if (armed) provisioning_reset_credentials();
+            pressed = armed = false;
+        }
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+}
+
+void serial_task(void *) {
+    char line[32]{};
+    size_t length = 0;
+    bool overflow = false;
+    ESP_LOGI(TAG, "Type wifi-reset then Enter on the serial console to restart setup");
+    for (;;) {
+        const int ch = std::getchar();
+        if (ch == EOF) {
+            std::clearerr(stdin);
+            vTaskDelay(pdMS_TO_TICKS(50));
+            continue;
+        }
+        if (ch == '\n' || ch == '\r') {
+            if (!overflow && std::strcmp(line, "wifi-reset") == 0) provisioning_reset_credentials();
+            std::memset(line, 0, sizeof(line));
+            length = 0;
+            overflow = false;
+        } else if (length < sizeof(line) - 1) line[length++] = static_cast<char>(ch);
+        else overflow = true;
+    }
+}
+} // namespace
+
+extern "C" esp_err_t provisioning_start(const provisioning_config_t *config) {
+    if (!config || events || config->reset_hold_ms < 1000 ||
+        (config->reset_gpio != -1 && !GPIO_IS_VALID_GPIO(config->reset_gpio))) return ESP_ERR_INVALID_ARG;
+    options = *config;
+    // Do not erase unrelated application data if NVS initialization fails.
+    esp_err_t err = nvs_flash_init();
+    if (err != ESP_OK) return err;
+    ESP_RETURN_ON_ERROR(esp_netif_init(), TAG, "Network initialization failed");
+    err = esp_event_loop_create_default();
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) return err;
+    station_netif = esp_netif_create_default_wifi_sta();
+    ap_netif = esp_netif_create_default_wifi_ap();
+    if (!station_netif || !ap_netif) return ESP_ERR_NO_MEM;
+    events = xEventGroupCreate();
+    requests = xQueueCreate(1, sizeof(Credentials));
+    if (!events || !requests) return ESP_ERR_NO_MEM;
+    wifi_init_config_t wifi = WIFI_INIT_CONFIG_DEFAULT();
+    ESP_RETURN_ON_ERROR(esp_wifi_init(&wifi), TAG, "Wi-Fi initialization failed");
+    ESP_RETURN_ON_ERROR(esp_wifi_set_storage(WIFI_STORAGE_RAM), TAG, "Wi-Fi storage failed");
+    ESP_RETURN_ON_ERROR(esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, wifi_event, nullptr), TAG, "Event registration failed");
+    ESP_RETURN_ON_ERROR(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, wifi_event, nullptr), TAG, "Event registration failed");
+    ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_STA), TAG, "Wi-Fi mode failed");
+    ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "Wi-Fi start failed");
+    if (options.reset_gpio >= 0) {
+        gpio_config_t button{};
+        button.pin_bit_mask = 1ULL << options.reset_gpio;
+        button.mode = GPIO_MODE_INPUT;
+        button.pull_up_en = GPIO_PULLUP_ENABLE;
+        ESP_RETURN_ON_ERROR(gpio_config(&button), TAG, "Button initialization failed");
+        if (xTaskCreate(button_task, "wifi_reset", 2048, nullptr, 4, nullptr) != pdPASS) return ESP_ERR_NO_MEM;
+    }
+    if (options.serial_reset && xTaskCreate(serial_task, "wifi_console", 3072, nullptr, 3, nullptr) != pdPASS) return ESP_ERR_NO_MEM;
+    if (xTaskCreate(supervisor, "wifi_setup", 6144, nullptr, 4, nullptr) != pdPASS) return ESP_ERR_NO_MEM;
+    return ESP_OK;
+}
+
+extern "C" void provisioning_reset_credentials(void) {
+    if (events) xEventGroupSetBits(events, RESET);
+}

@@ -17,9 +17,6 @@ Examples:
   ./docker/docker.sh --build
   ./docker/docker.sh esp32 build
   ./docker/docker.sh python --version
-
-Optionally set ESP32_PORT in the host environment
-for USB passthrough to a connected board.
 HELP
 }
 
@@ -45,15 +42,6 @@ export HOST_GID="$(id -g)"
 compose=(docker compose
     -f "${SCRIPT_DIR}/docker-compose.yml"
     --profile development)
-if [[ -v ESP32_PORT && -n "${ESP32_PORT}" ]]; then
-    if [[ -c "${ESP32_PORT}" ]]; then
-        export ESP32_PORT
-        export SERIAL_GID="$(stat -L -c '%g' "${ESP32_PORT}")"
-        compose+=(-f "${SCRIPT_DIR}/docker-compose.serial.yml")
-    else
-        printf 'Serial device unavailable: %s; continuing without USB passthrough.\n' "${ESP32_PORT}" >&2
-    fi
-fi
 
 if "${build}"; then
     "${compose[@]}" build esp32-dev
