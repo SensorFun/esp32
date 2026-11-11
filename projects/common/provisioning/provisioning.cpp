@@ -9,14 +9,11 @@
 #include <string>
 #include <vector>
 
-#include "driver/gpio.h"
 #include "esp_check.h"
 #include "esp_event.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "esp_netif.h"
-#include "esp_random.h"
-#include "esp_system.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
@@ -31,7 +28,7 @@ using provisioning::Credentials;
 constexpr char TAG[] = "provisioning";
 constexpr char NVS_NAMESPACE[] = "wifi_setup";
 constexpr char NVS_KEY[] = "credentials";
-constexpr EventBits_t CONNECTED = BIT0, DISCONNECTED = BIT1, RESET = BIT2;
+constexpr EventBits_t CONNECTED = BIT0, DISCONNECTED = BIT1;
 constexpr uint32_t CONNECT_TIMEOUT_MS = 20000;
 enum class State { starting, connecting, provisioning, connected, storage_error };
 std::atomic<State> state{State::starting};
@@ -40,7 +37,6 @@ EventGroupHandle_t events = nullptr;
 QueueHandle_t requests = nullptr;
 esp_netif_t *station_netif = nullptr, *ap_netif = nullptr;
 httpd_handle_t server = nullptr;
-provisioning_config_t options{};
 char ap_address[16]{};
 bool ap_active = false;
 
@@ -77,24 +73,6 @@ esp_err_t save_credentials(const Credentials &credentials) {
     if (err == ESP_OK) err = nvs_commit(handle);
     nvs_close(handle);
     return err;
-}
-
-void forget_and_restart() {
-    nvs_handle_t handle;
-    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
-    if (err == ESP_OK) {
-        err = nvs_erase_key(handle, NVS_KEY);
-        if (err == ESP_ERR_NVS_NOT_FOUND) err = ESP_OK;
-        if (err == ESP_OK) err = nvs_commit(handle);
-        nvs_close(handle);
-    }
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Could not clear saved setup (%s)", esp_err_to_name(err));
-        return;
-    }
-    ESP_LOGI(TAG, "Saved Wi-Fi cleared; restarting setup");
-    vTaskDelay(pdMS_TO_TICKS(500));
-    esp_restart();
 }
 
 void wifi_event(void *, esp_event_base_t base, int32_t id, void *) {
@@ -230,10 +208,11 @@ esp_err_t connect_request(httpd_req_t *request) {
 
 void start_setup() {
     if (ap_active) { state = State::provisioning; return; }
-    uint8_t random[2];
-    esp_fill_random(random, sizeof(random));
+    uint8_t mac[6]{};
+    ESP_ERROR_CHECK(esp_wifi_get_mac(WIFI_IF_STA, mac));
     char name[32];
-    std::snprintf(name, sizeof(name), "ESP32-Setup-%02X%02X", random[0], random[1]);
+    std::snprintf(name, sizeof(name), "CAM_%02X:%02X:%02X:%02X:%02X:%02X",
+                  mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
     wifi_config_t config{};
     std::memcpy(config.ap.ssid, name, std::strlen(name));
     config.ap.ssid_len = std::strlen(name);
@@ -287,10 +266,6 @@ void supervisor(void *) {
         wipe(pending);
     } else start_setup();
     for (;;) {
-        if (xEventGroupGetBits(events) & RESET) {
-            xEventGroupClearBits(events, RESET);
-            forget_and_restart();
-        }
         Credentials next{};
         if (xQueueReceive(requests, &next, pdMS_TO_TICKS(100)) == pdTRUE) {
             pending = next;
@@ -342,52 +317,10 @@ void supervisor(void *) {
     }
 }
 
-void button_task(void *) {
-    const gpio_num_t pin = static_cast<gpio_num_t>(options.reset_gpio);
-    TickType_t pressed_at = 0;
-    bool pressed = false, armed = false;
-    for (;;) {
-        if (gpio_get_level(pin) == 0) {
-            if (!pressed) { pressed_at = xTaskGetTickCount(); pressed = true; }
-            if (!armed && xTaskGetTickCount() - pressed_at >= pdMS_TO_TICKS(options.reset_hold_ms)) {
-                armed = true;
-                ESP_LOGI(TAG, "Release setup button to forget Wi-Fi and restart");
-            }
-        } else {
-            if (armed) provisioning_reset_credentials();
-            pressed = armed = false;
-        }
-        vTaskDelay(pdMS_TO_TICKS(50));
-    }
-}
-
-void serial_task(void *) {
-    char line[32]{};
-    size_t length = 0;
-    bool overflow = false;
-    ESP_LOGI(TAG, "Type wifi-reset then Enter on the serial console to restart setup");
-    for (;;) {
-        const int ch = std::getchar();
-        if (ch == EOF) {
-            std::clearerr(stdin);
-            vTaskDelay(pdMS_TO_TICKS(50));
-            continue;
-        }
-        if (ch == '\n' || ch == '\r') {
-            if (!overflow && std::strcmp(line, "wifi-reset") == 0) provisioning_reset_credentials();
-            std::memset(line, 0, sizeof(line));
-            length = 0;
-            overflow = false;
-        } else if (length < sizeof(line) - 1) line[length++] = static_cast<char>(ch);
-        else overflow = true;
-    }
-}
 } // namespace
 
-extern "C" esp_err_t provisioning_start(const provisioning_config_t *config) {
-    if (!config || events || config->reset_hold_ms < 1000 ||
-        (config->reset_gpio != -1 && !GPIO_IS_VALID_GPIO(config->reset_gpio))) return ESP_ERR_INVALID_ARG;
-    options = *config;
+extern "C" esp_err_t provisioning_start(void) {
+    if (events) return ESP_ERR_INVALID_STATE;
     // Do not erase unrelated application data if NVS initialization fails.
     esp_err_t err = nvs_flash_init();
     if (err != ESP_OK) return err;
@@ -407,19 +340,6 @@ extern "C" esp_err_t provisioning_start(const provisioning_config_t *config) {
     ESP_RETURN_ON_ERROR(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, wifi_event, nullptr), TAG, "Event registration failed");
     ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_STA), TAG, "Wi-Fi mode failed");
     ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "Wi-Fi start failed");
-    if (options.reset_gpio >= 0) {
-        gpio_config_t button{};
-        button.pin_bit_mask = 1ULL << options.reset_gpio;
-        button.mode = GPIO_MODE_INPUT;
-        button.pull_up_en = GPIO_PULLUP_ENABLE;
-        ESP_RETURN_ON_ERROR(gpio_config(&button), TAG, "Button initialization failed");
-        if (xTaskCreate(button_task, "wifi_reset", 2048, nullptr, 4, nullptr) != pdPASS) return ESP_ERR_NO_MEM;
-    }
-    if (options.serial_reset && xTaskCreate(serial_task, "wifi_console", 3072, nullptr, 3, nullptr) != pdPASS) return ESP_ERR_NO_MEM;
     if (xTaskCreate(supervisor, "wifi_setup", 6144, nullptr, 4, nullptr) != pdPASS) return ESP_ERR_NO_MEM;
     return ESP_OK;
-}
-
-extern "C" void provisioning_reset_credentials(void) {
-    if (events) xEventGroupSetBits(events, RESET);
 }

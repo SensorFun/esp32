@@ -1,3 +1,4 @@
+sensor: ov3660
 timing_profile: high_light
 brightness: 1
 contrast: 0

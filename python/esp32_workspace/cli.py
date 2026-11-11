@@ -1,7 +1,6 @@
 """Thin wrapper around ESP-IDF's native CMake build frontend."""
 
 import argparse
-import json
 import os
 from pathlib import Path
 import shlex
@@ -9,15 +8,19 @@ import shutil
 import subprocess
 
 
-def command(root: Path, project: str, board: str, action: str, port: str | None) -> list[str]:
+from .boards import load_board
+
+
+def command(root: Path, project: str, board: str, action: str, port: str | None, camera: str | None = None) -> list[str]:
     projects = root / "projects"
     source = (projects / project).resolve()
     if source.parent != projects.resolve() or not (source / "CMakeLists.txt").is_file():
         raise ValueError(f"Unknown project: {project}")
-    board_file = root / "boards" / f"{board}.json"
-    if Path(board).name != board or not board_file.is_file():
-        raise ValueError(f"Unknown board: {board}")
-    config = json.loads(board_file.read_text())
+    config = load_board(root, board)
+    if camera is None:
+        camera = config.get("default_camera", "none")
+    if camera != "none" and camera not in config.get("camera_sensors", []):
+        raise ValueError(f"Camera {camera!r} is not supported by board {board}")
     build = root / "build" / project / board
     defaults = [source / "sdkconfig.defaults"]
     defaults += [root / "boards" / item for item in config.get("sdkconfig_defaults", [])]
@@ -25,6 +28,7 @@ def command(root: Path, project: str, board: str, action: str, port: str | None)
     result = [
         "idf.py", "-C", str(source), "-B", str(build),
         f"-DIDF_TARGET={config['target']}", f"-DBOARD={board}",
+        f"-DCAMERA_SENSOR={camera}",
         f"-DSDKCONFIG={build / 'sdkconfig'}",
     ]
     if defaults:
@@ -46,7 +50,7 @@ def main() -> int:
     root = args.root.resolve()
     if args.action == "list":
         print("Projects: " + ", ".join(p.parent.name for p in sorted((root / "projects").glob("*/CMakeLists.txt"))))
-        print("Boards: " + ", ".join(p.stem for p in sorted((root / "boards").glob("*.json"))))
+        print("Boards: " + ", ".join(p.stem for p in sorted((root / "config/board").glob("*.yaml"))))
         return 0
     try:
         cmd = command(root, args.project, args.board, args.action, args.port)

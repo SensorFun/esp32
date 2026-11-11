@@ -1,0 +1,4 @@
+# @package _global_
+board: esp32p4_waveshare_wifi6_dev_kit
+hardware:
+  target: esp32p4

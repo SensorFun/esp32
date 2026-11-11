@@ -54,6 +54,42 @@ class FirmwareToolTests(unittest.TestCase):
         self.assertIn("idf.py", result.stdout)
         self.assertFalse(self.log.exists())
 
+    def test_device_profiles_compose_frame_grabber_and_lens_directly(self):
+        from hydra import compose, initialize_config_dir
+        with initialize_config_dir(version_base="1.3", config_dir=str(ROOT / "config")):
+            ai = compose(config_name="build", overrides=["device=esp32_cam_ov2640_62"])
+            self.assertEqual(ai.board, "esp32_ai_thinker_cam")
+            self.assertEqual(ai.hardware.target, "esp32")
+            self.assertEqual(ai.camera_sensor, "ov2640")
+            self.assertIn("lens", ai)
+            self.assertNotIn("camera", ai)
+            s3 = compose(config_name="build", overrides=["device=esp32s3_wroom_ov3660_62"])
+            self.assertEqual(s3.board, "esp32s3n16r8_espressif_cam")
+            self.assertEqual(s3.hardware.target, "esp32s3")
+            self.assertEqual(s3.camera_sensor, "ov3660")
+            self.assertEqual(s3.frame_grabber.timing_profile, "high_light")
+            self.assertEqual(s3.frame_grabber.vertical_flip, 1)
+            self.assertIn("lens", s3)
+            self.assertNotIn("camera", s3)
+
+    def test_both_device_profiles_run_in_one_hydra_sweep(self):
+        result = subprocess.run(
+            [sys.executable, str(ROOT / "tools/build.py"), "--multirun",
+             "device=esp32_cam_ov2640_62,esp32s3_wroom_ov3660_62", "dry_run=true"],
+            cwd=self.scratch, env=self.env, capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for selection in ("-DIDF_TARGET=esp32 ", "-DIDF_TARGET=esp32s3 ",
+                          "-DCAMERA_SENSOR=ov2640", "-DCAMERA_SENSOR=ov3660"):
+            self.assertIn(selection, result.stdout)
+        self.assertFalse(self.log.exists())
+
+    def test_incompatible_camera_fails_before_idf(self):
+        result = self.run_tool("build", "device=esp32_cam_ov2640_62", "frame_grabber=ov3660")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("not supported", result.stderr)
+        self.assertFalse(self.log.exists())
+
     def test_idf_failure_status_is_preserved(self):
         self.env["IDF_TEST_EXIT"] = "19"
         result = self.run_tool("build")

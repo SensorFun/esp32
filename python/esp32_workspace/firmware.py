@@ -18,7 +18,7 @@ def run_firmware(root: Path, config: DictConfig, action: str) -> int:
             raise ValueError(f"{key} must be a nonempty string")
     if not isinstance(config.dry_run, bool):
         raise ValueError("dry_run must be true or false")
-    cmd = command(root.resolve(), config.project, config.board, action, None)
+    cmd = command(root.resolve(), config.project, config.board, action, None, config.get("camera_sensor"))
     print(shlex.join(cmd), flush=True)
     if config.dry_run:
         return 0

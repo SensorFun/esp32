@@ -10,7 +10,9 @@ from esp32_workspace.flashing import run_flash
 
 @hydra.main(version_base="1.3", config_path="../config", config_name="flash")
 def main(config: DictConfig) -> None:
-    raise SystemExit(run_flash(Path(__file__).resolve().parents[1], config))
+    result = run_flash(Path(__file__).resolve().parents[1], config)
+    if result:
+        raise SystemExit(result)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,7 @@
+# @package _global_
+board: esp32_ai_thinker_cam
+hardware:
+  target: esp32
+  camera_sensors:
+  - ov2640
+  default_camera: ov2640

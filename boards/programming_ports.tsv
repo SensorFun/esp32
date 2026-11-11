@@ -13,3 +13,5 @@
 # board_id	vendor:product	product string	serial
 esp32p4_waveshare_wifi6_dev_kit	1a86:55d3	USB Single Serial	""
 esp32s3n16r8_espressif_cam	1a86:55d3	USB Single Serial	""
+esp32_ai_thinker_cam	0403:6001	FT232R USB UART	""
+esp32s3n16r8_espressif_cam	1a86:7523	USB Serial	""

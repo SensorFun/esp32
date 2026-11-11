@@ -1,13 +1,17 @@
-# Shared firmware selection. Override these with project=... board=... .
+# Select a board/sensor pair with device=...; project and board remain overridable.
+defaults:
+  - device: esp32_cam_ov2640_62
+  - _self_
+
 project: hello_world
-board: esp32s3_seeed_cam
+camera_sensor: ${frame_grabber.sensor}
 dry_run: false
 
 hydra:
   run:
-    dir: ${hydra:runtime.cwd}/build/hydra/${hydra:job.name}
+    dir: ${hydra.runtime.cwd}/build/hydra/${hydra.job.name}
   sweep:
-    dir: ${hydra:runtime.cwd}/build/hydra/${hydra:job.name}/multirun
+    dir: ${hydra.runtime.cwd}/build/hydra/${hydra.job.name}/multirun
   output_subdir: null
   job:
     chdir: false

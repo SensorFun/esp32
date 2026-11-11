@@ -1,0 +1,8 @@
+# @package _global_
+board: esp32s3_seeed_cam
+hardware:
+  target: esp32s3
+  camera_sensors:
+  - ov2640
+  - ov3660
+  default_camera: ov2640

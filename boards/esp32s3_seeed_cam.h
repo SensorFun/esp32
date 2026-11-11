@@ -1,4 +1,5 @@
 #pragma once
+#include "common/board.h"
 
 inline constexpr char camera_board_name[] = "Seeed Studio XIAO ESP32S3 Sense";
 
@@ -19,4 +20,7 @@ inline constexpr char camera_board_name[] = "Seeed Studio XIAO ESP32S3 Sense";
 #define HREF_GPIO_NUM  47
 #define PCLK_GPIO_NUM  13
 
-#define WIFI_SETUP_BUTTON_GPIO_NUM 0
+// BOOT is checked while running; do not hold strapping pins at power-on.
+inline constexpr common::BoardConfig common_board_config = {
+    .name = camera_board_name,
+};

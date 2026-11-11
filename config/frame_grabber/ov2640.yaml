@@ -1,0 +1,4 @@
+sensor: ov2640
+jpeg_quality: 12
+horizontal_mirror: 0
+vertical_flip: 0

@@ -9,6 +9,7 @@ import sys
 from omegaconf import DictConfig, OmegaConf
 from serial.tools import list_ports
 
+from .boards import load_board
 from .cli import command
 
 # Espressif native USB and common USB-to-UART bridge vendors.
@@ -50,14 +51,21 @@ def run_flash(root: Path, config: DictConfig) -> int:
     if type(config.baud) is not int or config.baud <= 0:
         raise ValueError("baud must be a positive integer")
     # Reuse the firmware selection validation without running idf.py.
-    command(root, config.project, config.board, "build", None)
+    command(root, config.project, config.board, "build", None, config.get("camera_sensor"))
     build = root / "build" / config.project / config.board
     metadata_file = build / "flasher_args.json"
     args_file = build / "flash_args"
     if not metadata_file.is_file() or not args_file.is_file():
         raise ValueError("Firmware is not built. Run python3 tools/build.py with the same project and board first.")
+    if config.get("camera_sensor") is not None:
+        selection_file = build / "firmware_selection.json"
+        if not selection_file.is_file():
+            raise ValueError("Camera selection metadata is missing; rebuild this device profile first.")
+        selection = json.loads(selection_file.read_text())
+        if selection.get("board") != config.board or selection.get("camera") != config.camera_sensor:
+            raise ValueError("Built board/camera does not match this device profile; rebuild before flashing.")
     metadata = json.loads(metadata_file.read_text())
-    board = json.loads((root / "boards" / f"{config.board}.json").read_text())
+    board = load_board(root, config.board)
     extra = metadata["extra_esptool_args"]
     if extra["chip"] != board["target"]:
         raise ValueError("Build chip does not match the selected board; rebuild before flashing.")

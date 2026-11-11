@@ -1,4 +1,5 @@
 #pragma once
+#include "common/board.h"
 
 inline constexpr char camera_board_name[] = "ESP32-S3-WROOM N16R8 CAM";
 
@@ -26,5 +27,7 @@ inline constexpr char camera_board_name[] = "ESP32-S3-WROOM N16R8 CAM";
 // The S3 has a single SDMMC slot pair; slot 1 is the one wired here.
 #define SD_MMC_SLOT 1
 
-// BOOT button, sampled only after normal application startup.
-#define WIFI_SETUP_BUTTON_GPIO_NUM 0
+// BOOT is checked while running; do not hold strapping pins at power-on.
+inline constexpr common::BoardConfig common_board_config = {
+    .name = camera_board_name,
+};

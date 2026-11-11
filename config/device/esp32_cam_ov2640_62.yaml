@@ -1,0 +1,6 @@
+# @package _global_
+defaults:
+  - /board: esp32_ai_thinker_cam
+  - /frame_grabber: ov2640
+  - /lens: "62"
+  - _self_

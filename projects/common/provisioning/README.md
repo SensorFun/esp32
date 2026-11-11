@@ -5,29 +5,19 @@ HTML, HTTP endpoints, scanning, reconnect logic, saved settings, and reset handl
 live here. ESP32-P4 needs an external Wi-Fi driver and is not supported by this
 component as configured.
 
-Add `projects/common` to a project's `EXTRA_COMPONENT_DIRS` before including
-ESP-IDF's `project.cmake`. Add `provisioning` to the application's `REQUIRES`, then
-call once at startup:
-
-```cpp
-#include "provisioning.h"
-const provisioning_config_t config = {
-    .reset_gpio = WIFI_SETUP_BUTTON_GPIO_NUM,
-    .reset_hold_ms = 5000,
-    .serial_reset = true,
-};
-ESP_ERROR_CHECK(provisioning_start(&config));
-```
-
-The component owns the default Wi-Fi interfaces and Wi-Fi event handlers. It
-initializes NVS and the default event loop; it does not erase NVS on initialization
-errors. Call it before other application code starts Wi-Fi.
+Projects normally use [common::Application](../application/README.md), which
+initializes NVS and board reset handling, then calls `provisioning_start()` on
+boards with integrated Wi-Fi. For lower-level use, add `provisioning` to a
+component's `REQUIRES` and call `provisioning_start()` once. It owns the default
+Wi-Fi interfaces/event handlers and initializes NVS/the default event loop. It
+does not erase NVS on initialization errors.
 
 ## Setup
 
 1. With no saved settings, or after 20 seconds of failed connection attempts, the
-   board starts an open `ESP32-Setup-…` network. Join it without a password;
-   serial access is not needed.
+   board starts an open `CAM_<MAC>` network. Join it without a password;
+   serial access is not needed. The suffix is the board's station Wi-Fi MAC
+   in uppercase, colon-separated form; the SSID stays the same across reboots.
 2. Join that access point and open `http://192.168.4.1` in a browser. This is a
    direct setup page; it does not rely on a captive-portal popup or internet.
 3. Refresh to scan visible SSIDs and choose one from the dropdown. Choose
@@ -50,20 +40,17 @@ closes after a successful connection.
 
 ## Reset and recovery
 
-- Hold the configured active-low setup/BOOT button for five seconds while the
-  app is running, then release it. The board erases its provisioning credentials
-  and restarts into setup. Waiting for release avoids rebooting GPIO0 boards
-  into the ROM download loader.
-- Type `wifi-reset` followed by Enter on the serial console when `serial_reset`
-  is enabled. This works on the AI Thinker ESP32-CAM, which has no safe dedicated
-  setup button: its GPIO0 is the camera clock, so its header specifies `-1`.
-- Applications can call `provisioning_reset_credentials()` for another physical
-  control or application-specific reset flow. Only this component's saved
-  credentials are erased; unrelated NVS data is preserved.
+Reset inputs and the serial `wifi-reset` command belong to the shared
+[application class](../application/README.md), not the Wi-Fi component.
 
-If a saved network disappears or authentication fails, the board falls back to
-setup after 20 seconds. Without a safe physical button, the serial reset command
-can still clear settings while a saved network remains reachable.
+- ESP32-CAM: connect IO12 to GND for two seconds, then remove the jumper.
+- ESP32-S3: hold BOOT for two seconds while running, then release it.
+- Applications can call `common.enter_setup()` directly.
+
+These reset requests clear the entire default NVS partition on the next boot,
+including saved Wi-Fi and other application settings. Ordinary power cycles keep
+settings. If a saved network disappears or authentication fails, the Wi-Fi
+component opens provisioning after 20 seconds without erasing saved settings.
 
 ## HTTP interface
 

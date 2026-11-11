@@ -26,7 +26,8 @@ class FlashTests(unittest.TestCase):
         (self.root / "projects/hello_world").mkdir(parents=True)
         (self.root / "projects/hello_world/CMakeLists.txt").touch()
         (self.root / "boards").mkdir()
-        (self.root / "boards/test.json").write_text('{"target": "esp32s3"}')
+        (self.root / "config/board").mkdir(parents=True)
+        (self.root / "config/board/test.yaml").write_text("board: test\nhardware:\n  target: esp32s3\n")
         self.build = self.root / "build/hello_world/test"
         self.build.mkdir(parents=True)
         self.metadata = {
@@ -106,6 +107,28 @@ class FlashTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "not built"):
             run_flash(self.root, self.config)
         call.assert_not_called()
+
+    @patch("esp32_workspace.flashing.subprocess.call")
+    def test_wrong_camera_build_cannot_be_flashed(self, call):
+        (self.root / "config/board/test.yaml").write_text("board: test\nhardware:\n  target: esp32s3\n  camera_sensors: [ov3660]\n")
+        self.config.camera_sensor = "ov3660"
+        selection = self.build / "firmware_selection.json"
+        with self.assertRaisesRegex(ValueError, "metadata is missing"):
+            run_flash(self.root, self.config)
+        selection.write_text('{"board":"test","camera":"ov2640"}')
+        with self.assertRaisesRegex(ValueError, "does not match"):
+            run_flash(self.root, self.config)
+        call.assert_not_called()
+
+    @patch("esp32_workspace.flashing.list_ports.comports")
+    def test_two_connected_board_profiles_select_distinct_ports(self, ports):
+        root = Path(__file__).resolve().parents[1]
+        ports.return_value = [
+            SimpleNamespace(device="/dev/ttyUSB0",vid=0x0403,pid=0x6001,product="FT232R USB UART",serial_number=""),
+            SimpleNamespace(device="/dev/ttyUSB1",vid=0x1A86,pid=0x7523,product="USB Serial",serial_number=""),
+        ]
+        self.assertEqual(detect_port(root, "esp32_ai_thinker_cam"), "/dev/ttyUSB0")
+        self.assertEqual(detect_port(root, "esp32s3n16r8_espressif_cam"), "/dev/ttyUSB1")
 
     def test_flash_config_can_be_inspected_without_docker(self):
         root = Path(__file__).resolve().parents[1]

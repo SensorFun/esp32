@@ -1,4 +1,5 @@
 #pragma once
+#include "common/board.h"
 
 // Waveshare ESP32-P4-WIFI6-DEV-KIT (not ESP32-P4-WIFI6).
 // Schematic: https://files.waveshare.com/wiki/ESP32-P4-WIFI6-DEV-KIT/ESP32-P4-WIFI6-DEV-KIT.pdf
@@ -30,5 +31,9 @@ inline constexpr char camera_board_name[] = "Waveshare ESP32-P4 MIPI-CSI";
 #define CAMERA_RESET_GPIO_NUM -1
 #define CAMERA_PWDN_GPIO_NUM -1
 
-// BOOT button, sampled only after normal application startup.
-#define WIFI_SETUP_BUTTON_GPIO_NUM 35
+// BOOT is checked while running; do not hold strapping pins at power-on.
+inline constexpr common::BoardConfig common_board_config = {
+    .name = camera_board_name,
+    .setup_reset = {.sense_gpio = 35, .hold_ms = 5000, .restart_pull = common::RestartPull::unchanged},
+    .has_wifi = false,
+};
