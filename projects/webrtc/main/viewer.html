@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Local WebRTC camera</title>
+<style>body{font:16px system-ui;max-width:1000px;margin:2rem auto;padding:0 1rem;background:#101923;color:#eef4fa}button,input,select{font:inherit;padding:.45rem;margin:.25rem}img{display:block;max-width:100%;min-height:240px;background:#202d3b}#controls{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:.5rem}label{display:flex;align-items:center;justify-content:space-between;background:#202d3b;padding:.5rem}input[type=number]{width:5rem}#status{white-space:pre-wrap}small{color:#b8cddd}</style>
+<h1>Local WebRTC camera</h1>
+<p>Connect directly to the camera on your local network. No pairing or access key is required.</p>
+<button id="connect">Connect</button><button id="disconnect" disabled>Disconnect</button>
+<p id="status" role="status">Provision the board and connect to the same local network.</p>
+<img id="preview" alt="Live camera frames"><h2 id="sensor">Camera settings</h2><p id="timing"></p><div id="controls"></div>
+<p><small>JPEG frames and camera commands travel over a DTLS encrypted WebRTC data channel. Local HTTPS exchanges the connection information. No external signaling, STUN, or TURN server is used. Changes last until reboot; YAML supplies startup defaults.</small></p>
+<script>
+'use strict';
+const $=id=>document.getElementById(id);
+let pc,channel,ping,objectURL,frame,frameId=-1,received=0,run=0;
+function status(text){$('status').textContent=text;}
+async function api(method,body){const response=await fetch('/api/session',{method,headers:{'Content-Type':'application/sdp'},body,cache:'no-store'});if(!response.ok)throw Error(await response.text());return response;}
+function command(value){if(channel?.readyState==='open')channel.send(JSON.stringify(value));}
+function settings(data){
+ if(data.type==='error'){status(data.error);return;}
+ if(data.type!=='settings')return;
+ $('sensor').textContent='Camera settings: '+data.sensor;
+ $('timing').replaceChildren();
+ if(data.timing_profile){const label=document.createElement('label');label.textContent='timing_profile';const select=document.createElement('select');for(const name of data.timing_profiles){const option=document.createElement('option');option.value=name;option.textContent=({high_light:'High light',balanced:'Mid light (balanced)',low_light:'Low light'})[name];select.append(option);}select.value=data.timing_profile;select.onchange=()=>command({op:'set',name:'timing_profile',value:select.value});label.append(select);$('timing').append(label,document.createTextNode(data.timing_profile_status));}
+ const container=$('controls');container.replaceChildren();
+ for(const c of data.controls){const label=document.createElement('label');label.textContent=c.name;const input=document.createElement('input');input.type='number';input.min=c.min;input.max=c.max;input.step=1;input.value=c.value;input.disabled=!c.supported;input.title=c.supported?`${c.min} through ${c.max}`:'Unsupported by this sensor';input.onchange=()=>{const value=Number(input.value);if(!Number.isInteger(value)||value<c.min||value>c.max){input.value=c.value;return;}command({op:'set',name:c.name,value});};label.append(input);container.append(label);}
+}
+function message(event){
+ if(typeof event.data==='string'){try{settings(JSON.parse(event.data));}catch{status('Invalid camera response');}return;}
+ if(!(event.data instanceof ArrayBuffer)||event.data.byteLength<16)return;
+ const view=new DataView(event.data);if(view.getUint32(0,true)!==0x4745504a)return;
+ const id=view.getUint32(4,true),total=view.getUint32(8,true),offset=view.getUint32(12,true),bytes=new Uint8Array(event.data,16);
+ if(total===0||total>2*1024*1024||offset+bytes.length>total)return;
+ if(offset===0){frame=new Uint8Array(total);frameId=id;received=0;}
+ if(!frame||id!==frameId||offset!==received||total!==frame.length){frame=null;return;}
+ frame.set(bytes,offset);received+=bytes.length;
+ if(received===total){const url=URL.createObjectURL(new Blob([frame],{type:'image/jpeg'}));const old=objectURL;objectURL=url;$('preview').src=url;if(old)URL.revokeObjectURL(old);frame=null;}
+}
+async function stop(notify=true){++run;clearInterval(ping);channel?.close();pc?.close();channel=null;pc=null;frame=null;$('controls').replaceChildren();$('connect').disabled=true;$('disconnect').disabled=true;if(notify){try{await api('DELETE');}catch{}}$('connect').disabled=false;status('Disconnected');}
+$('disconnect').onclick=()=>stop();
+$('connect').onclick=async()=>{
+ $('connect').disabled=true;$('disconnect').disabled=false;const current=++run;
+ try{
+  pc=new RTCPeerConnection({iceServers:[]});const connection=pc;
+  channel=pc.createDataChannel('camera',{ordered:true});channel.binaryType='arraybuffer';channel.onmessage=message;
+  channel.onopen=()=>{status('Connected: DTLS encrypted camera data and controls');command({op:'get'});ping=setInterval(()=>command({op:'ping'}),5000);};
+  channel.onclose=()=>{if(run===current)stop();};
+  pc.onconnectionstatechange=()=>{if(run===current&&['failed','disconnected'].includes(connection.connectionState))stop();};
+  status('Gathering local ICE candidates…');
+  await pc.setLocalDescription(await pc.createOffer());
+  await new Promise((resolve,reject)=>{if(connection.iceGatheringState==='complete'){resolve();return;}const timer=setTimeout(()=>reject(Error('ICE gathering timed out')),10000);connection.onicegatheringstatechange=()=>{if(connection.iceGatheringState==='complete'){clearTimeout(timer);resolve();}};});
+  if(current!==run)return;
+  await api('POST',connection.localDescription.sdp);
+  status('Negotiating encrypted local connection…');
+  for(let i=0;i<60&&current===run;i++){const response=await api('GET');if(response.status===200){await connection.setRemoteDescription({type:'answer',sdp:await response.text()});return;}await new Promise(resolve=>setTimeout(resolve,250));}
+  throw Error('Device answer timed out');
+ }catch(error){if(current===run){await stop(false);status(error.message);}}
+};
+window.addEventListener('pagehide',()=>{pc?.close();});
+</script></html>

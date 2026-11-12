@@ -117,9 +117,13 @@ void Application::enter_setup() {
 
 void Application::serial_worker(void *context) {
     auto &app = *static_cast<Application *>(context);
-    char line[32]{};
+    char line[97]{};
+#if CONFIG_PROVISIONING_SECURE
+    char ssid[33]{};
+    int provisioning_input = 0;
+#endif
     size_t length = 0;
-    bool overflow = false;
+    bool overflow = false, last_was_cr = false;
     ESP_LOGI(TAG, "Type wifi-reset then Enter to clear NVS and restart setup");
     for (;;) {
         const int ch = std::getchar();
@@ -128,7 +132,24 @@ void Application::serial_worker(void *context) {
             vTaskDelay(pdMS_TO_TICKS(50));
             continue;
         }
+        if (ch == '\n' && last_was_cr) { last_was_cr = false; continue; }
+        last_was_cr = ch == '\r';
         if (ch == '\n' || ch == '\r') {
+#if CONFIG_PROVISIONING_SECURE
+            if (provisioning_input == 1) {
+                if (!overflow && length > 0 && length <= 32) {
+                    memcpy(ssid, line, length); provisioning_input = 2;
+                    ESP_LOGI(TAG, "USB provisioning: password (input is not echoed)");
+                } else { provisioning_input = 0; ESP_LOGE(TAG, "Invalid SSID length"); }
+            } else if (provisioning_input == 2) {
+                const esp_err_t err = overflow ? ESP_ERR_INVALID_ARG : provisioning_submit_credentials(ssid, line);
+                ESP_LOGI(TAG, "USB provisioning submitted: %s", esp_err_to_name(err));
+                memset(ssid, 0, sizeof(ssid)); provisioning_input = 0;
+            } else if (!overflow && strcmp(line, "wifi-provision") == 0) {
+                provisioning_input = 1;
+                ESP_LOGI(TAG, "USB provisioning: SSID");
+            } else
+#endif
             if (!overflow && std::strcmp(line, "wifi-reset") == 0) app.enter_setup();
             std::memset(line, 0, sizeof(line));
             length = 0;

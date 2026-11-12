@@ -6,6 +6,6 @@ endif()
 idf_component_register(
     SRCS "provisioning.cpp"
     INCLUDE_DIRS "include"
-    REQUIRES esp_wifi esp_netif esp_event esp_http_server nvs_flash esp_hw_support
+    REQUIRES esp_https_server tls_identity esp_wifi esp_netif esp_event esp_http_server nvs_flash esp_hw_support
     EMBED_TXTFILES "index.html"
 )

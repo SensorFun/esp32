@@ -1,0 +1,5 @@
+set(identity_sources)
+if(CONFIG_PROVISIONING_SECURE)
+    list(APPEND identity_sources "tls_identity.c")
+endif()
+idf_component_register(SRCS ${identity_sources} INCLUDE_DIRS "include" REQUIRES mbedtls esp_hw_support log)

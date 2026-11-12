@@ -1,0 +1,9 @@
+dependencies:
+  idf: ">=6.0"
+  espressif/esp32-camera: "2.1.6"
+  esp_peer:
+    git: https://github.com/espressif/esp-webrtc-solution.git
+    path: components/esp_peer
+    version: dc3ab928137916d7b214a9a8ffe52e0e81794471
+  espressif/media_lib_sal: "~0.9"
+  espressif/cjson: "^1.7.19"

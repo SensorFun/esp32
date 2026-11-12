@@ -1,4 +1,8 @@
 #include "provisioning.h"
+#if CONFIG_PROVISIONING_SECURE
+#include "esp_https_server.h"
+#include "tls_identity.h"
+#endif
 #include "credentials.h"
 #include "request_address.h"
 
@@ -38,7 +42,7 @@ QueueHandle_t requests = nullptr;
 esp_netif_t *station_netif = nullptr, *ap_netif = nullptr;
 httpd_handle_t server = nullptr;
 char ap_address[16]{};
-bool ap_active = false;
+std::atomic<bool> ap_active{false};
 
 extern const unsigned char html_start[] asm("_binary_index_html_start");
 extern const unsigned char html_end[] asm("_binary_index_html_end");
@@ -105,12 +109,24 @@ bool setup_request(httpd_req_t *request) {
     // Restrict HTTP to the setup address, preventing LAN access and DNS rebinding.
     char host[32]{};
     if (httpd_req_get_hdr_value_str(request, "Host", host, sizeof(host)) != ESP_OK) return false;
-    if (std::strcmp(host, ap_address) != 0 && std::string(host) != std::string(ap_address) + ":80") return false;
+    if (std::strcmp(host, ap_address) != 0 && std::string(host) != std::string(ap_address) +
+#if CONFIG_PROVISIONING_SECURE
+        ":443"
+#else
+        ":80"
+#endif
+    ) return false;
     const size_t origin_length = httpd_req_get_hdr_value_len(request, "Origin");
     if (origin_length) {
         char origin[48]{};
         if (httpd_req_get_hdr_value_str(request, "Origin", origin, sizeof(origin)) != ESP_OK) return false;
-        const std::string expected = std::string("http://") + host;
+        const std::string expected = std::string(
+#if CONFIG_PROVISIONING_SECURE
+            "https://"
+#else
+            "http://"
+#endif
+        ) + host;
         if (origin != expected) return false;
     }
     return true;
@@ -216,7 +232,13 @@ void start_setup() {
     wifi_config_t config{};
     std::memcpy(config.ap.ssid, name, std::strlen(name));
     config.ap.ssid_len = std::strlen(name);
+#if CONFIG_PROVISIONING_SECURE
+    config.ap.authmode = WIFI_AUTH_WPA2_PSK;
+    memcpy(config.ap.password, tls_identity_setup_password(), 16);
+    config.ap.pmf_cfg.capable = true;
+#else
     config.ap.authmode = WIFI_AUTH_OPEN;
+#endif
     config.ap.max_connection = 2;
     config.ap.channel = 1;
     esp_wifi_disconnect();
@@ -230,7 +252,22 @@ void start_setup() {
     http.recv_wait_timeout = 5;
     http.send_wait_timeout = 5;
     http.lru_purge_enable = true;
+#if CONFIG_PROVISIONING_SECURE
+    // ESP-IDF 6.1's initializer omits use_secure_element, which is zero initialized.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-field-initializers"
+    httpd_ssl_config_t secure = HTTPD_SSL_CONFIG_DEFAULT();
+#pragma GCC diagnostic pop
+    secure.httpd = http;
+    secure.httpd.server_port = 443;
+    secure.servercert = (const uint8_t *)tls_identity_cert();
+    secure.servercert_len = strlen(tls_identity_cert()) + 1;
+    secure.prvtkey_pem = (const uint8_t *)tls_identity_key();
+    secure.prvtkey_len = strlen(tls_identity_key()) + 1;
+    ESP_ERROR_CHECK(httpd_ssl_start(&server, &secure));
+#else
     ESP_ERROR_CHECK(httpd_start(&server, &http));
+#endif
     const httpd_uri_t routes[] = {
         {.uri="/", .method=HTTP_GET, .handler=page, .user_ctx=nullptr},
         {.uri="/api/scan", .method=HTTP_GET, .handler=scan, .user_ctx=nullptr},
@@ -240,7 +277,11 @@ void start_setup() {
     for (const auto &route : routes) ESP_ERROR_CHECK(httpd_register_uri_handler(server, &route));
     ap_active = true;
     state = State::provisioning;
+#if CONFIG_PROVISIONING_SECURE
+    ESP_LOGI(TAG, "Setup Wi-Fi: %s | WPA2 password: %.16s | https://%s", name, tls_identity_setup_password(), ap_address);
+#else
     ESP_LOGI(TAG, "Setup Wi-Fi: %s (no password) | http://%s", name, ap_address);
+#endif
 }
 
 void apply_credentials(const Credentials &credentials) {
@@ -307,7 +348,11 @@ void supervisor(void *) {
                 started = last_attempt = now;
                 esp_wifi_connect();
             } else if (ap_active && now - close_ap >= pdMS_TO_TICKS(5000)) {
+#if CONFIG_PROVISIONING_SECURE
+                ESP_ERROR_CHECK(httpd_ssl_stop(server));
+#else
                 ESP_ERROR_CHECK(httpd_stop(server));
+#endif
                 server = nullptr;
                 ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
                 ap_active = false;
@@ -340,6 +385,25 @@ extern "C" esp_err_t provisioning_start(void) {
     ESP_RETURN_ON_ERROR(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, wifi_event, nullptr), TAG, "Event registration failed");
     ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_STA), TAG, "Wi-Fi mode failed");
     ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "Wi-Fi start failed");
+#if CONFIG_PROVISIONING_SECURE
+    ESP_RETURN_ON_ERROR(tls_identity_init(), TAG, "TLS identity failed");
+#endif
     if (xTaskCreate(supervisor, "wifi_setup", 6144, nullptr, 4, nullptr) != pdPASS) return ESP_ERR_NO_MEM;
     return ESP_OK;
+}
+
+extern "C" bool provisioning_is_ready(void) {
+    return events && state.load() == State::connected && !ap_active &&
+        (xEventGroupGetBits(events) & CONNECTED);
+}
+
+extern "C" esp_err_t provisioning_submit_credentials(const char *ssid, const char *password) {
+    if (!requests || state.load() != State::provisioning) return ESP_ERR_INVALID_STATE;
+    if (!ssid || !password || !provisioning::valid_credentials(ssid, password)) return ESP_ERR_INVALID_ARG;
+    Credentials credentials{};
+    memcpy(credentials.ssid, ssid, strlen(ssid));
+    memcpy(credentials.password, password, strlen(password));
+    const bool queued = xQueueSend(requests, &credentials, 0) == pdTRUE;
+    wipe(credentials);
+    return queued ? ESP_OK : ESP_ERR_INVALID_STATE;
 }

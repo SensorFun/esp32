@@ -1,0 +1,5 @@
+menu "Wi-Fi provisioning"
+config PROVISIONING_SECURE
+    bool "Use HTTPS and a random WPA2 setup password"
+    default n
+endmenu

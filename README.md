@@ -7,6 +7,7 @@ shared components.
 
 - `python/esp32_workspace/`: build, flash, and serial-monitor CLI.
 - `projects/hello_world/`: FreeRTOS example with shared Wi-Fi provisioning.
+- `projects/webrtc/`: [local encrypted WebRTC camera and sensor controls](projects/webrtc/README.md).
 - `projects/common/application/`: shared setup/main lifecycle and board-specific NVS reset.
 - `projects/common/provisioning/`: reusable Wi-Fi setup page and credential storage.
 - `boards/`: pin headers and USB programming identities.
