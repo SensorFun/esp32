@@ -3,6 +3,8 @@ import { randomBytes } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import { mkdtempSync, writeFileSync, rmSync, rmdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
 const folder = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(folder, '../..');
@@ -16,11 +18,16 @@ function docker(args) {
 }
 const mount = (source, target) => ['--mount', `type=bind,source=${source},target=${target},readonly`];
 let janus, gateway;
+const secretsFolder = mkdtempSync(path.join(tmpdir(), 'signaling-test-'));
+const secretFile = path.join(secretsFolder, 'janus_api_secret');
+writeFileSync(secretFile, environment.JANUS_API_SECRET, { mode: 0o600 });
 try {
-  janus = docker(['run', '--rm', '-d', '--read-only', '--tmpfs', '/tmp:mode=1777', '--cap-drop=ALL', '-e', 'JANUS_API_SECRET',
+  janus = docker(['run', '--rm', '-d', '--user', `${process.getuid()}:${process.getgid()}`, '--read-only', '--tmpfs', '/tmp:mode=1777', '--cap-drop=ALL',
+    ...mount(secretFile, '/run/secrets/janus_api_secret'),
     ...mount(`${folder}/entrypoint.py`, '/opt/signaling/entrypoint.py'), 'esp32-signaling:local']);
-  gateway = docker(['run', '--rm', '-d', '--read-only', '--cap-drop=ALL', '--network', `container:${janus}`,
-    '-e', 'JANUS_API_SECRET', '-e', 'JANUS_UPSTREAM_URL', ...mount(`${folder}/gateway.py`, '/opt/signaling/gateway.py'),
+  gateway = docker(['run', '--rm', '-d', '--user', `${process.getuid()}:${process.getgid()}`, '--read-only', '--cap-drop=ALL', '--network', `container:${janus}`,
+    ...mount(secretFile, '/run/secrets/janus_api_secret'),
+    '-e', 'JANUS_UPSTREAM_URL', ...mount(`${folder}/gateway.py`, '/opt/signaling/gateway.py'),
     '--entrypoint', 'python3', 'esp32-signaling:local', '/opt/signaling/gateway.py']);
   for (let attempt = 0; attempt < 50; attempt++) {
     const ready = spawnSync('docker', ['exec', gateway, 'python3', '-c', 'import socket; socket.create_connection(("127.0.0.1",8080),1).close(); socket.create_connection(("127.0.0.1",8188),1).close()']);
@@ -38,4 +45,6 @@ try {
 } finally {
   if (gateway) docker(['stop', gateway]);
   if (janus) docker(['stop', janus]);
+  rmSync(secretFile);
+  rmdirSync(secretsFolder);
 }

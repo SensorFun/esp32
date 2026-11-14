@@ -2,6 +2,7 @@
 import asyncio
 import json
 import os
+from pathlib import Path
 import re
 import uuid
 
@@ -139,7 +140,7 @@ async def lifecycle(app):
 def main():
     app = web.Application()
     # Set and validated by the launcher; missing settings fail startup.
-    app.update(secret=os.environ["JANUS_API_SECRET"], upstream=os.environ["JANUS_UPSTREAM_URL"], active=0)
+    app.update(secret=Path('/run/secrets/janus_api_secret').read_text().strip(), upstream=os.environ["JANUS_UPSTREAM_URL"], active=0)
     app.cleanup_ctx.append(lifecycle)
     app.router.add_get("/viewer", viewer)
     app.router.add_get("/camera", camera)

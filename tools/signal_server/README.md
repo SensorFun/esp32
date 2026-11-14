@@ -26,7 +26,7 @@ existing locally managed tunnel, following the
 [Cloudflare setup guide](https://developers.cloudflare.com/tunnel/features/locally-managed-tunnels/create-local-tunnel/).
 Keep that file in the ignored `.secrets/` directory beside this README. Do not
 commit it. The launcher automatically selects the only JSON file in that directory;
-use `--credentials /path/to/credentials.json` if you have multiple files.
+keep exactly one tunnel credentials JSON in this directory.
 
 Your public hostname must have a proxied CNAME pointing to
 `<tunnel-uuid>.cfargotunnel.com`. The local `cloudflared.yaml` forwards traffic
@@ -43,20 +43,20 @@ Generate a random signaling secret, and save it in your password manager:
 python3 -c 'import secrets; print(secrets.token_urlsafe(32))'
 ```
 
-From the repository root, read the Janus secret into the launcher environment
-without putting it in shell history:
+Save the matching firmware/server secret in
+`tools/signal_server/.secrets/janus_api_secret`, readable only by its owner.
+From the repository root, run:
 
 ```sh
-read -rsp 'Janus signaling secret: ' JANUS_API_SECRET
-export JANUS_API_SECRET
-python3 tools/signal_server/run.py
+./tools/signal_server/run.sh
 ```
 
-The launcher validates the Janus secret and the tunnel credentials JSON. The
-launcher also accepts `--api-secret-file /path/to/key`, or reads the ignored
-`.secrets/janus_api_secret` file when `JANUS_API_SECRET` is not set. Keep this file
-owner-readable only. This supports restarting the stack without re-entering its
-device/server key.
+The launcher checks the secret file and reads the tunnel ID from the JSON.
+Default startup stops existing services in this same Compose project before
+building and starting them again. If stopping fails, startup is aborted.
+Other Compose projects are unaffected. Janus and the gateway read the secret
+from `/run/secrets/janus_api_secret`; its value is never exported to their
+environment. Containers run as the launcher user to read owner-only files.
 
 The Cloudflare JSON is provided only to Cloudflared as a read-only Docker Compose
 secret at `/run/secrets/cloudflare_credentials`. The tunnel UUID is read from
@@ -78,8 +78,8 @@ The Cloudflare connector uses the internal Docker network. Your computer must
 stay awake and connected to the Internet. With the same environment set:
 
 ```sh
-python3 tools/signal_server/run.py logs
-python3 tools/signal_server/run.py down
+./tools/signal_server/run.sh logs
+./tools/signal_server/run.sh down
 ```
 
 ## 3. Configure and flash the camera

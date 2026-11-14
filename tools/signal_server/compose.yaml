@@ -2,8 +2,8 @@ services:
   janus:
     build: .
     networks: [signaling]
-    environment:
-      JANUS_API_SECRET: ${JANUS_API_SECRET}
+    user: "${SIGNAL_SERVER_UID}:${SIGNAL_SERVER_GID}"
+    secrets: [janus_api_secret]
     image: esp32-signaling:local
     volumes:
       - type: bind
@@ -22,8 +22,9 @@ services:
     networks: [signaling]
     entrypoint: [python3, /opt/signaling/gateway.py]
     environment:
-      JANUS_API_SECRET: ${JANUS_API_SECRET}
       JANUS_UPSTREAM_URL: ${JANUS_UPSTREAM_URL}
+    user: "${SIGNAL_SERVER_UID}:${SIGNAL_SERVER_GID}"
+    secrets: [janus_api_secret]
     volumes:
       - type: bind
         source: ./gateway.py
@@ -62,5 +63,7 @@ networks:
     driver: bridge
 
 secrets:
+  janus_api_secret:
+    file: ${JANUS_SECRET_FILE}
   cloudflare_credentials:
     file: ${CLOUDFLARE_CREDENTIALS_FILE}

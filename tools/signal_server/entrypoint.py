@@ -7,7 +7,7 @@ import sys
 
 
 def main():
-    secret = os.environ.get("JANUS_API_SECRET", "")
+    secret = Path('/run/secrets/janus_api_secret').read_text().strip()
     if not re.fullmatch(r"[A-Za-z0-9_-]{32,128}", secret):
         sys.exit("JANUS_API_SECRET must contain 32–128 URL-safe characters")
     config = Path("/tmp/janus-config")
@@ -26,7 +26,6 @@ def main():
         'general: { ws = true ws_port = 8188 wss = false json = "compact" }\n'
         'admin: { admin_ws = false admin_wss = false }\n')
     # The API secret is never placed in process arguments or logs.
-    os.environ.pop("JANUS_API_SECRET")
     os.execv("/opt/janus/bin/janus", ["janus", "-F", str(config)])
 
 
