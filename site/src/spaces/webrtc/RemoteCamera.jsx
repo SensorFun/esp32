@@ -11,8 +11,23 @@ export function RemoteCamera({ onSessionState }) {
   const [state, setState] = useState('idle');
   const [settings, setSettings] = useState(null);
   const [transport, setTransport] = useState('—');
+  const [fps, setFps] = useState(0);
   const image = useRef(null);
   const connection = useRef(null);
+  useEffect(() => {
+    if (state !== 'connected') return;
+    const session = connection.current;
+    let sampledAt = performance.now();
+    let previousFrames = session.displayedFrames;
+    const timer = setInterval(() => {
+      if (connection.current !== session) return;
+      const now = performance.now();
+      setFps((session.displayedFrames - previousFrames) * 1000 / (now - sampledAt));
+      previousFrames = session.displayedFrames;
+      sampledAt = now;
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [state]);
   useEffect(() => { onSessionState(state); }, [state, onSessionState]);
   const generation = useRef(0);
   function stop(message = 'Disconnected') {
@@ -24,7 +39,7 @@ export function RemoteCamera({ onSessionState }) {
       session.socket?.close(); session.channel?.close(); session.peer?.close();
       if (session.url) URL.revokeObjectURL(session.url);
     }
-    setState('idle'); setSettings(null); setTransport('—'); setStatus(message);
+    setState('idle'); setSettings(null); setTransport('—'); setFps(0); setStatus(message);
     if (image.current) image.current.removeAttribute('src');
   }
   useEffect(() => () => { generation.current++; onSessionState('idle'); const session = connection.current; if (session) { clearInterval(session.heartbeat); clearTimeout(session.timeout); session.socket?.close(); session.peer?.close(); if (session.url) URL.revokeObjectURL(session.url); } }, []);
@@ -43,7 +58,7 @@ export function RemoteCamera({ onSessionState }) {
     try {
       socket = new JanusSignaling(access.room, import.meta.env.VITE_SIGNALING_URL);
     } catch (error) { if (alive()) stop(error.message); return; }
-    const session = { socket, peer: null, channel: null, frame: null, frameId: -1, received: 0, url: null, candidates: [] };
+    const session = { socket, peer: null, channel: null, frame: null, frameId: -1, received: 0, url: null, candidates: [], displayedFrames: 0 };
     connection.current = session;
     session.timeout = setTimeout(() => { if (alive()) stop('Camera not found. Check the MAC/password and camera internet connection.'); }, 15000);
     async function data(event) {
@@ -157,7 +172,7 @@ export function RemoteCamera({ onSessionState }) {
         <label htmlFor="camera-mac">Camera MAC address</label><input id="camera-mac" value={camera} placeholder="AA:BB:CC:DD:EE:FF" autoComplete="off" disabled={state !== 'idle'} onChange={e => setCamera(e.target.value)} /><label htmlFor="camera-access-password">Camera password</label><input id="camera-access-password" type="password" autoComplete="current-password" value={password} disabled={state !== 'idle'} onChange={e => setPassword(e.target.value)} /><div className="remote-actions"><button className="button rtc-primary" disabled={!password || !camera || state !== 'idle'} onClick={connect}>Connect camera</button><button className="button rtc-secondary" disabled={state === 'idle'} onClick={() => stop()}>Disconnect</button></div></div>
       <p className="muted">Direct WebRTC · STUN enabled · TURN relay disabled</p><p role="status" data-testid="remote-status">{status}</p>
     </div>
-    <div className="monitor"><div className="monitor-top"><span>CAMERA PREVIEW</span><span>{transport}</span></div><div className="remote-preview"><img ref={image} alt="Remote camera stream" data-testid="remote-image" />{state !== 'connected' && <span>Awaiting encrypted camera stream</span>}</div></div>
+    <div className="monitor"><div className="monitor-top"><span>CAMERA PREVIEW</span><span data-testid="remote-fps" title="Displayed frames per second · 1-second average">{fps.toFixed(1)} FPS</span><span>{transport}</span></div><div className="remote-preview"><img ref={image} alt="Remote camera stream" data-testid="remote-image" onLoad={() => { const session = connection.current; if (session?.authenticated && image.current?.getAttribute('src') === session.url) session.displayedFrames++; }} />{state !== 'connected' && <span>Awaiting encrypted camera stream</span>}</div></div>
     {settings && <section className="rtc-panel remote-settings"><h2>Camera settings · {settings.sensor}</h2><label>Light timing<select aria-label="Light timing" value={settings.timing_profile} onChange={e => command({ op: 'set', name: 'timing_profile', value: e.target.value })}>{settings.timing_profiles.map(name => <option key={name} value={name}>{({ high_light: 'High light', balanced: 'Mid light', low_light: 'Low light' })[name]}</option>)}</select></label><div className="remote-controls">{settings.controls.map(c => <label key={c.name}>{c.name}<input aria-label={c.name} type="number" min={c.min} max={c.max} step="1" value={c.value} disabled={!c.supported} onChange={e => { const value = Number(e.target.value); if (Number.isInteger(value) && value >= c.min && value <= c.max) command({ op: 'set', name: c.name, value }); }} /></label>)}</div></section>}
   </section>;
 }

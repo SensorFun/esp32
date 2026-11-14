@@ -110,6 +110,8 @@ def main():
             raise
         wait_js(page, "document.querySelectorAll('#controls label').length > 0")
         print('Decoded live JPEG:', page.locator('#sensor').inner_text())
+        wait_js(page, "parseFloat(document.querySelector('#fps').textContent) > 0", timeout=5000)
+        print('Local displayed frame rate:', page.locator('#fps').inner_text())
         assert request_status('POST', b'busy') == 409
         controls = page.locator('#controls label').evaluate_all("labels=>labels.map(l=>({name:l.firstChild.textContent,value:Number(l.querySelector('input').value),disabled:l.querySelector('input').disabled}))")
         page.evaluate("window.lastResponse=null; channel.addEventListener('message', e=>{if(typeof e.data==='string') window.lastResponse=JSON.parse(e.data);})")
@@ -160,8 +162,10 @@ def main():
         await_disconnect = page.locator('#disconnect')
         await_disconnect.click()
         wait_js(page, "!document.querySelector('#connect').disabled")
+        assert page.locator('#fps').inner_text() == '0.0 FPS'
         page.locator('#connect').click()
         wait_js(page, "channel && channel.readyState==='open'", timeout=40000)
+        wait_js(page, "parseFloat(document.querySelector('#fps').textContent) > 0", timeout=5000)
         page.locator('#disconnect').click()
         browser.close()
         print('Disconnect and reconnect passed:', url)

@@ -65,6 +65,8 @@ window.RTCPeerConnection=class extends NativePeer{
         else: raise TimeoutError('No camera image within 60 seconds')
         assert not any('localhost:8787' in url or '/cameras' in url or '/session/' in url for url in requests), 'Unexpected signaling bridge request'
         expect(page.get_by_role('spinbutton', name='contrast', exact=True)).to_be_visible(timeout=10000)
+        page.wait_for_function("parseFloat(document.querySelector('[data-testid=remote-fps]').textContent) > 0", timeout=5000)
+        print('Remote displayed frame rate:', page.get_by_test_id('remote-fps').inner_text())
         before = page.get_by_role('spinbutton', name='contrast', exact=True).input_value()
         page.get_by_role('spinbutton', name='contrast', exact=True).fill('1')
         expect(page.get_by_role('spinbutton', name='contrast', exact=True)).to_have_value('1')
@@ -83,6 +85,7 @@ window.RTCPeerConnection=class extends NativePeer{
         print('PASS: direct public WebSocket signaling, live JPEG, contrast, timing, no board HTTP requests; STUN only, no relay candidates')
         page.get_by_role('button', name='Disconnect', exact=True).click()
         expect(page.get_by_test_id('remote-status')).to_have_text('Disconnected')
+        expect(page.get_by_test_id('remote-fps')).to_have_text('0.0 FPS')
         page.wait_for_timeout(2000)  # Allow the hosted service to release membership.
         before_replay = page.evaluate('window.__exposed')
         page.get_by_role('button', name='Connect camera', exact=True).click()
@@ -93,6 +96,7 @@ window.RTCPeerConnection=class extends NativePeer{
             print('PASS: proof from a previous WebRTC connection rejected')
         else:
             page.wait_for_function("document.querySelector('[data-testid=remote-image]').naturalWidth > 0", timeout=60000)
+            page.wait_for_function("parseFloat(document.querySelector('[data-testid=remote-fps]').textContent) > 0", timeout=5000)
             frame_count = page.evaluate('window.__frameStats.frameEnds')
             page.wait_for_function('window.__frameStats.frameEnds >= ' + str(frame_count + 3), timeout=20000)
             print('PASS: reconnect to the same camera session')

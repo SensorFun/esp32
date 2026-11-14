@@ -6,12 +6,20 @@
 <p>Connect directly to the camera on your local network. No pairing or access key is required.</p>
 <button id="connect">Connect</button><button id="disconnect" disabled>Disconnect</button>
 <p id="status" role="status">Provision the board and connect to the same local network.</p>
+<p><output id="fps" title="Displayed frames per second, averaged over the last sampling interval">0.0 FPS</output> <small>(1-second average)</small></p>
 <img id="preview" alt="Live camera frames"><h2 id="sensor">Camera settings</h2><p id="timing"></p><div id="controls"></div>
 <p><small>JPEG frames and camera commands travel over a DTLS encrypted WebRTC data channel. Local HTTPS exchanges the connection information. No external signaling, STUN, or TURN server is used. Changes last until reboot; YAML supplies startup defaults.</small></p>
 <script>
 'use strict';
 const $=id=>document.getElementById(id);
 let pc,channel,ping,objectURL,frame,frameId=-1,received=0,run=0;
+let fpsTimer,displayedFrames=0;
+function resetFps(){clearInterval(fpsTimer);displayedFrames=0;$('fps').textContent='0.0 FPS';}
+function startFps(){
+ resetFps();let sampledAt=performance.now();
+ fpsTimer=setInterval(()=>{const now=performance.now();$('fps').textContent=(displayedFrames*1000/(now-sampledAt)).toFixed(1)+' FPS';displayedFrames=0;sampledAt=now;},1000);
+}
+$('preview').onload=()=>{if(channel?.readyState==='open'&&objectURL&&$('preview').getAttribute('src')===objectURL)displayedFrames++;};
 function status(text){$('status').textContent=text;}
 async function api(method,body){const response=await fetch('/api/session',{method,headers:{'Content-Type':'application/sdp'},body,cache:'no-store'});if(!response.ok)throw Error(await response.text());return response;}
 function command(value){if(channel?.readyState==='open')channel.send(JSON.stringify(value));}
@@ -35,14 +43,14 @@ function message(event){
  frame.set(bytes,offset);received+=bytes.length;
  if(received===total){const url=URL.createObjectURL(new Blob([frame],{type:'image/jpeg'}));const old=objectURL;objectURL=url;$('preview').src=url;if(old)URL.revokeObjectURL(old);frame=null;}
 }
-async function stop(notify=true){++run;clearInterval(ping);channel?.close();pc?.close();channel=null;pc=null;frame=null;$('controls').replaceChildren();$('connect').disabled=true;$('disconnect').disabled=true;if(notify){try{await api('DELETE');}catch{}}$('connect').disabled=false;status('Disconnected');}
+async function stop(notify=true){++run;clearInterval(ping);resetFps();channel?.close();pc?.close();channel=null;pc=null;frame=null;$('preview').removeAttribute('src');if(objectURL)URL.revokeObjectURL(objectURL);objectURL=null;$('controls').replaceChildren();$('connect').disabled=true;$('disconnect').disabled=true;if(notify){try{await api('DELETE');}catch{}}$('connect').disabled=false;status('Disconnected');}
 $('disconnect').onclick=()=>stop();
 $('connect').onclick=async()=>{
  $('connect').disabled=true;$('disconnect').disabled=false;const current=++run;
  try{
   pc=new RTCPeerConnection({iceServers:[]});const connection=pc;
   channel=pc.createDataChannel('camera',{ordered:true});channel.binaryType='arraybuffer';channel.onmessage=message;
-  channel.onopen=()=>{status('Connected: DTLS encrypted camera data and controls');command({op:'get'});ping=setInterval(()=>command({op:'ping'}),5000);};
+  channel.onopen=()=>{if(current!==run)return;startFps();status('Connected: DTLS encrypted camera data and controls');command({op:'get'});ping=setInterval(()=>command({op:'ping'}),5000);};
   channel.onclose=()=>{if(run===current)stop();};
   pc.onconnectionstatechange=()=>{if(run===current&&['failed','disconnected'].includes(connection.connectionState))stop();};
   status('Gathering local ICE candidates…');
@@ -55,5 +63,5 @@ $('connect').onclick=async()=>{
   throw Error('Device answer timed out');
  }catch(error){if(current===run){await stop(false);status(error.message);}}
 };
-window.addEventListener('pagehide',()=>{pc?.close();});
+window.addEventListener('pagehide',()=>{clearInterval(fpsTimer);clearInterval(ping);pc?.close();});
 </script></html>
