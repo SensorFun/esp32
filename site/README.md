@@ -69,6 +69,13 @@ camera and browser connect through a viewer gateway and Cloudflare Tunnel; WebRT
 commands travel directly between them. TURN remains disabled. The camera must
 be configured and flashed with Janus support using the `/camera` URL and server secret.
 
+Both viewers offer a sensor-specific Resolution selector: all driver sizes up to
+1600×1200 for OV2640 and 2048×1536 for OV3660. Cameras start at 320×240.
+Resolution changes retain the other camera controls and light timing profile.
+FPS reports displayed frames over each one-second sampling interval. Streaming
+has no fixed 5 FPS cap; achievable FPS depends on resolution, exposure, and the
+direct connection. Larger images can take longer to transfer.
+
 Choose the camera's signaling server during Wi-Fi provisioning: the built-in
 `signalserver.sensorfun.net` service or a compatible custom server. Configure this
 site's viewer endpoint to use the same service.

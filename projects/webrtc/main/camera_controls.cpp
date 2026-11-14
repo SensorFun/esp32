@@ -15,6 +15,9 @@ static constexpr const char *timing_names[] = {"high_light", "balanced", "low_li
 #include "camera_profiles.h"
 static sensor_t *sensor;
 static const char *sensor_name;
+static framesize_t max_resolution() {
+    return sensor->id.PID == OV2640_PID ? FRAMESIZE_UXGA : FRAMESIZE_QXGA;
+}
 static bool supported(const Control &c) {
     // OV2640 driver has no implementation for these two controls.
     return sensor->id.PID != OV2640_PID || (strcmp(c.name, "sharpness") && strcmp(c.name, "denoise"));
@@ -28,7 +31,9 @@ esp_err_t camera_start() {
     cfg.pin_vsync = VSYNC_GPIO_NUM; cfg.pin_href = HREF_GPIO_NUM; cfg.pin_pclk = PCLK_GPIO_NUM;
     cfg.xclk_freq_hz = 20000000;
     cfg.ledc_timer = LEDC_TIMER_0; cfg.ledc_channel = LEDC_CHANNEL_0;
-    cfg.pixel_format = PIXFORMAT_JPEG; cfg.frame_size = FRAMESIZE_QVGA;
+    // Allocate buffers for the largest supported image, then start at QVGA.
+    // The driver clamps QXGA to UXGA when it detects an OV2640.
+    cfg.pixel_format = PIXFORMAT_JPEG; cfg.frame_size = FRAMESIZE_QXGA;
     cfg.jpeg_quality = 12; cfg.fb_count = 2; cfg.fb_location = CAMERA_FB_IN_PSRAM;
     cfg.grab_mode = CAMERA_GRAB_LATEST;
     esp_err_t err = esp_camera_init(&cfg);
@@ -41,7 +46,7 @@ esp_err_t camera_start() {
     } else if (sensor->id.PID == OV3660_PID) {
         sensor_name = "ov3660"; defaults = defaults_ov3660; count = sizeof(defaults_ov3660) / sizeof(Default);
     } else return ESP_ERR_NOT_SUPPORTED;
-    if (timing.initialize(sensor)) return ESP_FAIL;
+    if (sensor->set_framesize(sensor, FRAMESIZE_QVGA) || timing.initialize(sensor)) return ESP_FAIL;
     for (size_t i = 0; i < count; ++i) {
         if (!strcmp(defaults[i].name, "timing_profile")) {
             if (timing.apply(defaults[i].value)) return ESP_FAIL;
@@ -56,10 +61,44 @@ esp_err_t camera_start() {
     ESP_LOGI("camera", "Detected %s; YAML defaults applied; JPEG 320x240", sensor_name);
     return ESP_OK;
 }
+static bool set_resolution(framesize_t size) {
+    const auto previous = static_cast<framesize_t>(sensor->status.framesize);
+    const int profile = timing.selected();
+    constexpr size_t count = sizeof(controls) / sizeof(controls[0]);
+    int values[count]{};
+    for (size_t i = 0; i < count; ++i) if (supported(controls[i])) values[i] = controls[i].get(sensor);
+    auto apply = [&](framesize_t requested) {
+        if (sensor->id.PID == OV2640_PID && requested == FRAMESIZE_320X320) {
+            // Driver 2.1.6 incorrectly selects a <=296-line CIF source for
+            // 320x320. Use its raw-window API with the SVGA mode (1), cropping
+            // the native 800x600 image to its centered 600x600 square instead.
+            if (sensor->set_framesize(sensor, FRAMESIZE_SVGA) ||
+                sensor->set_res_raw(sensor, 1, 0, 0, 0, 100, 0, 600, 600, 320, 320, true, true)) return false;
+            sensor->status.framesize = requested;
+        } else if (sensor->set_framesize(sensor, requested)) return false;
+        for (size_t i = 0; i < count; ++i) {
+            if (supported(controls[i]) && controls[i].set(sensor, values[i])) return false;
+        }
+        return timing.initialize(sensor) == 0 && timing.apply(profile) == 0;
+    };
+    if (apply(size)) return true;
+    // Restore a working sensor configuration if any part of the update fails.
+    ESP_ERROR_CHECK(apply(previous) ? ESP_OK : ESP_FAIL);
+    return false;
+}
 cJSON *camera_settings() {
     cJSON *reply = cJSON_CreateObject();
     cJSON_AddStringToObject(reply, "type", "settings");
     cJSON_AddStringToObject(reply, "sensor", sensor_name);
+    cJSON_AddNumberToObject(reply, "resolution", sensor->status.framesize);
+    cJSON *sizes = cJSON_AddArrayToObject(reply, "resolutions");
+    for (int i = FRAMESIZE_96X96; i <= max_resolution(); ++i) {
+        cJSON *size = cJSON_CreateObject();
+        cJSON_AddNumberToObject(size, "value", i);
+        cJSON_AddNumberToObject(size, "width", resolution[i].width);
+        cJSON_AddNumberToObject(size, "height", resolution[i].height);
+        cJSON_AddItemToArray(sizes, size);
+    }
     cJSON_AddStringToObject(reply, "timing_profile", timing_names[timing.selected()]);
     cJSON *profiles = cJSON_AddArrayToObject(reply, "timing_profiles");
     for (const char *name : timing_names) cJSON_AddItemToArray(profiles, cJSON_CreateString(name));
@@ -83,6 +122,7 @@ esp_err_t camera_recover() {
     int values[count]{};
     bool enabled[count]{};
     const int profile = timing.selected();
+    const auto size = static_cast<framesize_t>(sensor->status.framesize);
     const int expected_sensor = sensor->id.PID;
     for (size_t i = 0; i < count; ++i) {
         enabled[i] = supported(controls[i]);
@@ -93,6 +133,7 @@ esp_err_t camera_recover() {
     err = camera_start();
     if (err != ESP_OK) return err;
     if (sensor->id.PID != expected_sensor) return ESP_ERR_INVALID_STATE;
+    if (!set_resolution(size)) return ESP_FAIL;
     for (size_t i = 0; i < count; ++i) {
         if (enabled[i] && controls[i].set(sensor, values[i]) != 0) return ESP_FAIL;
     }
@@ -104,6 +145,16 @@ cJSON *camera_command(const cJSON *request) {
     const auto *name = cJSON_GetObjectItemCaseSensitive(request, "name");
     const auto *value = cJSON_GetObjectItemCaseSensitive(request, "value");
     const char *error = "Unknown camera command";
+    if (cJSON_IsString(op) && !strcmp(op->valuestring, "set") && cJSON_IsString(name) &&
+        !strcmp(name->valuestring, "resolution")) {
+        if (!cJSON_IsNumber(value) || !std::isfinite(value->valuedouble) ||
+            value->valuedouble != std::floor(value->valuedouble) ||
+            value->valuedouble < int(FRAMESIZE_96X96) || value->valuedouble > int(max_resolution())) {
+            error = "Unsupported camera resolution";
+        } else if (set_resolution(static_cast<framesize_t>(value->valueint))) {
+            return camera_settings();
+        } else error = "Sensor rejected resolution";
+    }
     if (cJSON_IsString(op) && !strcmp(op->valuestring, "set") && cJSON_IsString(name) &&
         !strcmp(name->valuestring, "timing_profile")) {
         error = "Unknown timing profile";

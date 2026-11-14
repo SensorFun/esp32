@@ -125,6 +125,26 @@ def main():
         page.evaluate("window.lastResponse=null;command({op:'get'})")
         wait_js(page, "window.lastResponse && window.lastResponse.type==='settings'")
         initial = page.evaluate('window.lastResponse')
+        maximum = (1600, 1200) if initial['sensor'] == 'ov2640' else (2048, 1536)
+        sizes = initial['resolutions']
+        assert (sizes[-1]['width'], sizes[-1]['height']) == maximum
+        original_resolution = initial['resolution']
+        for size in sizes:
+            print('Testing resolution:', size['width'], '×', size['height'], flush=True)
+            page.evaluate('window.lastResponse=null')
+            page.get_by_role('combobox', name='Resolution', exact=True).select_option(str(size['value']))
+            wait_js(page, "value=>window.lastResponse?.resolution===value", arg=size['value'], timeout=15000)
+            wait_js(page, "size=>{const img=document.querySelector('#preview');return img.naturalWidth===size.width && img.naturalHeight===size.height;}", arg=size, timeout=30000)
+        page.get_by_role('combobox', name='Resolution', exact=True).select_option(str(original_resolution))
+        wait_js(page, "document.querySelector('#preview').naturalWidth===320 && document.querySelector('#preview').naturalHeight===240", timeout=30000)
+        print('All', len(sizes), 'resolutions decoded, including', maximum)
+        for invalid in (-1, 999, 6.5, 'invalid'):
+            page.evaluate("value=>{window.lastResponse=null;command({op:'set',name:'resolution',value});}", invalid)
+            wait_js(page, "window.lastResponse?.type==='error'")
+            assert page.evaluate('window.lastResponse.error') == 'Unsupported camera resolution'
+        page.evaluate("window.lastResponse=null;command({op:'get'})")
+        wait_js(page, "window.lastResponse?.type==='settings'")
+        initial = page.evaluate('window.lastResponse')
         assert initial['timing_profiles'] == ['high_light', 'balanced', 'low_light']
         assert initial['timing_profile'] == 'high_light'
         baseline = initial['timing_register']

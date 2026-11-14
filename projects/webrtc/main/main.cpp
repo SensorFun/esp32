@@ -24,6 +24,7 @@
 namespace {
 constexpr char TAG[] = "local_webrtc";
 constexpr size_t CHUNK = 4096;
+std::string pending_resolution;
 SemaphoreHandle_t mutex;
 esp_peer_handle_t peer;
 httpd_handle_t server;
@@ -84,14 +85,18 @@ int on_data(esp_peer_data_frame_t *frame, void *) {
     }
     activity = esp_timer_get_time();
     const cJSON *op = cJSON_GetObjectItemCaseSensitive(request, "op");
-    if (!(cJSON_IsString(op) && !strcmp(op->valuestring, "ping"))) send_text(camera_command(request));
+    const cJSON *name = cJSON_GetObjectItemCaseSensitive(request, "name");
+    if (cJSON_IsString(op) && !strcmp(op->valuestring, "set") && cJSON_IsString(name) && !strcmp(name->valuestring, "resolution")) {
+        // Apply only after the worker releases any in-flight framebuffer.
+        pending_resolution = text;
+    } else if (!(cJSON_IsString(op) && !strcmp(op->valuestring, "ping"))) send_text(camera_command(request));
     cJSON_Delete(request);
     return 0;
 }
 void close_peer() {
     channel_ready = false;
     if (peer) { esp_peer_close(peer); peer = nullptr; }
-    answer.clear(); pending_reply.clear(); remote_offer.clear(); remote_auth.clear(); failed = false; remote_peer = false;
+    answer.clear(); pending_reply.clear(); pending_resolution.clear(); remote_offer.clear(); remote_auth.clear(); failed = false; remote_peer = false;
 }
 esp_err_t respond(httpd_req_t *r, const char *status, const char *body) {
     httpd_resp_set_status(r, status);
@@ -212,7 +217,7 @@ void remote_events() {
             if (RemoteAuth::blocked()) { remote_send(4, "authentication_rate_limited"); continue; }
             remote_offer = event.data;
             esp_peer_default_cfg_t extra{};
-            extra.agent_recv_timeout = 500; extra.data_ch_cfg.send_cache_size = 32768;
+            extra.agent_recv_timeout = 10; extra.data_ch_cfg.send_cache_size = 32768;
             extra.data_ch_cfg.recv_cache_size = 8192; extra.max_candidates = 8;
             esp_peer_ice_server_cfg_t ice{}; remote_ice(ice);
             esp_peer_cfg_t cfg{};
@@ -273,7 +278,7 @@ void worker(void *) {
     size_t offset = 0;
     uint32_t sequence = 0;
     unsigned capture_timeouts = 0;
-    int64_t frame_start = 0, next_frame = 0;
+    int64_t last_progress = 0;
     uint8_t packet[CHUNK + 16];
     for (;;) {
         if (!provisioning_is_ready()) {
@@ -293,6 +298,12 @@ void worker(void *) {
                 close_peer();
             }
             if (peer) esp_peer_main_loop(peer);
+            if (!pending_resolution.empty()) {
+                if (fb) { esp_camera_fb_return(fb); fb = nullptr; }
+                cJSON *request = cJSON_Parse(pending_resolution.c_str());
+                pending_resolution.clear();
+                if (request) { send_text(camera_command(request)); cJSON_Delete(request); }
+            }
             bool reply_waiting = false;
             if (channel_ready && !pending_reply.empty()) {
                 esp_peer_data_frame_t reply{};
@@ -304,9 +315,8 @@ void worker(void *) {
                 reply_waiting = !pending_reply.empty();
             }
             if (channel_ready && !reply_waiting && (!remote_peer || remote_auth.allowed())) {
-                if (!fb && now >= next_frame) {
-                    fb = esp_camera_fb_get(); offset = 0; ++sequence; frame_start = now;
-                    next_frame = now + 200000;
+                if (!fb) {
+                    fb = esp_camera_fb_get(); offset = 0; ++sequence; last_progress = esp_timer_get_time();
                     if (fb) capture_timeouts = 0;
                     else if (++capture_timeouts >= 2) {
                         // The OV2640 capture pipeline can stall across control
@@ -318,7 +328,8 @@ void worker(void *) {
                         send_text(camera_settings());
                     }
                 }
-                if (fb) {
+                // Fill available send capacity without monopolizing the peer loop.
+                for (int chunks = 0; fb && chunks < 8; ++chunks) {
                     size_t size = std::min(CHUNK, fb->len - offset);
                     // Four LE uint32: magic, sequence, total bytes, byte offset.
                     const uint32_t header[] = {0x4745504a, sequence, uint32_t(fb->len), uint32_t(offset)};
@@ -327,10 +338,11 @@ void worker(void *) {
                     frame.type = ESP_PEER_DATA_CHANNEL_DATA; frame.stream_id = stream_id;
                     frame.data = packet; frame.size = size + 16;
                     int ret = esp_peer_send_data(peer, &frame);
-                    if (ret == 0) offset += size;
-                    if (offset == fb->len || now - frame_start > 2000000 || (ret != 0 && ret != ESP_PEER_ERR_WOULD_BLOCK)) {
+                    if (ret == 0) { offset += size; last_progress = esp_timer_get_time(); }
+                    if (offset == fb->len || esp_timer_get_time() - last_progress > 2000000 || (ret != 0 && ret != ESP_PEER_ERR_WOULD_BLOCK)) {
                         esp_camera_fb_return(fb); fb = nullptr;
                     }
+                    if (ret != 0) break;
                 }
             } else if (!channel_ready && fb) { esp_camera_fb_return(fb); fb = nullptr; }
         }

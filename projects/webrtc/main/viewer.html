@@ -7,7 +7,7 @@
 <button id="connect">Connect</button><button id="disconnect" disabled>Disconnect</button>
 <p id="status" role="status">Provision the board and connect to the same local network.</p>
 <p><output id="fps" title="Displayed frames per second, averaged over the last sampling interval">0.0 FPS</output> <small>(1-second average)</small></p>
-<img id="preview" alt="Live camera frames"><h2 id="sensor">Camera settings</h2><p id="timing"></p><div id="controls"></div>
+<img id="preview" alt="Live camera frames"><h2 id="sensor">Camera settings</h2><p id="resolution-settings"></p><p id="timing"></p><div id="controls"></div>
 <p><small>JPEG frames and camera commands travel over a DTLS encrypted WebRTC data channel. Local HTTPS exchanges the connection information. No external signaling, STUN, or TURN server is used. Changes last until reboot; YAML supplies startup defaults.</small></p>
 <script>
 'use strict';
@@ -27,6 +27,8 @@ function settings(data){
  if(data.type==='error'){status(data.error);return;}
  if(data.type!=='settings')return;
  $('sensor').textContent='Camera settings: '+data.sensor;
+ $('resolution-settings').replaceChildren();
+ if(data.resolutions){const label=document.createElement('label');label.textContent='Resolution';const select=document.createElement('select');select.id='resolution';select.setAttribute('aria-label','Resolution');for(const size of data.resolutions){const option=document.createElement('option');option.value=size.value;option.textContent=`${size.width} × ${size.height}`;select.append(option);}select.value=data.resolution;select.onchange=()=>command({op:'set',name:'resolution',value:Number(select.value)});label.append(select);$('resolution-settings').append(label);}
  $('timing').replaceChildren();
  if(data.timing_profile){const label=document.createElement('label');label.textContent='timing_profile';const select=document.createElement('select');for(const name of data.timing_profiles){const option=document.createElement('option');option.value=name;option.textContent=({high_light:'High light',balanced:'Mid light (balanced)',low_light:'Low light'})[name];select.append(option);}select.value=data.timing_profile;select.onchange=()=>command({op:'set',name:'timing_profile',value:select.value});label.append(select);$('timing').append(label,document.createTextNode(data.timing_profile_status));}
  const container=$('controls');container.replaceChildren();
@@ -43,7 +45,7 @@ function message(event){
  frame.set(bytes,offset);received+=bytes.length;
  if(received===total){const url=URL.createObjectURL(new Blob([frame],{type:'image/jpeg'}));const old=objectURL;objectURL=url;$('preview').src=url;if(old)URL.revokeObjectURL(old);frame=null;}
 }
-async function stop(notify=true){++run;clearInterval(ping);resetFps();channel?.close();pc?.close();channel=null;pc=null;frame=null;$('preview').removeAttribute('src');if(objectURL)URL.revokeObjectURL(objectURL);objectURL=null;$('controls').replaceChildren();$('connect').disabled=true;$('disconnect').disabled=true;if(notify){try{await api('DELETE');}catch{}}$('connect').disabled=false;status('Disconnected');}
+async function stop(notify=true){++run;clearInterval(ping);resetFps();channel?.close();pc?.close();channel=null;pc=null;frame=null;$('preview').removeAttribute('src');if(objectURL)URL.revokeObjectURL(objectURL);objectURL=null;$('controls').replaceChildren();$('resolution-settings').replaceChildren();$('connect').disabled=true;$('disconnect').disabled=true;if(notify){try{await api('DELETE');}catch{}}$('connect').disabled=false;status('Disconnected');}
 $('disconnect').onclick=()=>stop();
 $('connect').onclick=async()=>{
  $('connect').disabled=true;$('disconnect').disabled=false;const current=++run;
