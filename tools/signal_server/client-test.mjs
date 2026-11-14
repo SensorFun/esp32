@@ -2,25 +2,24 @@
 // Run `npm ci --prefix site`, build the image, then `node --test tools/signal_server/test.mjs`.
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { randomBytes, randomUUID, webcrypto } from 'node:crypto';
+import { randomBytes, webcrypto } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { setTimeout as delay } from 'node:timers/promises';
-import { JanusSignaling } from '../../site/src/spaces/webrtc/janus-signaling.mjs';
+import { Signaling } from '../../site/src/spaces/webrtc/signaling.mjs';
 const require = createRequire(new URL('../../site/package.json', import.meta.url));
 const WebSocket = require('ws');
 globalThis.WebSocket = WebSocket;
 globalThis.crypto ??= webcrypto;
-const secret = process.env.JANUS_API_SECRET;
-const endpoint = process.env.TEST_JANUS_URL;
+const secret = process.env.SIGNALING_API_SECRET;
 const viewerEndpoint = process.env.TEST_VIEWER_URL;
 const cameraEndpoint = process.env.TEST_CAMERA_URL;
 const sockets = new Set();
 after(() => { for (const socket of sockets) socket.close(); });
 
 class Peer {
-  async open(key = secret, target = endpoint) {
-    this.secret = key; this.queue = []; this.waiters = [];
-    this.ws = new WebSocket(target, 'janus-protocol'); sockets.add(this.ws);
+  async open(target) {
+    this.ws = new WebSocket(target); sockets.add(this.ws);
+    this.queue = []; this.waiters = [];
     this.ws.on('message', bytes => {
       const value = JSON.parse(bytes);
       const index = this.waiters.findIndex(waiter => waiter.match(value));
@@ -35,39 +34,86 @@ class Peer {
     if (index >= 0) return Promise.resolve(this.queue.splice(index, 1)[0]);
     return new Promise((resolve, reject) => {
       const waiter = { match, resolve, timer: setTimeout(() => {
-        this.waiters.splice(this.waiters.indexOf(waiter), 1); reject(Error('Timed out waiting for Janus'));
+        this.waiters.splice(this.waiters.indexOf(waiter), 1); reject(Error('Timed out waiting for the signaling server'));
       }, 5000) };
       this.waiters.push(waiter);
     });
   }
-  request(janus, extra = {}) {
-    const transaction = randomUUID();
-    this.ws.send(JSON.stringify({ janus, transaction, ...(this.secret ? { apisecret: this.secret } : {}), session_id: this.session, handle_id: this.handle, ...extra }));
-    return this.next(value => value.transaction === transaction && value.janus !== 'ack');
+  join(room, role, key) {
+    const body = { type: 'join', room };
+    if (role === 'camera') body.secret = key ?? secret;
+    this.ws.send(JSON.stringify(body));
+    return this.next(value => value.type === 'joined' || value.type === 'error');
   }
-  async join(room, role) {
-    this.session = (await this.request('create')).data.id;
-    this.handle = (await this.request('attach', { plugin: 'janus.plugin.signaling' })).data.id;
-    return this.request('message', { body: { request: 'join', room, role } });
-  }
-  signal(message) { return this.request('message', { body: { request: 'send', message } }); }
-  received(type) { return this.next(value => value.plugindata?.data?.message?.type === type); }
-  async close() { await this.request('destroy'); this.ws.close(); }
+  signal(message) { this.ws.send(JSON.stringify(message)); }
+  received(type) { return this.next(value => value.type === type); }
+  close() { this.ws.close(); }
 }
 const roomId = () => randomBytes(16).toString('hex').toUpperCase();
 
-test('API secret rejects unauthorized session creation', async () => {
-  const peer = await new Peer().open(randomBytes(32).toString('hex'));
-  const result = await peer.request('create');
-  assert.equal(result.janus, 'error'); assert.equal(result.error.code, 403);
-  peer.ws.close();
+test('API secret rejects unauthorized camera join', async () => {
+  const camera = await new Peer().open(cameraEndpoint);
+  const result = await camera.join(roomId(), 'camera', randomBytes(32).toString('hex'));
+  assert.equal(result.type, 'error');
+  camera.close();
+});
+
+test('camera without any secret is rejected and disconnected', async () => {
+  const camera = await new Peer().open(cameraEndpoint);
+  const closed = new Promise(resolve => camera.ws.once('close', resolve));
+  camera.ws.send(JSON.stringify({ type: 'join', room: roomId() }));
+  await closed;
+});
+
+test('non-ASCII camera credentials are rejected cleanly', async () => {
+  const camera = await new Peer().open(cameraEndpoint);
+  assert.equal((await camera.join(roomId(), 'camera', '\u00e9'.repeat(32))).type, 'error');
+  camera.close();
+});
+
+test('failed HTTP upgrades do not exhaust connection slots', async () => {
+  const url = viewerEndpoint.replace(/^ws:/, 'http:');
+  for (let index = 0; index < 260; index++) {
+    const response = await fetch(url);
+    assert.equal(response.status, 400);
+    await response.arrayBuffer();
+  }
+  const camera = await new Peer().open(cameraEndpoint);
+  assert.equal((await camera.join(roomId(), 'camera')).type, 'joined');
+  camera.close();
+});
+
+test('offers exceeding the firmware limit are rejected before relay', async () => {
+  for (const sdp of ['x'.repeat(16385), '\u00e9'.repeat(8193), '\ud800']) {
+    const room = roomId();
+    const camera = await new Peer().open(cameraEndpoint);
+    assert.equal((await camera.join(room, 'camera')).type, 'joined');
+    const viewer = await new Peer().open(viewerEndpoint);
+    assert.equal((await viewer.join(room, 'viewer')).type, 'joined');
+    await camera.received('customized');
+    const closed = new Promise(resolve => viewer.ws.once('close', resolve));
+    viewer.signal({ type: 'offer', sdp });
+    await closed;
+    await camera.received('bye');
+    assert(!camera.queue.some(message => message.type === 'offer'));
+    camera.close();
+  }
+});
+
+test('signals sent by the wrong role close the connection', async () => {
+  const room = roomId();
+  const camera = await new Peer().open(cameraEndpoint);
+  assert.equal((await camera.join(room, 'camera')).type, 'joined');
+  const closed = new Promise(resolve => camera.ws.once('close', resolve));
+  camera.signal({ type: 'offer', sdp: 'synthetic' });
+  await closed;
 });
 
 test('real browser adapter exchanges opaque SDP and ICE; rooms isolate peers and release membership', async () => {
   const room = roomId();
-  const camera = await new Peer().open(secret, cameraEndpoint);
-  assert.equal((await camera.join(room, 'camera')).plugindata.data.event, 'joined');
-  const browser = new JanusSignaling(room, viewerEndpoint);
+  const camera = await new Peer().open(cameraEndpoint);
+  assert.equal((await camera.join(room, 'camera')).type, 'joined');
+  const browser = new Signaling(room, viewerEndpoint);
   sockets.add(browser.socket);
   const browserRequests = [];
   const originalSend = browser.socket.send.bind(browser.socket);
@@ -76,52 +122,37 @@ test('real browser adapter exchanges opaque SDP and ICE; rooms isolate peers and
   let failure;
   browser.onerror = error => { failure = error; };
   browser.onmessage = event => messages.push(JSON.parse(event.data));
-  assert.equal((await camera.received('customized')).plugindata.data.message.data, 'connect');
-  await camera.signal({ type: 'customized', data: JSON.stringify({ type: 'ready', iceServers: [{ urls: 'stun:stun.example.test:3478' }] }) });
+  assert.equal((await camera.received('customized')).data, 'connect');
+  camera.signal({ type: 'customized', data: JSON.stringify({ type: 'ready', iceServers: [{ urls: 'stun:stun.example.test:3478' }] }) });
   for (let count = 0; messages.length < 1 && count < 50; count++) await delay(20);
   assert.equal(messages[0].type, 'ready');
   browser.send(JSON.stringify({ type: 'offer', sdp: 'v=0\r\nopaque-synthetic-offer' }));
-  assert.equal((await camera.received('offer')).plugindata.data.message.sdp, 'v=0\r\nopaque-synthetic-offer');
-  await camera.signal({ type: 'answer', sdp: 'v=0\r\nopaque-synthetic-answer' });
-  await camera.signal({ type: 'candidate', candidate: 'synthetic-ice-candidate' });
+  assert.equal((await camera.received('offer')).sdp, 'v=0\r\nopaque-synthetic-offer');
+  camera.signal({ type: 'answer', sdp: 'v=0\r\nopaque-synthetic-answer' });
+  camera.signal({ type: 'candidate', candidate: 'synthetic-ice-candidate' });
   for (let count = 0; messages.length < 3 && count < 50; count++) await delay(20);
   assert.deepEqual(messages.slice(1).map(message => message.type), ['answer', 'candidate']);
   assert.equal(failure, undefined);
-  assert(browserRequests.every(request => !('apisecret' in request) && !('token' in request)));
-  const unknown = await new Peer().open(null, viewerEndpoint);
-  assert.match((await unknown.join(roomId(), 'viewer')).plugindata.data.error, /Camera not found/);
-  unknown.ws.close();
-  const duplicate = await new Peer().open();
-  assert.match((await duplicate.join(room, 'viewer')).plugindata.data.error, /already connected/);
-  await duplicate.close();
-  const isolated = await new Peer().open();
-  assert.match((await isolated.join(roomId(), 'viewer')).plugindata.data.error, /Camera not found/);
-  await isolated.close();
-  assert.match((await camera.signal({ type: 'offer', sdp: 'synthetic' })).plugindata.data.error, /Invalid signal/);
-  const jsep = await camera.request('message', { body: { request: 'send', message: { type: 'bye' } }, jsep: { type: 'offer', sdp: 'synthetic' } });
-  assert(jsep.janus === 'error' || /JSEP/.test(jsep.plugindata?.data?.error));
+  assert(browserRequests.every(request => !('secret' in request) && !('apisecret' in request) && !('token' in request)));
+  const unknown = await new Peer().open(viewerEndpoint);
+  assert.match((await unknown.join(roomId(), 'viewer')).message, /Camera not found/);
+  unknown.close();
+  const duplicate = await new Peer().open(viewerEndpoint);
+  assert.match((await duplicate.join(room, 'viewer')).message, /already connected/);
+  duplicate.close();
+  const isolated = await new Peer().open(viewerEndpoint);
+  assert.match((await isolated.join(roomId(), 'viewer')).message, /Camera not found/);
+  isolated.close();
   browser.close();
-  await camera.received('bye');
-  const replacement = await new Peer().open();
-  assert.equal((await replacement.join(room, 'viewer')).plugindata.data.event, 'joined');
+  assert.equal((await camera.received('bye')).type, 'bye');
+  const replacement = await new Peer().open(viewerEndpoint);
+  assert.equal((await replacement.join(room, 'viewer')).type, 'joined');
   await camera.received('customized');
-  await replacement.close(); await camera.close();
-});
-
-test('public gateway cannot register cameras or access arbitrary Janus operations', async () => {
-  const attacker = await new Peer().open(null, viewerEndpoint);
-  attacker.session = (await attacker.request('create')).data.id;
-  attacker.handle = (await attacker.request('attach', { plugin: 'janus.plugin.signaling' })).data.id;
-  const closed = new Promise(resolve => attacker.ws.once('close', resolve));
-  attacker.ws.send(JSON.stringify({ janus: 'message', transaction: randomUUID(), body: { request: 'join', room: roomId(), role: 'camera' } }));
-  await closed;
-  const camera = await new Peer().open(randomBytes(32).toString('hex'), cameraEndpoint);
-  assert.equal((await camera.request('create')).error.code, 403);
-  camera.ws.close();
+  replacement.close(); camera.close();
 });
 
 test('browser rejects insecure or credential-bearing remote endpoints', () => {
   for (const url of ['ws://signal.example.test', 'wss://user:password@signal.example.test', 'wss://signal.example.test?secret=value']) {
-    assert.throws(() => new JanusSignaling(roomId(), url), /secure wss/);
+    assert.throws(() => new Signaling(roomId(), url), /secure wss/);
   }
 });

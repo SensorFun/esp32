@@ -8,9 +8,9 @@ case "$action" in
   up|down|logs) ;;
   *) echo 'Usage: run.sh [up|down|logs]' >&2; exit 2 ;;
 esac
-export JANUS_SECRET_FILE="$SCRIPT_DIR/.secrets/janus_api_secret"
-if [[ ! -s "$JANUS_SECRET_FILE" ]]; then
-  echo 'Missing .secrets/janus_api_secret' >&2
+export SIGNALING_SECRET_FILE="$SCRIPT_DIR/.secrets/signaling_api_secret"
+if [[ ! -s "$SIGNALING_SECRET_FILE" ]]; then
+  echo 'Missing .secrets/signaling_api_secret' >&2
   exit 1
 fi
 shopt -s nullglob
@@ -33,10 +33,9 @@ PY
 )"
 export SIGNAL_SERVER_UID="$(id -u)"
 export SIGNAL_SERVER_GID="$(id -g)"
-export JANUS_UPSTREAM_URL='ws://janus:8188'
 compose=(docker compose -f "$SCRIPT_DIR/compose.yaml")
 case "$action" in
-  up) "${compose[@]}" stop; exec "${compose[@]}" up --build -d ;;
-  down) exec "${compose[@]}" down ;;
+  up) "${compose[@]}" down --remove-orphans; exec "${compose[@]}" up --build -d ;;
+  down) exec "${compose[@]}" down --remove-orphans ;;
   logs) exec "${compose[@]}" logs --tail 100 -f ;;
 esac

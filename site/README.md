@@ -57,17 +57,17 @@ The home/index pages render the registry automatically.
 
 ## WebRTC connections
 
-The workspace defaults to a private Janus server. Follow the
-[local Janus and Cloudflare Tunnel guide](../tools/signal_server/README.md) to run the
+The workspace defaults to a private signaling server. Follow the
+[local signaling and Cloudflare Tunnel guide](../tools/signal_server/README.md) to run the
 signaling server on your computer. Users enter only the camera MAC and camera
 password chosen during setup. The public viewer endpoint is configured when
-building the site; the Janus API secret stays on the server. No credentials are
+building the site; the signaling API secret stays on the server. No credentials are
 embedded in the public build or saved to browser storage.
 
 The same frontend runs on GitHub Pages, which serves static files only. Both
-camera and browser connect through a viewer gateway and Cloudflare Tunnel; WebRTC images and
+camera and browser connect through the signaling server and Cloudflare Tunnel; WebRTC images and
 commands travel directly between them. TURN remains disabled. The camera must
-be configured and flashed with Janus support using the `/camera` URL and server secret.
+be configured and flashed with signaling support using the `/camera` URL and server secret.
 
 Both viewers offer a sensor-specific Resolution selector: all driver sizes up to
 1600×1200 for OV2640 and 2048×1536 for OV3660. Cameras start at 320×240.

@@ -1,21 +1,22 @@
-# Local Janus signaling through Cloudflare Tunnel
+# Local signaling through Cloudflare Tunnel
 
-This stack runs Janus on your computer and exposes its WebSocket API through a
-locally managed Cloudflare Tunnel. The React viewer can remain on GitHub Pages.
+This stack runs a small signaling relay on your computer and exposes it
+through a locally managed Cloudflare Tunnel. The React viewer can remain on
+GitHub Pages.
 
 ```text
-GitHub Pages viewer ── WSS ── Cloudflare Tunnel ── Gateway ── Janus
+GitHub Pages viewer ── WSS ── Cloudflare Tunnel ── Signaling server
                                                   │
 ESP32 camera ───────── WSS ── Cloudflare Tunnel ─────┘
       ╰──────── direct encrypted WebRTC ─────── viewer
 ```
 
-The included `janus.plugin.signaling` plugin forwards offers, answers, ICE
-candidates, and camera readiness messages between two peers. It deliberately
-does not negotiate JSEP or terminate WebRTC at Janus. The standard Janus call
-plugins relay media and would require reachable media ports beyond the tunnel.
-Here, no media ports or router port forwarding are required on the server.
-STUN-only peer connectivity still depends on the camera and browser networks;
+The server (`server.py`) forwards offers, answers, ICE candidates, and camera
+readiness messages between two peers over plain JSON WebSocket messages. It
+never negotiates JSEP or terminates WebRTC itself; the standard media-relay
+approach would require reachable media ports beyond the tunnel. Here, no
+media ports or router port forwarding are required on the server. STUN-only
+peer connectivity still depends on the camera and browser networks;
 restrictive NAT/firewalls may prevent a connection. TURN remains disabled.
 
 ## 1. Create the Cloudflare Tunnel
@@ -30,10 +31,11 @@ keep exactly one tunnel credentials JSON in this directory.
 
 Your public hostname must have a proxied CNAME pointing to
 `<tunnel-uuid>.cfargotunnel.com`. The local `cloudflared.yaml` forwards traffic
-received by this tunnel to `http://gateway:8080`. The gateway exposes `/viewer`
-for browser connections and `/camera` for authenticated firmware. All services share their
-dedicated Compose network. Cloudflare terminates public TLS; browsers and
-cameras use your `wss://` hostname. This stack exposes no Janus administration API.
+received by this tunnel to `http://signaling:8080`. The server exposes `/viewer`
+for browser connections and `/camera` for authenticated firmware. Both
+services share their dedicated Compose network.
+Cloudflare terminates public TLS; browsers and cameras use your `wss://`
+hostname. This stack exposes no administration API.
 
 ## 2. Start the stack
 
@@ -44,7 +46,7 @@ python3 -c 'import secrets; print(secrets.token_urlsafe(32))'
 ```
 
 Save the matching firmware/server secret in
-`tools/signal_server/.secrets/janus_api_secret`, readable only by its owner.
+`tools/signal_server/.secrets/signaling_api_secret`, readable only by its owner.
 From the repository root, run:
 
 ```sh
@@ -52,10 +54,11 @@ From the repository root, run:
 ```
 
 The launcher checks the secret file and reads the tunnel ID from the JSON.
-Default startup stops existing services in this same Compose project before
-building and starting them again. If stopping fails, startup is aborted.
-Other Compose projects are unaffected. Janus and the gateway read the secret
-from `/run/secrets/janus_api_secret`; its value is never exported to their
+Default startup removes existing containers in this same Compose project,
+including obsolete Janus/gateway services, before building and starting the
+replacement stack. If stopping fails, startup is aborted.
+Other Compose projects are unaffected. The server reads the secret
+from `/run/secrets/signaling_api_secret`; its value is never exported to its
 environment. Containers run as the launcher user to read owner-only files.
 
 The Cloudflare JSON is provided only to Cloudflared as a read-only Docker Compose
@@ -64,16 +67,14 @@ that JSON; no tunnel token environment variable is used. Cloudflared runs with
 the launcher's UID/GID so owner-only credential files remain readable without
 loosening their permissions. Compose secrets do not encrypt the host file.
 
-The Janus secret must be 32–128 characters
-using letters, digits, underscores, or hyphens. Docker builds Janus v1.4.3 and
-the custom plugin. The API secret is required on every Janus API request. It is
-rendered into a private configuration file on container tmpfs at startup; it is
-never baked into the image. The Docker build context contains only the build
-inputs, even if you have local configuration files beside them.
+The signaling secret must be 32–128 characters
+using letters, digits, underscores, or hyphens. It is required on every
+camera connection; browsers never see it. It is read once from the mounted
+secret file at startup and never baked into the image.
 
-No container ports are exposed or published on the host. The Python launchers
-and plugin source are mounted read-only when needed; only compiled Janus and
-plugin binaries are stored in the image.
+No container ports are exposed or published on the host. The Python server
+is mounted read-only; the image itself contains only the Python runtime and
+`aiohttp`, no application source.
 The Cloudflare connector uses the internal Docker network. Your computer must
 stay awake and connected to the Internet. With the same environment set:
 
@@ -84,8 +85,13 @@ stay awake and connected to the Internet. With the same environment set:
 
 ## 3. Configure and flash the camera
 
-The existing camera firmware needs the new Janus client; previously flashed
-Espressif-only firmware will not connect to this server automatically.
+The camera firmware needs the new `camera_signaling.cpp` JSON WebSocket client;
+previously flashed Janus or Espressif-only firmware is not wire-compatible and
+must be rebuilt and flashed. Existing build configurations automatically migrate
+`CAMERA_JANUS_API_SECRET` and `CAMERA_JANUS_STUN_URL` to their corresponding
+`CAMERA_SIGNALING_*` names using `main/sdkconfig.rename`. Reuse the same secret
+in the server's renamed `.secrets/signaling_api_secret` file. Saved Wi-Fi,
+signaling hostname, and camera passwords remain unchanged in board NVS.
 Configure the appropriate board, for example:
 
 ```sh
@@ -94,7 +100,7 @@ Configure the appropriate board, for example:
 
 Under **Camera remote signaling**, set:
 
-- **Janus API secret**: the same secret used by the launcher.
+- **Signaling server API secret**: the same secret used by the launcher.
 - **STUN URL**: retain the configured STUN service or choose your own.
 
 Build and flash using the matching device profile:
@@ -121,23 +127,22 @@ Set the repository Actions variable `SIGNALING_URL` to your public
 `wss://signal.example.com/viewer` endpoint, then build/deploy through the existing
 GitHub Pages workflow. For a local build, export the same public URL before
 running `npm run build --prefix site`. The build launcher validates this setting;
-no Janus secret is passed to the site build.
+no signaling secret is passed to the site build.
 
 Users open **WebRTC → Workspace**, enter only their camera MAC and camera
 password, and connect. These derive a private room capability in the browser.
-The viewer gateway attaches only to the signaling plugin, forces the viewer
-role, binds all requests to its own Janus session/handle, and supplies the
-server API secret internally. Viewers cannot register cameras or select other
-plugins. A viewer can join only an existing camera room. A wrong MAC/password
-derives a different room and is rejected before signaling reaches the camera.
-The camera separately verifies its password over the encrypted WebRTC data
-channel before allowing frames or controls.
+The viewer connection joins a room by name only, forces the viewer
+role, and never carries the server API secret. Viewers cannot register cameras
+or select other operations. A viewer can join only an existing camera room. A
+wrong MAC/password derives a different room and is rejected before signaling
+reaches the camera. The camera separately verifies its password over the
+encrypted WebRTC data channel before allowing frames or controls.
 
 The API secret remains an operator/device credential. It is required by the
-camera firmware on `/camera` and by the gateway's connection to Janus, and is
-never sent to browsers. Rotate it by recreating the stack and updating camera
-firmware. Each room permits one camera and one viewer; room IDs and passwords
-are never saved to browser storage.
+camera firmware on `/camera`, and is never sent to browsers. Rotate it by
+recreating the stack and updating camera firmware. Each room permits one
+camera and one viewer; room IDs and passwords are never saved to browser
+storage.
 
 ## Validation
 
@@ -149,20 +154,21 @@ npm test --prefix site
 SIGNALING_URL=wss://signal.example.com/viewer npm run build --prefix site
 ```
 
-The integration tests start a disposable local Janus container with random
-credentials. They exercise rejected credentials, the real browser adapter,
-offer/answer and ICE forwarding, role checks, private rooms, duplicate viewers,
-cleanup/rejoin, rejection of missing camera rooms, and gateway role restrictions.
-The test services share a container network namespace without publishing ports.
-They do not create a Cloudflare tunnel, publish GitHub Pages, or test a physical
-camera connection.
+The integration tests start a disposable local signaling server container with
+random credentials. They exercise rejected credentials, the real browser
+adapter, offer/answer and ICE forwarding, role checks, private rooms,
+duplicate viewers, cleanup/rejoin, rejection of missing camera rooms, and
+protocol-violation handling. The test services share a container network
+namespace without publishing ports. They do not create a Cloudflare tunnel,
+publish GitHub Pages, or test a physical camera connection.
 
 ## Live USB camera test
 
-`tools/test_janus_e2e.py` serves the production site locally while all signaling
-uses the public Cloudflare hostname. It checks wrong-password rejection,
-unauthenticated commands, replay rejection, decoded JPEG frames, camera controls,
-direct ICE transport, and reconnect on each board. No Docker ports are published.
+`tools/test_signaling_e2e.py` serves the production site locally while all
+signaling uses the public Cloudflare hostname. It checks wrong-password
+rejection, unauthenticated commands, replay rejection, decoded JPEG frames,
+camera controls, direct ICE transport, and reconnect on each board. No Docker
+ports are published.
 
 Before running, flash matching device/server API keys and provision working Wi-Fi
 on both boards. The test expects each board's current camera password in the
@@ -171,7 +177,7 @@ private `.secrets/hardware/esp32s3-camera-password` or
 or Wi-Fi settings. With the signaling stack running:
 
 ```sh
-.venv/bin/python tools/test_janus_e2e.py \
+.venv/bin/python tools/test_signaling_e2e.py \
   --ports /dev/ttyUSB0 /dev/ttyUSB1 \
   --server signalserver.sensorfun.net \
   --browser /path/to/chromium

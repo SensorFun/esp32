@@ -124,9 +124,9 @@ decodes camera JPEG, exercises sensor controls and invalid values, inspects
 DTLS connection statistics, and reconnects. It writes no credentials or camera
 images. Keep serial monitors closed while flashing or running either USB tool.
 
-## Private Janus signaling
+## Private signaling
 
-The [Janus and Cloudflare Tunnel stack](../../tools/signal_server/README.md) runs on your
+The [signaling server and Cloudflare Tunnel stack](../../tools/signal_server/README.md) runs on your
 computer and lets the GitHub Pages viewer connect through your domain. Configure
 **Camera remote signaling** in menuconfig with the device API secret and STUN
 service, then rebuild and flash. Choose **signalserver.sensorfun.net** (default)
@@ -136,16 +136,16 @@ The selected server must accept the device API secret. Store credentials only in
 build sdkconfig, never in tracked defaults. The signaling secret is embedded in
 the resulting firmware, so keep binaries private.
 
-Janus forwards signaling only; camera images and controls remain on the direct
+The signaling server forwards signaling only; camera images and controls remain on the direct
 encrypted WebRTC connection. The viewer asks only for the camera MAC and camera
 password. The site owner configures its `/viewer` endpoint at deployment; the
-Janus API secret stays on the server and in camera firmware. With no saved
+signaling API secret stays on the server and in camera firmware. With no saved
 selection, the firmware uses `wss://signalserver.sensorfun.net/camera`.
 
 ## Legacy Espressif test tooling
 
 The following describes the older Espressif test tools retained in the repository;
-the current firmware uses the Janus server chosen during provisioning instead.
+the current firmware uses the signaling server chosen during provisioning instead.
 The stable room is exactly the station MAC as 12 uppercase hex digits, without separators. Browser and board derive the same room from the MAC. The `CAM_<MAC>` setup
 network name contains this station MAC; keep it for remote viewing. No USB discovery
 is required in normal operation. The browser creates the offer, and the camera answers using

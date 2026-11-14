@@ -8,8 +8,7 @@ import { tmpdir } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
 const folder = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(folder, '../..');
-const environment = { ...process.env, JANUS_API_SECRET: randomBytes(32).toString('hex'),
-  JANUS_UPSTREAM_URL: 'ws://127.0.0.1:8188', TEST_JANUS_URL: 'ws://127.0.0.1:8188',
+const environment = { ...process.env, SIGNALING_API_SECRET: randomBytes(32).toString('hex'),
   TEST_VIEWER_URL: 'ws://127.0.0.1:8080/viewer', TEST_CAMERA_URL: 'ws://127.0.0.1:8080/camera' };
 function docker(args) {
   const result = spawnSync('docker', args, { encoding: 'utf8', env: environment });
@@ -17,34 +16,29 @@ function docker(args) {
   return result.stdout.trim();
 }
 const mount = (source, target) => ['--mount', `type=bind,source=${source},target=${target},readonly`];
-let janus, gateway;
+let server;
 const secretsFolder = mkdtempSync(path.join(tmpdir(), 'signaling-test-'));
-const secretFile = path.join(secretsFolder, 'janus_api_secret');
-writeFileSync(secretFile, environment.JANUS_API_SECRET, { mode: 0o600 });
+const secretFile = path.join(secretsFolder, 'signaling_api_secret');
+writeFileSync(secretFile, environment.SIGNALING_API_SECRET, { mode: 0o600 });
 try {
-  janus = docker(['run', '--rm', '-d', '--user', `${process.getuid()}:${process.getgid()}`, '--read-only', '--tmpfs', '/tmp:mode=1777', '--cap-drop=ALL',
-    ...mount(secretFile, '/run/secrets/janus_api_secret'),
-    ...mount(`${folder}/entrypoint.py`, '/opt/signaling/entrypoint.py'), 'esp32-signaling:local']);
-  gateway = docker(['run', '--rm', '-d', '--user', `${process.getuid()}:${process.getgid()}`, '--read-only', '--cap-drop=ALL', '--network', `container:${janus}`,
-    ...mount(secretFile, '/run/secrets/janus_api_secret'),
-    '-e', 'JANUS_UPSTREAM_URL', ...mount(`${folder}/gateway.py`, '/opt/signaling/gateway.py'),
-    '--entrypoint', 'python3', 'esp32-signaling:local', '/opt/signaling/gateway.py']);
+  server = docker(['run', '--rm', '-d', '--user', `${process.getuid()}:${process.getgid()}`, '--read-only', '--cap-drop=ALL',
+    ...mount(secretFile, '/run/secrets/signaling_api_secret'),
+    ...mount(`${folder}/server.py`, '/opt/signaling/server.py'), 'esp32-signaling:local']);
   for (let attempt = 0; attempt < 50; attempt++) {
-    const ready = spawnSync('docker', ['exec', gateway, 'python3', '-c', 'import socket; socket.create_connection(("127.0.0.1",8080),1).close(); socket.create_connection(("127.0.0.1",8188),1).close()']);
+    const ready = spawnSync('docker', ['exec', server, 'python3', '-c', 'import socket; socket.create_connection(("127.0.0.1",8080),1).close()']);
     if (ready.status === 0) break;
-    if (attempt === 49) throw Error('Test services did not start');
+    if (attempt === 49) throw Error('Test service did not start');
     await delay(100);
   }
-  const result = spawnSync('docker', ['run', '--rm', '--read-only', '--cap-drop=ALL', '--network', `container:${janus}`,
-    '-e', 'JANUS_API_SECRET', '-e', 'TEST_JANUS_URL', '-e', 'TEST_VIEWER_URL', '-e', 'TEST_CAMERA_URL',
+  const result = spawnSync('docker', ['run', '--rm', '--read-only', '--cap-drop=ALL', '--network', `container:${server}`,
+    '-e', 'SIGNALING_API_SECRET', '-e', 'TEST_VIEWER_URL', '-e', 'TEST_CAMERA_URL',
     ...mount(`${folder}/client-test.mjs`, '/workspace/tools/signal_server/client-test.mjs'),
-    ...mount(`${root}/site/src/spaces/webrtc/janus-signaling.mjs`, '/workspace/site/src/spaces/webrtc/janus-signaling.mjs'),
+    ...mount(`${root}/site/src/spaces/webrtc/signaling.mjs`, '/workspace/site/src/spaces/webrtc/signaling.mjs'),
     ...mount(`${root}/site/node_modules/ws`, '/workspace/site/node_modules/ws'),
     'node:22-bookworm-slim', 'node', '--test', '/workspace/tools/signal_server/client-test.mjs'], { env: environment, stdio: 'inherit' });
   process.exitCode = result.status ?? 1;
 } finally {
-  if (gateway) docker(['stop', gateway]);
-  if (janus) docker(['stop', janus]);
+  if (server) docker(['stop', server]);
   rmSync(secretFile);
   rmdirSync(secretsFolder);
 }

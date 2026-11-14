@@ -1,36 +1,15 @@
 services:
-  janus:
+  signaling:
     build: .
     networks: [signaling]
     user: "${SIGNAL_SERVER_UID}:${SIGNAL_SERVER_GID}"
-    secrets: [janus_api_secret]
+    secrets: [signaling_api_secret]
     image: esp32-signaling:local
     volumes:
       - type: bind
-        source: ./entrypoint.py
-        target: /opt/signaling/entrypoint.py
+        source: ./server.py
+        target: /opt/signaling/server.py
         read_only: true
-    tmpfs:
-      - /tmp:mode=1777
-    read_only: true
-    cap_drop: [ALL]
-    security_opt: [no-new-privileges:true]
-    restart: unless-stopped
-  gateway:
-    image: esp32-signaling:local
-    build: .
-    networks: [signaling]
-    entrypoint: [python3, /opt/signaling/gateway.py]
-    environment:
-      JANUS_UPSTREAM_URL: ${JANUS_UPSTREAM_URL}
-    user: "${SIGNAL_SERVER_UID}:${SIGNAL_SERVER_GID}"
-    secrets: [janus_api_secret]
-    volumes:
-      - type: bind
-        source: ./gateway.py
-        target: /opt/signaling/gateway.py
-        read_only: true
-    depends_on: [janus]
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
@@ -52,7 +31,7 @@ services:
         source: ./cloudflared.yaml
         target: /etc/cloudflared/config.yaml
         read_only: true
-    depends_on: [gateway]
+    depends_on: [signaling]
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
@@ -63,7 +42,7 @@ networks:
     driver: bridge
 
 secrets:
-  janus_api_secret:
-    file: ${JANUS_SECRET_FILE}
+  signaling_api_secret:
+    file: ${SIGNALING_SECRET_FILE}
   cloudflare_credentials:
     file: ${CLOUDFLARE_CREDENTIALS_FILE}

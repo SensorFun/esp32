@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Test provisioned USB cameras through the real public Janus tunnel.
+"""Test provisioned USB cameras through the real public signaling tunnel.
 
 Uses the private test passwords prepared in signal_server/.secrets/hardware.
 Does not change Wi-Fi settings, camera passwords, or flash firmware.

@@ -1,5 +1,5 @@
 #include "remote_signaling.h"
-#include "janus_signaling.h"
+#include "camera_signaling.h"
 #include "esp_peer_signaling.h"
 #include "camera_access.h"
 #include "esp_log.h"
@@ -69,9 +69,9 @@ void task(void *) {
             esp_peer_signaling_cfg_t cfg{};
             cfg.signal_url = url; cfg.on_ice_info = ice_info;
             cfg.on_connected = on_connected; cfg.on_close = on_close; cfg.on_msg = on_message;
-            JanusSignalingConfig janus{room, CONFIG_CAMERA_JANUS_API_SECRET, CONFIG_CAMERA_JANUS_STUN_URL};
-            cfg.extra_cfg = &janus; cfg.extra_size = sizeof(janus);
-            int ret = esp_peer_signaling_start(&cfg, janus_signaling_impl(), &signaling);
+            CameraSignalingConfig signaling_cfg{room, CONFIG_CAMERA_SIGNALING_API_SECRET, CONFIG_CAMERA_SIGNALING_STUN_URL};
+            cfg.extra_cfg = &signaling_cfg; cfg.extra_size = sizeof(signaling_cfg);
+            int ret = esp_peer_signaling_start(&cfg, camera_signaling_impl(), &signaling);
             if (ret) { ESP_LOGW("remote", "Signaling unavailable: %d; retry in 10 seconds", ret); vTaskDelay(pdMS_TO_TICKS(10000)); continue; }
         }
         RemoteEvent *event = nullptr;

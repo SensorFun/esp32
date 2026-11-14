@@ -2,7 +2,7 @@
 
 The [React project site](site/README.md) provides a general home and dedicated
 project spaces, ready to deploy with GitHub Pages.
-For private remote access, run the [local Janus signaling stack](tools/signal_server/README.md)
+For private remote access, run the [local signaling stack](tools/signal_server/README.md)
 through Cloudflare Tunnel and connect from the GitHub Pages WebRTC workspace.
 See the [STUN-only end-to-end test guide](site/scripts/README.md) to run the
 React viewer locally with Espressif public signaling and the attached cameras.

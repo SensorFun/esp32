@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { createProof, deriveCameraAccess, normalizeMac, verifyServer } from './access.mjs';
-import { JanusSignaling } from './janus-signaling.mjs';
+import { Signaling } from './signaling.mjs';
 import { stunOnlyServers } from './ice.mjs';
 import { Icon } from '../../components/Icon';
 
@@ -73,7 +73,7 @@ export function RemoteCamera({ onSessionState }) {
     if (!alive()) return;
     let socket;
     try {
-      socket = new JanusSignaling(access.room, import.meta.env.VITE_SIGNALING_URL);
+      socket = new Signaling(access.room, import.meta.env.VITE_SIGNALING_URL);
     } catch (error) { if (alive()) stop(error.message); return; }
     const session = { socket, peer: null, channel: null, frame: null, frameId: -1, received: 0, url: null, candidates: [], displayedFrames: 0 };
     connection.current = session;
