@@ -42,6 +42,29 @@ int main() {
     assert(!parse_credentials("ssid=&password=", result));
     assert(!parse_credentials("ssid=Example&password=&extra=1", result));
     assert(json_quote("a\"b\\c\n") == "\"a\\\"b\\\\c\\u000a\"");
+    std::string camera_password;
+    assert(parse_credentials("ssid=Example&password=&camera_password=synthetic-test-vector", result, &camera_password));
+    assert(camera_password == "synthetic-test-vector");
+    assert(!parse_credentials("ssid=Example&password=", result, &camera_password));
+    assert(!parse_credentials("ssid=Example&password=&camera_password=short", result, &camera_password));
+    assert(!parse_credentials("ssid=Example&password=&camera_password=synthetic-test-vector&camera_password=duplicate", result, &camera_password));
+    assert(!parse_credentials("ssid=Example&password=&camera_password=abc%00defghijkl", result, &camera_password));
+    std::string server;
+    const std::string form = "ssid=Example&password=&camera_password=synthetic-test-vector";
+    assert(parse_credentials(form + "&signal_server=builtin", result, &camera_password, &server));
+    assert(server == DEFAULT_SIGNALING_URL);
+    assert(parse_credentials(form + "&signal_server=custom&signal_server_url=wss%3A%2F%2Fsignal.example.test%3A9443%2Fcamera", result, &camera_password, &server));
+    assert(server == "wss://signal.example.test:9443/camera");
+    for (const auto &url : {"ws://signal.example.test/camera", "https://signal.example.test/camera", "wss://user:password@signal.example.test/camera", "wss://signal.example.test/camera?secret=value", "wss://signal.example.test/viewer", "wss://signal.example.test:0/camera", "wss://signal.example.test:65536/camera", "wss:///camera", "wss://signal.example.test/camera#fragment"}) {
+        assert(!valid_signaling_url(url));
+    }
+    assert(!parse_credentials(form + "&signal_server=custom", result, &camera_password, &server));
+    assert(!parse_credentials(form + "&signal_server=custom&signal_server_url=ws%3A%2F%2Fsignal.example.test%2Fcamera", result, &camera_password, &server));
+    assert(!parse_credentials(form + "&signal_server=builtin&signal_server=custom", result, &camera_password, &server));
+    assert(!parse_credentials(form + "&signal_server_url=wss%3A%2F%2Fsignal.example.test%2Fcamera", result, &camera_password, &server));
+    assert(!parse_credentials(form + "&signal_server=builtin&signal_server_url=wss%3A%2F%2Fsignal.example.test%2Fcamera", result, &camera_password, &server));
+    assert(parse_credentials(form, result, &camera_password, &server));
+    assert(server.empty()); // Legacy/USB submissions preserve saved selection.
     assert(json_quote("<script>") == "\"<script>\"");
 }
 '''
@@ -98,7 +121,7 @@ int main() {
         harness = r'''
 const vm=require('node:vm'),assert=require('node:assert/strict');
 const elements={};
-for(const id of ['setup','ssid','manual-ssid','manual-network','password','refresh','save','status']) {
+for(const id of ['setup','ssid','manual-ssid','manual-network','password','camera-access','camera-password','signal-server','signal-server-url','custom-signal-server','refresh','save','status']) {
     elements[id]={value:'',disabled:false,textContent:'',children:[],handlers:{},
         addEventListener(name,fn){this.handlers[name]=fn;},
         replaceChildren(){this.children=[];},append(child){this.children.push(child);}};
@@ -119,12 +142,17 @@ const flush=async()=>{for(let i=0;i<8;i++)await Promise.resolve();};
     assert.equal(elements.ssid.children[2].value,'1');
     assert.equal(elements['manual-network'].hidden,true);
     elements.ssid.value='0';
-    reply({ssids:['Other network']});
+    reply({ssids:['Other network'],camera_password_required:true});
     await elements.refresh.handlers.click();
     assert.equal(elements.ssid.children.length,3);
     assert.equal(elements.ssid.children[1].textContent,'Other network');
     assert.equal(elements.ssid.value,'');
     elements.ssid.value='0';elements.password.value='example&key';
+    assert.equal(elements['camera-password'].required,true);
+    assert.equal(elements['signal-server'].value,'builtin');
+    assert.equal(elements['custom-signal-server'].hidden,true);
+    assert.equal(elements['signal-server-url'].disabled,true);
+    elements['camera-password'].value='synthetic-test-vector';
     reply({state:'connecting'},202);
     await elements.setup.handlers.submit({preventDefault(){}});
     const request=calls.at(-1);
@@ -133,6 +161,10 @@ const flush=async()=>{for(let i=0;i<8;i++)await Promise.resolve();};
     assert.equal(request.options.body.get('ssid'),'Other network');
     assert.equal(request.options.body.get('password'),'example&key');
     assert.equal(elements.password.value,'');
+    assert.equal(request.options.body.get('camera_password'),'synthetic-test-vector');
+    assert.equal(request.options.body.get('signal_server'),'builtin');
+    assert.equal(request.options.body.has('signal_server_url'),false);
+    assert.equal(elements['camera-password'].value,'');
     reply({state:'provisioning'});await timers.shift()();
     assert.equal(elements.save.disabled,false);
     assert.match(elements.status.textContent,/Could not connect/);
@@ -140,11 +172,18 @@ const flush=async()=>{for(let i=0;i<8;i++)await Promise.resolve();};
     assert.equal(elements['manual-network'].hidden,false);
     assert.equal(elements['manual-ssid'].required,true);
     elements['manual-ssid'].value='Hidden network';
-    reply({ssids:[]});await elements.refresh.handlers.click();
+    elements['signal-server'].value='custom';elements['signal-server'].handlers.change();
+    assert.equal(elements['custom-signal-server'].hidden,false);
+    assert.equal(elements['signal-server-url'].required,true);
+    elements['signal-server-url'].value='wss://signal.example.test/camera';
+    reply({ssids:[],camera_password_required:true});await elements.refresh.handlers.click();
     assert.equal(elements.ssid.value,'manual');
     assert.equal(elements['manual-ssid'].value,'Hidden network');
+    assert.equal(elements['signal-server-url'].value,'wss://signal.example.test/camera');
     reply({state:'connecting'},202);await elements.setup.handlers.submit({preventDefault(){}});
     assert.equal(calls.at(-1).options.body.get('ssid'),'Hidden network');
+    assert.equal(calls.at(-1).options.body.get('signal_server'),'custom');
+    assert.equal(calls.at(-1).options.body.get('signal_server_url'),'wss://signal.example.test/camera');
     reply({state:'connected'});await timers.shift()();
     assert.match(elements.status.textContent,/settings are saved/);
     assert.ok(!calls.some(call=>call.path==='/api/reset'));

@@ -1,0 +1,5 @@
+set(access_sources)
+if(CONFIG_CAMERA_REMOTE_ACCESS)
+    list(APPEND access_sources "camera_access.cpp")
+endif()
+idf_component_register(SRCS ${access_sources} INCLUDE_DIRS "include" REQUIRES nvs_flash esp_wifi mbedtls esp_hw_support freertos)

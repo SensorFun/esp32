@@ -2,6 +2,8 @@
 #include "provisioning.h"
 #include "tls_identity.h"
 #include "camera_controls.h"
+#include "remote_signaling.h"
+#include "remote_auth.h"
 #include "local_candidates.h"
 #include "lwip/sockets.h"
 #include "esp_camera.h"
@@ -25,8 +27,9 @@ constexpr size_t CHUNK = 4096;
 SemaphoreHandle_t mutex;
 esp_peer_handle_t peer;
 httpd_handle_t server;
-std::string answer, pending_reply;
-bool channel_ready = false, failed = false;
+std::string answer, pending_reply, remote_offer;
+RemoteAuth remote_auth;
+bool channel_ready = false, failed = false, remote_peer = false;
 uint16_t stream_id;
 int64_t activity = 0;
 extern const unsigned char page_start[] asm("_binary_viewer_html_start");
@@ -56,6 +59,7 @@ int on_state(esp_peer_state_t state, void *) {
 }
 int on_message(esp_peer_msg_t *msg, void *) {
     if (msg->type == ESP_PEER_MSG_TYPE_SDP && msg->size > 0 && msg->size <= 16384) {
+        if (remote_peer) remote_send(1, reinterpret_cast<char *>(msg->data));
         answer.assign(reinterpret_cast<char *>(msg->data), strnlen(reinterpret_cast<char *>(msg->data), msg->size));
     }
     return 0;
@@ -64,16 +68,21 @@ int on_channel(esp_peer_data_channel_info_t *info, void *) {
     stream_id = info->stream_id;
     channel_ready = true;
     activity = esp_timer_get_time();
+    if (remote_peer) send_text(remote_auth.begin(remote_offer, answer));
     return 0;
 }
 int on_data(esp_peer_data_frame_t *frame, void *) {
     if (!channel_ready || frame->type != ESP_PEER_DATA_CHANNEL_STRING || frame->size <= 0 || frame->size > 1024) return 0;
-    activity = esp_timer_get_time();
     // Parse exactly one JSON document, never assuming network data is terminated.
     std::string text(reinterpret_cast<char *>(frame->data), frame->size);
     const char *end = nullptr;
     cJSON *request = cJSON_ParseWithOpts(text.c_str(), &end, true);
     if (!request) return 0;
+    if (remote_peer && !remote_auth.allowed()) {
+        send_text(remote_auth.verify(request));
+        cJSON_Delete(request); return 0;
+    }
+    activity = esp_timer_get_time();
     const cJSON *op = cJSON_GetObjectItemCaseSensitive(request, "op");
     if (!(cJSON_IsString(op) && !strcmp(op->valuestring, "ping"))) send_text(camera_command(request));
     cJSON_Delete(request);
@@ -82,7 +91,7 @@ int on_data(esp_peer_data_frame_t *frame, void *) {
 void close_peer() {
     channel_ready = false;
     if (peer) { esp_peer_close(peer); peer = nullptr; }
-    answer.clear(); pending_reply.clear(); failed = false;
+    answer.clear(); pending_reply.clear(); remote_offer.clear(); remote_auth.clear(); failed = false; remote_peer = false;
 }
 esp_err_t respond(httpd_req_t *r, const char *status, const char *body) {
     httpd_resp_set_status(r, status);
@@ -180,6 +189,57 @@ esp_err_t session(httpd_req_t *r) {
     activity = esp_timer_get_time();
     return respond(r, "202 Accepted", "{}");
 }
+void remote_events() {
+    RemoteEvent event;
+    while (remote_receive(event)) {
+        if (event.type == 4 && event.data == "connect") {
+            if (peer) { remote_send(4, "busy"); continue; }
+            esp_peer_ice_server_cfg_t ice{}; remote_ice(ice);
+            cJSON *ready = cJSON_CreateObject();
+            cJSON_AddStringToObject(ready, "type", "ready");
+            cJSON *servers = cJSON_AddArrayToObject(ready, "iceServers");
+            cJSON *entry = cJSON_CreateObject();
+            cJSON_AddStringToObject(entry, "urls", ice.stun_url ? ice.stun_url : "");
+            cJSON_AddItemToArray(servers, entry);
+            char *payload = cJSON_PrintUnformatted(ready);
+            if (payload) { remote_send(4, payload); cJSON_free(payload); }
+            cJSON_Delete(ready); continue;
+        }
+        if (event.type == 3) { if (remote_peer) close_peer(); continue; }
+        if (event.type == 1 && !remote_peer) {
+            if (peer) { remote_send(4, "busy"); continue; }
+            if (!RemoteAuth::configured()) { remote_send(4, "password_not_configured"); continue; }
+            if (RemoteAuth::blocked()) { remote_send(4, "authentication_rate_limited"); continue; }
+            remote_offer = event.data;
+            esp_peer_default_cfg_t extra{};
+            extra.agent_recv_timeout = 500; extra.data_ch_cfg.send_cache_size = 32768;
+            extra.data_ch_cfg.recv_cache_size = 8192; extra.max_candidates = 8;
+            esp_peer_ice_server_cfg_t ice{}; remote_ice(ice);
+            esp_peer_cfg_t cfg{};
+            cfg.server_lists = &ice; cfg.server_num = 1;
+            cfg.role = ESP_PEER_ROLE_CONTROLLED; cfg.no_auto_reconnect = true;
+            cfg.enable_data_channel = true; cfg.manual_ch_create = true;
+            cfg.extra_cfg = &extra; cfg.extra_size = sizeof(extra);
+            cfg.on_state = on_state; cfg.on_msg = on_message;
+            cfg.on_channel_open = on_channel; cfg.on_data = on_data;
+            remote_peer = true;
+            int ret = esp_peer_open(&cfg, esp_peer_get_default_impl(), &peer);
+            if (!ret) ret = esp_peer_new_connection(peer);
+            if (!ret) {
+                esp_peer_msg_t msg{}; msg.type = ESP_PEER_MSG_TYPE_SDP;
+                msg.data = reinterpret_cast<uint8_t *>(event.data.data()); msg.size = event.data.size();
+                ret = esp_peer_send_msg(peer, &msg);
+            }
+            if (ret) { ESP_LOGE(TAG, "Remote peer failed: %d", ret); close_peer(); }
+            activity = esp_timer_get_time();
+        } else if (remote_peer && peer && (event.type == 1 || event.type == 2)) {
+            esp_peer_msg_t msg{};
+            msg.type = event.type == 1 ? ESP_PEER_MSG_TYPE_SDP : ESP_PEER_MSG_TYPE_CANDIDATE;
+            msg.data = reinterpret_cast<uint8_t *>(event.data.data()); msg.size = event.data.size();
+            esp_peer_send_msg(peer, &msg);
+        }
+    }
+}
 void start_server() {
     // ESP-IDF 6.1's initializer omits use_secure_element, which is zero initialized.
 #pragma GCC diagnostic push
@@ -212,6 +272,7 @@ void worker(void *) {
     camera_fb_t *fb = nullptr;
     size_t offset = 0;
     uint32_t sequence = 0;
+    unsigned capture_timeouts = 0;
     int64_t frame_start = 0, next_frame = 0;
     uint8_t packet[CHUNK + 16];
     for (;;) {
@@ -225,8 +286,9 @@ void worker(void *) {
         if (!server) start_server();
         {
             Lock guard;
+            remote_events();
             const int64_t now = esp_timer_get_time();
-            if (peer && (failed || now - activity > 30000000)) {
+            if (peer && (failed || (remote_peer && remote_auth.expired(now)) || now - activity > 30000000)) {
                 if (fb) { esp_camera_fb_return(fb); fb = nullptr; }
                 close_peer();
             }
@@ -241,10 +303,20 @@ void worker(void *) {
                 else if (ret != ESP_PEER_ERR_WOULD_BLOCK) failed = true;
                 reply_waiting = !pending_reply.empty();
             }
-            if (channel_ready && !reply_waiting) {
+            if (channel_ready && !reply_waiting && (!remote_peer || remote_auth.allowed())) {
                 if (!fb && now >= next_frame) {
                     fb = esp_camera_fb_get(); offset = 0; ++sequence; frame_start = now;
                     next_frame = now + 200000;
+                    if (fb) capture_timeouts = 0;
+                    else if (++capture_timeouts >= 2) {
+                        // The OV2640 capture pipeline can stall across control
+                        // changes/reconnects. Recover with no held buffer and
+                        // retain the connection and all current user settings.
+                        ESP_LOGW(TAG, "Restarting stalled camera capture");
+                        ESP_ERROR_CHECK(camera_recover());
+                        capture_timeouts = 0;
+                        send_text(camera_settings());
+                    }
                 }
                 if (fb) {
                     size_t size = std::min(CHUNK, fb->len - offset);
@@ -272,6 +344,7 @@ extern "C" void app_main() {
     // Provisioning generates the shared identity before opening its server.
     ESP_ERROR_CHECK(app.setup());
     ESP_ERROR_CHECK(media_lib_add_default_adapter());
+    remote_start();
     mutex = xSemaphoreCreateRecursiveMutex();
     ESP_ERROR_CHECK(mutex ? ESP_OK : ESP_ERR_NO_MEM);
     if (xTaskCreate(worker, "local_peer", 24576, nullptr, 5, nullptr) != pdPASS) ESP_ERROR_CHECK(ESP_ERR_NO_MEM);

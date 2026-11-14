@@ -12,6 +12,9 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "nvs_flash.h"
+#if CONFIG_CAMERA_REMOTE_ACCESS
+#include "camera_access.h"
+#endif
 #include "soc/soc_caps.h"
 #if SOC_WIFI_SUPPORTED
 #include "provisioning.h"
@@ -70,7 +73,11 @@ esp_err_t Application::setup() {
     if (esp_reset_reason() == ESP_RST_SW && setup_request == SETUP_REQUESTED) {
         // Erase before Wi-Fi or project tasks can hold NVS handles. Do not erase
         // the partition underneath running applications or on ordinary resets.
+#if CONFIG_CAMERA_REMOTE_ACCESS
+        ESP_RETURN_ON_ERROR(camera_access::reset_settings(), TAG, "Could not reset camera settings");
+#else
         ESP_RETURN_ON_ERROR(nvs_flash_erase(), TAG, "Could not clear default NVS");
+#endif
         setup_request = 0;
         ESP_LOGI(TAG, "Default NVS cleared; starting fresh setup");
     } else setup_request = 0;
@@ -89,7 +96,7 @@ esp_err_t Application::setup() {
 #else
     if (board_.has_wifi) return ESP_ERR_NOT_SUPPORTED;
 #endif
-    if (serial_reset_ && xTaskCreate(serial_worker, "setup_console", 3072, this, 3, nullptr) != pdPASS) return ESP_ERR_NO_MEM;
+    if (serial_reset_ && xTaskCreate(serial_worker, "setup_console", 6144, this, 3, nullptr) != pdPASS) return ESP_ERR_NO_MEM;
     ESP_LOGI(TAG, "Common setup ready");
     return ESP_OK;
 }
@@ -120,6 +127,9 @@ void Application::serial_worker(void *context) {
     char line[97]{};
 #if CONFIG_PROVISIONING_SECURE
     char ssid[33]{};
+#if CONFIG_CAMERA_REMOTE_ACCESS
+    char wifi_password[65]{};
+#endif
     int provisioning_input = 0;
 #endif
     size_t length = 0;
@@ -142,16 +152,38 @@ void Application::serial_worker(void *context) {
                     ESP_LOGI(TAG, "USB provisioning: password (input is not echoed)");
                 } else { provisioning_input = 0; ESP_LOGE(TAG, "Invalid SSID length"); }
             } else if (provisioning_input == 2) {
+#if CONFIG_CAMERA_REMOTE_ACCESS
+                if (!overflow && length <= 64) {
+                    memcpy(wifi_password, line, length); provisioning_input = 3;
+                    ESP_LOGI(TAG, "USB provisioning: camera password (12–96 bytes; input is not echoed)");
+                } else { provisioning_input = 0; ESP_LOGE(TAG, "Invalid Wi-Fi password length"); }
+            } else if (provisioning_input == 3) {
+                const esp_err_t err = overflow ? ESP_ERR_INVALID_ARG : provisioning_submit_credentials_with_camera(ssid, wifi_password, line);
+                ESP_LOGI(TAG, "USB provisioning submitted: %s", esp_err_to_name(err));
+                camera_access::wipe(wifi_password, sizeof(wifi_password));
+                camera_access::wipe(ssid, sizeof(ssid)); provisioning_input = 0;
+            } else if (provisioning_input == 4) {
+                const esp_err_t err = overflow ? ESP_ERR_INVALID_ARG : camera_access::set_password(line);
+                ESP_LOGI(TAG, "Camera password saved: %s", esp_err_to_name(err));
+                provisioning_input = 0;
+            } else if (!overflow && strcmp(line, "camera-password-clear") == 0) {
+                ESP_LOGI(TAG, "Camera password cleared: %s", esp_err_to_name(camera_access::clear_password()));
+            } else if (!overflow && strcmp(line, "camera-password") == 0) {
+                provisioning_input = 4;
+                ESP_LOGI(TAG, "Camera password (12–96 bytes; input is not echoed)");
+#else
                 const esp_err_t err = overflow ? ESP_ERR_INVALID_ARG : provisioning_submit_credentials(ssid, line);
                 ESP_LOGI(TAG, "USB provisioning submitted: %s", esp_err_to_name(err));
                 memset(ssid, 0, sizeof(ssid)); provisioning_input = 0;
+#endif
             } else if (!overflow && strcmp(line, "wifi-provision") == 0) {
                 provisioning_input = 1;
                 ESP_LOGI(TAG, "USB provisioning: SSID");
             } else
 #endif
             if (!overflow && std::strcmp(line, "wifi-reset") == 0) app.enter_setup();
-            std::memset(line, 0, sizeof(line));
+            volatile char *secret = line;
+            for (size_t i = 0; i < sizeof(line); ++i) secret[i] = 0;
             length = 0;
             overflow = false;
         } else if (length < sizeof(line) - 1) line[length++] = static_cast<char>(ch);

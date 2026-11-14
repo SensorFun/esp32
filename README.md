@@ -1,5 +1,12 @@
 # ESP32 workspace
 
+The [React project site](site/README.md) provides a general home and dedicated
+project spaces, ready to deploy with GitHub Pages.
+For private remote access, run the [local Janus signaling stack](tools/signal_server/README.md)
+through Cloudflare Tunnel and connect from the GitHub Pages WebRTC workspace.
+See the [STUN-only end-to-end test guide](site/scripts/README.md) to run the
+React viewer locally with Espressif public signaling and the attached cameras.
+
 Python host tooling and native ESP-IDF C/C++ firmware share one repository.
 Python packaging does not compile firmware. Firmware applications under
 `projects/` are independent ESP-IDF CMake projects; `projects/common/` contains
@@ -36,6 +43,26 @@ Build artifacts and generated sdkconfig files are isolated in
 `menuconfig` and `clean` are also supported. Exit the serial monitor with Ctrl+].
 When upgrading ESP-IDF, move aside the affected `build/<project>/<board>/`
 directory before rebuilding so CMake detects the new compiler toolchain.
+
+## Commit checks
+
+Install the development tools in your virtual environment and activate the hooks
+once per clone:
+
+```sh
+python -m pip install -e '.[dev]'
+pre-commit install
+pre-commit run --all-files
+```
+
+Commits check whitespace, YAML/JSON/TOML syntax, Python syntax, merge conflicts,
+large files, private keys, and secrets with Gitleaks. The first run downloads the
+hook environments. Gitleaks scans staged changes when committing, including when
+invoked through `pre-commit run --all-files`. To scan existing Git history, use
+`gitleaks git --redact` separately with an installed Gitleaks binary.
+
+Hooks must be installed in each clone and can be bypassed. Secret detection is
+heuristic, so keep real credentials in ignored local configuration files.
 
 ## Configured build and flash
 

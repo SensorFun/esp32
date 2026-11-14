@@ -1,0 +1,3 @@
+config CAMERA_REMOTE_ACCESS
+    bool "Require a camera password for remote WebRTC viewers"
+    default n

@@ -18,11 +18,17 @@ does not erase NVS on initialization errors.
    board starts an open `CAM_<MAC>` network. Join it without a password;
    serial access is not needed. The suffix is the board's station Wi-Fi MAC
    in uppercase, colon-separated form; the SSID stays the same across reboots.
-2. Join that access point and open `http://192.168.4.1` in a browser. This is a
+2. Join that access point and open `http://192.168.4.1` in a browser, or
+   `https://192.168.4.1` for projects with `CONFIG_PROVISIONING_SECURE=y`. This is a
    direct setup page; it does not rely on a captive-portal popup or internet.
 3. Refresh to scan visible SSIDs and choose one from the dropdown. Choose
    **Other network…** to enter a hidden network manually. Enter its password, or leave empty for open Wi-Fi.
-4. Submit to connect. Only a successful connection with an assigned IP address
+4. For camera projects, set the camera password and select a **Signaling server**:
+   **signalserver.sensorfun.net** (default), or **My own signaling server…** and a
+   compatible `wss://` URL ending in `/camera`. Saved selections are restored when
+   setup opens again. The server's device API key remains an operator firmware
+   setting; choosing a URL does not change that credential.
+5. Submit to connect. Only a successful connection with an assigned IP address
    commits the new settings. Invalid credentials leave the old settings intact,
    keep setup available, and allow another attempt. The browser polls status;
    the setup access point closes five seconds after a successful save.
@@ -34,8 +40,9 @@ passwords are empty, 8–63 bytes, or a 64-digit hexadecimal PSK.
 Credentials are stored in the `wifi_setup` NVS namespace as one committed blob
 and survive power loss. Saved passwords are never returned over HTTP; the
 component never logs submitted credentials. This basic firmware uses ordinary
-NVS, without encryption at rest. The temporary setup AP is open, so provisioning
-traffic is not encrypted over the air. Only that AP interface serves setup; it
+NVS, without encryption at rest. The temporary setup AP is open. Projects
+with `CONFIG_PROVISIONING_SECURE=y` use HTTPS to encrypt submitted credentials;
+other projects use plaintext HTTP. Only that AP interface serves setup; it
 closes after a successful connection.
 
 ## Reset and recovery
@@ -60,8 +67,8 @@ IP and host name; state-changing requests from other origins are rejected.
 | Route | Behavior |
 | --- | --- |
 | `GET /` | Embedded setup page with no external assets |
-| `GET /api/scan` | Scan and return unique, nonempty SSIDs; hidden names are entered manually |
+| `GET /api/scan` | Scan SSIDs; camera projects also return the selected `signaling_url` |
 | `GET /api/status` | Connection state without credentials |
-| `POST /api/connect` | URL-encoded `ssid` and `password`; returns 202 while connecting |
+| `POST /api/connect` | URL-encoded `ssid` and `password`; camera projects accept `camera_password`, `signal_server` (`builtin` or `custom`), and custom `signal_server_url`; returns 202 while connecting |
 
 Do not put real network names or passwords in source, examples, tests, or configs.

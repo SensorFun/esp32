@@ -25,4 +25,3 @@ services:
     user: ${HOST_USER}
     volumes:
       - ${WORKSPACE_SOURCE}:/workspace:cached
-

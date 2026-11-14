@@ -1,6 +1,7 @@
 #pragma once
 #include <cctype>
 #include <string_view>
+#include "signaling_settings.h"
 
 namespace provisioning {
 // Limits are bytes, matching ESP-IDF's Wi-Fi configuration fields.
@@ -50,9 +51,10 @@ inline bool form_decode(std::string_view value, std::string &out) {
     return true;
 }
 
-inline bool parse_credentials(std::string_view body, Credentials &out) {
-    std::string ssid, password;
-    bool have_ssid = false, have_password = false;
+inline bool parse_credentials(std::string_view body, Credentials &out, std::string *camera_password = nullptr, std::string *signaling_url = nullptr) {
+    std::string ssid, password, signal_server, custom_url;
+    bool have_ssid = false, have_password = false, have_camera = false, have_server = false, have_custom = false;
+    if (signaling_url) signaling_url->clear();
     while (!body.empty()) {
         const size_t end = body.find('&');
         const auto pair = body.substr(0, end);
@@ -65,11 +67,27 @@ inline bool parse_credentials(std::string_view body, Credentials &out) {
         } else if (key == "password" && !have_password) {
             if (!form_decode(value, password)) return false;
             have_password = true;
+        } else if (key == "camera_password" && camera_password && !have_camera) {
+            if (!form_decode(value, *camera_password)) return false;
+            have_camera = true;
+        } else if (key == "signal_server" && signaling_url && !have_server) {
+            if (!form_decode(value, signal_server)) return false;
+            have_server = true;
+        } else if (key == "signal_server_url" && signaling_url && !have_custom) {
+            if (!form_decode(value, custom_url)) return false;
+            have_custom = true;
         } else return false;
         if (end == body.npos) break;
         body.remove_prefix(end + 1);
     }
     if (!have_ssid || !have_password || !valid_credentials(ssid, password)) return false;
+    if (camera_password && (!have_camera || camera_password->size() < 12 || camera_password->size() > 96)) return false;
+    if (have_custom && !have_server) return false;
+    if (have_server) {
+        if (signal_server == "builtin" && custom_url.empty()) *signaling_url = DEFAULT_SIGNALING_URL;
+        else if (signal_server == "custom" && have_custom && valid_signaling_url(custom_url)) *signaling_url = custom_url;
+        else return false;
+    }
     out = {};
     std::memcpy(out.ssid, ssid.data(), ssid.size());
     std::memcpy(out.password, password.data(), password.size());

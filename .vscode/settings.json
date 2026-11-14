@@ -1,4 +1,4 @@
 {
   "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
-  "cmake.sourceDirectory": "/home/mehdi/workspace/esp32/projects/hello_world"
+  "cmake.sourceDirectory": "${workspaceFolder}/projects/hello_world"
 }

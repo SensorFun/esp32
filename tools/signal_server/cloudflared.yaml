@@ -1,0 +1,3 @@
+credentials-file: /run/secrets/cloudflare_credentials
+ingress:
+  - service: http://gateway:8080

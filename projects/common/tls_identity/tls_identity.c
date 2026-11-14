@@ -8,7 +8,7 @@
 #include <stdio.h>
 #include <string.h>
 
-static char certificate[2048], private_key[1024], setup_password[17];
+static char certificate[2048], private_key[1024];
 esp_err_t tls_identity_init(void) {
     if (certificate[0]) return ESP_OK;
     mbedtls_pk_context key;
@@ -42,18 +42,15 @@ esp_err_t tls_identity_init(void) {
     if (!ret) ret = mbedtls_pk_write_key_pem(&key, (unsigned char *)private_key, sizeof(private_key));
     if (!ret) ret = mbedtls_x509_crt_parse(&parsed, (unsigned char *)certificate, strlen(certificate) + 1);
     if (!ret) {
-        unsigned char digest[32], secret[8];
+        unsigned char digest[32];
         char fingerprint[65];
         size_t digest_len;
         ret = psa_hash_compute(PSA_ALG_SHA_256, parsed.raw.p, parsed.raw.len, digest, sizeof(digest), &digest_len);
         if (ret || digest_len != sizeof(digest)) { ret = -1; goto cleanup; }
-        esp_fill_random(secret, sizeof(secret));
         for (int i = 0; i < 32; ++i) {
             snprintf(fingerprint + i * 2, 3, "%02X", digest[i]);
 
         }
-        for (size_t i = 0; i < sizeof(secret); ++i) snprintf(setup_password + i * 2, 3, "%02x", secret[i]);
-        memset(secret, 0, sizeof(secret));
         ESP_LOGI("local_tls", "HTTPS certificate SHA256: %s", fingerprint);
     }
 cleanup:
@@ -71,4 +68,3 @@ cleanup:
 }
 const char *tls_identity_cert(void) { return certificate; }
 const char *tls_identity_key(void) { return private_key; }
-const char *tls_identity_setup_password(void) { return setup_password; }

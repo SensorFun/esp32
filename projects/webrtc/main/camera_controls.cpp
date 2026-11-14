@@ -78,6 +78,26 @@ cJSON *camera_settings() {
     }
     return reply;
 }
+esp_err_t camera_recover() {
+    constexpr size_t count = sizeof(controls) / sizeof(controls[0]);
+    int values[count]{};
+    bool enabled[count]{};
+    const int profile = timing.selected();
+    const int expected_sensor = sensor->id.PID;
+    for (size_t i = 0; i < count; ++i) {
+        enabled[i] = supported(controls[i]);
+        if (enabled[i]) values[i] = controls[i].get(sensor);
+    }
+    esp_err_t err = esp_camera_deinit();
+    if (err != ESP_OK) return err;
+    err = camera_start();
+    if (err != ESP_OK) return err;
+    if (sensor->id.PID != expected_sensor) return ESP_ERR_INVALID_STATE;
+    for (size_t i = 0; i < count; ++i) {
+        if (enabled[i] && controls[i].set(sensor, values[i]) != 0) return ESP_FAIL;
+    }
+    return timing.apply(profile) == 0 ? ESP_OK : ESP_FAIL;
+}
 cJSON *camera_command(const cJSON *request) {
     const auto *op = cJSON_GetObjectItemCaseSensitive(request, "op");
     if (cJSON_IsString(op) && !strcmp(op->valuestring, "get")) return camera_settings();

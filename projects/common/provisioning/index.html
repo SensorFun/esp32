@@ -15,15 +15,24 @@
 <label for="manual-ssid">Network name</label>
 <input id="manual-ssid" autocomplete="off" disabled>
 </div>
-<label for="password">Password</label>
+<label for="password">Wi-Fi network password</label>
 <input id="password" name="password" type="password" autocomplete="new-password">
 <small>Leave empty for an open network.</small>
+<div id="camera-access" hidden><label for="camera-password">Camera password (remote viewing)</label>
+<input id="camera-password" type="password" minlength="12" maxlength="96" autocomplete="new-password" disabled>
+<p>Use a separate password of 12–96 UTF-8 bytes. Remote viewers enter this password and the camera MAC address.</p>
+<label for="signal-server">Signaling server</label>
+<select id="signal-server" disabled><option value="builtin">signalserver.sensorfun.net</option><option value="custom">My own signaling server…</option></select>
+<div id="custom-signal-server" hidden><label for="signal-server-url">Your signaling server URL</label><input id="signal-server-url" type="url" maxlength="256" placeholder="wss://your-server.example/camera" autocomplete="off" disabled><small>Use a compatible server’s secure WebSocket URL ending in /camera.</small></div></div>
 <button id="save" type="submit">Save and connect</button>
 </form>
 <p id="status" role="status" aria-live="polite"></p>
 <script>
 const form=document.querySelector('#setup'),ssid=document.querySelector('#ssid'),manual=document.querySelector('#manual-ssid'),manualNetwork=document.querySelector('#manual-network'),password=document.querySelector('#password'),refresh=document.querySelector('#refresh'),save=document.querySelector('#save'),status=document.querySelector('#status');
-let polling=false,pollFailures=0,networks=[];
+const cameraAccess=document.querySelector('#camera-access'),cameraPassword=document.querySelector('#camera-password');
+const signalServer=document.querySelector('#signal-server'),signalUrl=document.querySelector('#signal-server-url'),customSignalServer=document.querySelector('#custom-signal-server');
+let polling=false,pollFailures=0,networks=[],serverSettingsLoaded=false;
+function updateSignalServer(){const custom=!signalServer.disabled&&signalServer.value==='custom';customSignalServer.hidden=!custom;signalUrl.disabled=!custom;signalUrl.required=custom;}
 function selectedNetwork(){if(ssid.value==='manual')return manual.value;if(ssid.value==='')return '';return networks[Number(ssid.value)]||'';}
 function updateManual(){const show=ssid.value==='manual';manualNetwork.hidden=!show;manual.disabled=!show;manual.required=show;}
 async function request(path,options={}){const response=await fetch(path,{cache:'no-store',...options});const data=await response.json();if(!response.ok){const error=Error(data.error||'Request failed');error.status=response.status;throw error;}return data;}
@@ -31,7 +40,7 @@ async function scan(){
     refresh.disabled=true;status.textContent='Scanning…';
     const previous=selectedNetwork(),wasManual=ssid.value==='manual';
     try{
-        const data=await request('/api/scan');networks=data.ssids;ssid.replaceChildren();
+        const data=await request('/api/scan');cameraAccess.hidden=!data.camera_password_required;cameraPassword.disabled=!data.camera_password_required;cameraPassword.required=!!data.camera_password_required;signalServer.disabled=!data.camera_password_required;if(!serverSettingsLoaded&&data.camera_password_required){signalServer.value=data.signaling_url&&data.signaling_url!=='wss://signalserver.sensorfun.net/camera'?'custom':'builtin';signalUrl.value=signalServer.value==='custom'?data.signaling_url:'';serverSettingsLoaded=true;}updateSignalServer();networks=data.ssids;ssid.replaceChildren();
         const placeholder=document.createElement('option');placeholder.value='';placeholder.textContent=networks.length?'Choose a network':'No networks found';placeholder.disabled=true;ssid.append(placeholder);
         networks.forEach((name,index)=>{const option=document.createElement('option');option.value=String(index);option.textContent=name;ssid.append(option);});
         const other=document.createElement('option');other.value='manual';other.textContent='Other network…';ssid.append(other);
@@ -41,8 +50,9 @@ async function scan(){
 }
 async function watch(){try{const data=await request('/api/status');pollFailures=0;if(data.state==='connected'){status.textContent='Connected. Your settings are saved. Reconnect to your normal Wi-Fi; setup will close shortly.';polling=false;return;}if(data.state==='provisioning'){status.textContent='Could not connect. Check the network name and password, then try again.';polling=false;save.disabled=false;refresh.disabled=false;return;}status.textContent='Connecting…';}catch(error){if(error.status){status.textContent=error.message;polling=false;save.disabled=false;refresh.disabled=false;}else{status.textContent='Setup connection lost. If setup Wi-Fi disappears, reconnect to your normal network. Otherwise reconnect here and try again.';if(++pollFailures>=3){polling=false;save.disabled=false;refresh.disabled=false;}}}if(polling)setTimeout(watch,1500);}
 ssid.addEventListener('change',updateManual);
+signalServer.addEventListener('change',updateSignalServer);
 refresh.addEventListener('click',scan);
-form.addEventListener('submit',async event=>{event.preventDefault();const name=selectedNetwork();if(!name){status.textContent='Choose a network or enter its name.';return;}save.disabled=true;refresh.disabled=true;status.textContent='Connecting…';try{await request('/api/connect',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({ssid:name,password:password.value})});password.value='';pollFailures=0;polling=true;setTimeout(watch,1000);}catch(error){status.textContent=error.message;save.disabled=false;refresh.disabled=false;}});
+form.addEventListener('submit',async event=>{event.preventDefault();const name=selectedNetwork();if(!name){status.textContent='Choose a network or enter its name.';return;}save.disabled=true;refresh.disabled=true;status.textContent='Connecting…';try{await request('/api/connect',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({...{ssid:name,password:password.value},...(!cameraPassword.disabled?{camera_password:cameraPassword.value,signal_server:signalServer.value,...(signalServer.value==='custom'?{signal_server_url:signalUrl.value}:{})}:{})})});password.value='';cameraPassword.value='';pollFailures=0;polling=true;setTimeout(watch,1000);}catch(error){status.textContent=error.message;save.disabled=false;refresh.disabled=false;}});
 scan();
 </script>
 </html>

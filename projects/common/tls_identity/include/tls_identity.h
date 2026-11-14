@@ -6,7 +6,6 @@ extern "C" {
 esp_err_t tls_identity_init(void);
 const char *tls_identity_cert(void);
 const char *tls_identity_key(void);
-const char *tls_identity_setup_password(void);
 #ifdef __cplusplus
 }
 #endif

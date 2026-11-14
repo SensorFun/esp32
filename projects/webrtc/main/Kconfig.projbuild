@@ -1,0 +1,17 @@
+menu "Camera remote signaling"
+
+config CAMERA_JANUS_API_SECRET
+    string "Janus API secret"
+    default ""
+    help
+        Match the local signaling server's JANUS_API_SECRET. Keep sdkconfig and
+        build outputs private; the secret is embedded in the flashed firmware.
+
+config CAMERA_JANUS_STUN_URL
+    string "STUN URL for direct Janus-signaled camera connections"
+    default "stun:stun.l.google.com:19302"
+    help
+        Only stun: or stuns: URLs are supported. Janus routes signaling messages
+        only; the browser and camera establish a direct WebRTC connection.
+
+endmenu
