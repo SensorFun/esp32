@@ -1,11 +1,28 @@
 import { useEffect, useRef, useState } from 'react';
-import { createProof, deriveCameraAccess, verifyServer } from './access.mjs';
+import { createProof, deriveCameraAccess, normalizeMac, verifyServer } from './access.mjs';
 import { JanusSignaling } from './janus-signaling.mjs';
 import { stunOnlyServers } from './ice.mjs';
 import { Icon } from '../../components/Icon';
 
+const cameraCookie = 'esp32_camera_mac';
+const formatMac = value => normalizeMac(value).match(/../g).join(':').toUpperCase();
+function savedCamera() {
+  try {
+    const value = document.cookie.split('; ').find(cookie => cookie.startsWith(cameraCookie + '='));
+    return value ? formatMac(decodeURIComponent(value.slice(cameraCookie.length + 1))) : '';
+  } catch { return ''; }
+}
+function rememberCamera(value) {
+  try {
+    const mac = value.trim() ? formatMac(value) : '';
+    const path = new URL('.', window.location.href).pathname;
+    document.cookie = `${cameraCookie}=${encodeURIComponent(mac)}; Path=${path}; Max-Age=${mac ? 31536000 : 0}; SameSite=Lax${window.location.protocol === 'https:' ? '; Secure' : ''}`;
+  } catch { /* Invalid input or blocked cookies must not prevent camera access. */ }
+}
+
 export function RemoteCamera({ onSessionState }) {
-  const [camera, setCamera] = useState('');
+  const [camera, setCamera] = useState(savedCamera);
+  useEffect(() => { rememberCamera(camera); }, [camera]);
   const [password, setPassword] = useState('');
   const [status, setStatus] = useState('Enter your camera MAC address and provisioning password.');
   const [state, setState] = useState('idle');

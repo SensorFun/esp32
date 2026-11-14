@@ -72,6 +72,9 @@ be configured and flashed with Janus support using the `/camera` URL and server 
 Both viewers offer a sensor-specific Resolution selector: all driver sizes up to
 1600×1200 for OV2640 and 2048×1536 for OV3660. Cameras start at 320×240.
 Resolution changes retain the other camera controls and light timing profile.
+The website remembers the last valid camera MAC in a cookie for one year and
+prefills it on return. Clearing the MAC field removes that cookie. Camera
+passwords and authentication keys are never stored in it.
 FPS reports displayed frames over each one-second sampling interval. Streaming
 has no fixed 5 FPS cap; achievable FPS depends on resolution, exposure, and the
 direct connection. Larger images can take longer to transfer.
