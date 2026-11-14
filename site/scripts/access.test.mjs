@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { webcrypto, pbkdf2Sync, createHmac, createHash } from 'node:crypto';
 import { normalizeMac, roomForMac, deriveCameraAccess, createProof, verifyServer, fingerprint } from '../src/spaces/webrtc/access.mjs';
-globalThis.crypto = webcrypto;
+globalThis.crypto ??= webcrypto;
 const hmac = (key, value) => createHmac('sha256', key).update(value).digest();
 const digest = value => createHash('sha256').update(value).digest();
 const challenge = { algorithm: 'camera-scram-sha256-v2', salt: '00'.repeat(16), nonce: '01'.repeat(32), iterations: 210000 };
