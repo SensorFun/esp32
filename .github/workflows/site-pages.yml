@@ -33,8 +33,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: python -m pip install pytest hydra-core pyserial esptool
-      - run: PYTHONPATH=python python -m pytest tests --ignore=tests/e2e -q
+      # Install the workspace package as the README instructs, so tools run from any directory.
+      - run: python -m pip install -e '.[flash]' pytest
+      - run: python -m pytest tests --ignore=tests/e2e -q
 
   boards:
     runs-on: ubuntu-latest

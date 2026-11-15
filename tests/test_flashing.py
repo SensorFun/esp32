@@ -1,5 +1,6 @@
 """Validate host flashing without accessing serial hardware."""
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -155,8 +156,11 @@ class FlashTests(unittest.TestCase):
 
     def test_flash_config_can_be_inspected_without_docker(self):
         root = Path(__file__).resolve().parents[1]
+        # Run from another directory, as users may; an absolute PYTHONPATH keeps
+        # the workspace package importable without an editable install.
+        env = {**os.environ, "PYTHONPATH": str(root / "python")}
         result = subprocess.run([sys.executable, str(root / "tools/flash.py"), "--cfg", "job"],
-                                cwd=self.root, capture_output=True, text=True)
+                                cwd=self.root, env=env, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("port: null", result.stdout)
         self.assertIn("baud: 460800", result.stdout)
