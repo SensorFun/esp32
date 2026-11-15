@@ -2,6 +2,8 @@
 #include "camera_timing.h"
 #include "esp_camera.h"
 #include "esp_log.h"
+#include "nvs.h"
+#include <string>
 #include <cstring>
 #include <cmath>
 struct Control {
@@ -15,14 +17,31 @@ static constexpr const char *timing_names[] = {"high_light", "balanced", "low_li
 #include "camera_profiles.h"
 static sensor_t *sensor;
 static const char *sensor_name;
+static std::string factory_settings;
+static esp_err_t restore_settings();
+static cJSON *settings_values();
 static framesize_t max_resolution() {
     return sensor->id.PID == OV2640_PID ? FRAMESIZE_UXGA : FRAMESIZE_QXGA;
+}
+static bool valid_resolution(int size) {
+    return size >= 0 && size <= max_resolution() &&
+        resolution[size].width >= 160 && resolution[size].height >= 120;
 }
 static bool supported(const Control &c) {
     // OV2640 driver has no implementation for these two controls.
     return sensor->id.PID != OV2640_PID || (strcmp(c.name, "sharpness") && strcmp(c.name, "denoise"));
 }
-esp_err_t camera_start() {
+static void settle() {
+    // A sensor just reset, or moved to a different resolution/exposure, needs
+    // a frame or two before auto exposure/gain converge; the first capture is
+    // otherwise commonly a blown-out white (or black) frame.
+    for (int i = 0; i < 2; ++i) {
+        camera_fb_t *fb = esp_camera_fb_get();
+        if (!fb) break;
+        esp_camera_fb_return(fb);
+    }
+}
+esp_err_t camera_start(bool restore_saved) {
     camera_config_t cfg{};
     cfg.pin_pwdn = PWDN_GPIO_NUM; cfg.pin_reset = RESET_GPIO_NUM;
     cfg.pin_xclk = XCLK_GPIO_NUM; cfg.pin_sccb_sda = SIOD_GPIO_NUM; cfg.pin_sccb_scl = SIOC_GPIO_NUM;
@@ -46,7 +65,7 @@ esp_err_t camera_start() {
     } else if (sensor->id.PID == OV3660_PID) {
         sensor_name = "ov3660"; defaults = defaults_ov3660; count = sizeof(defaults_ov3660) / sizeof(Default);
     } else return ESP_ERR_NOT_SUPPORTED;
-    if (sensor->set_framesize(sensor, FRAMESIZE_QVGA) || timing.initialize(sensor)) return ESP_FAIL;
+    if (sensor->set_framesize(sensor, FRAMESIZE_QVGA) || timing.initialize(sensor) || timing.apply(0)) return ESP_FAIL;
     for (size_t i = 0; i < count; ++i) {
         if (!strcmp(defaults[i].name, "timing_profile")) {
             if (timing.apply(defaults[i].value)) return ESP_FAIL;
@@ -59,6 +78,16 @@ esp_err_t camera_start() {
     }
     }
     ESP_LOGI("camera", "Detected %s; YAML defaults applied; JPEG 320x240", sensor_name);
+    cJSON *defaults_json = settings_values();
+    char *defaults_text = cJSON_PrintUnformatted(defaults_json);
+    if (!defaults_text) { cJSON_Delete(defaults_json); return ESP_ERR_NO_MEM; }
+    factory_settings = defaults_text;
+    cJSON_free(defaults_text); cJSON_Delete(defaults_json);
+    if (restore_saved) {
+        esp_err_t restore_err = restore_settings();
+        if (restore_err != ESP_OK) return restore_err;
+    }
+    settle();
     return ESP_OK;
 }
 static bool set_resolution(framesize_t size) {
@@ -86,6 +115,82 @@ static bool set_resolution(framesize_t size) {
     ESP_ERROR_CHECK(apply(previous) ? ESP_OK : ESP_FAIL);
     return false;
 }
+static cJSON *settings_values() {
+    cJSON *value = cJSON_CreateObject();
+    cJSON_AddNumberToObject(value, "resolution", sensor->status.framesize);
+    cJSON_AddStringToObject(value, "timing_profile", timing_names[timing.selected()]);
+    for (const auto &c : controls) if (supported(c)) cJSON_AddNumberToObject(value, c.name, c.get(sensor));
+    return value;
+}
+static bool validate_values(const cJSON *values) {
+    if (!cJSON_IsObject(values)) return false;
+    const cJSON *size = cJSON_GetObjectItemCaseSensitive(values, "resolution");
+    if (!cJSON_IsNumber(size) || !std::isfinite(size->valuedouble) || size->valuedouble != std::floor(size->valuedouble) || !valid_resolution(size->valueint)) return false;
+    const cJSON *profile = cJSON_GetObjectItemCaseSensitive(values, "timing_profile");
+    if (!cJSON_IsString(profile)) return false;
+    bool known = false;
+    for (const char *name : timing_names) if (!strcmp(name, profile->valuestring)) known = true;
+    if (!known) return false;
+    for (const auto &c : controls) if (supported(c)) {
+        const cJSON *v = cJSON_GetObjectItemCaseSensitive(values, c.name);
+        if (!cJSON_IsNumber(v) || !std::isfinite(v->valuedouble) || v->valuedouble != std::floor(v->valuedouble) || v->valuedouble < c.low || v->valuedouble > c.high) return false;
+    }
+    return true;
+}
+static bool apply_values(const cJSON *values) {
+    if (timing.apply(0)) return false;
+    const int size = cJSON_GetObjectItemCaseSensitive(values, "resolution")->valueint;
+    if (sensor->status.framesize != size && !set_resolution(static_cast<framesize_t>(size))) return false;
+    for (const auto &c : controls) if (supported(c) && c.set(sensor, cJSON_GetObjectItemCaseSensitive(values, c.name)->valueint)) return false;
+    const char *profile = cJSON_GetObjectItemCaseSensitive(values, "timing_profile")->valuestring;
+    for (int i = 0; i < 3; ++i) if (!strcmp(profile, timing_names[i])) return timing.apply(i) == 0;
+    return false;
+}
+static esp_err_t store_values(const cJSON *values) {
+    char *text = cJSON_PrintUnformatted(values);
+    if (!text) return ESP_ERR_NO_MEM;
+    nvs_handle_t handle;
+    esp_err_t ret = nvs_open("camera_settings", NVS_READWRITE, &handle);
+    if (ret == ESP_OK) {
+        ret = nvs_set_str(handle, sensor_name, text);
+        if (ret == ESP_OK) ret = nvs_commit(handle);
+        nvs_close(handle);
+    }
+    cJSON_free(text);
+    return ret;
+}
+static esp_err_t restore_settings() {
+    nvs_handle_t handle;
+    esp_err_t ret = nvs_open("camera_settings", NVS_READONLY, &handle);
+    if (ret == ESP_ERR_NVS_NOT_FOUND) return ESP_OK;
+    if (ret != ESP_OK) return ret;
+    size_t size = 0;
+    ret = nvs_get_str(handle, sensor_name, nullptr, &size);
+    bool fall_back_to_defaults = false;
+    if (ret == ESP_OK && size > 0 && size <= 4096) {
+        std::string text(size, '\0');
+        ret = nvs_get_str(handle, sensor_name, text.data(), &size);
+        cJSON *value = ret == ESP_OK ? cJSON_Parse(text.c_str()) : nullptr;
+        if (!validate_values(value) || !apply_values(value)) {
+            cJSON *defaults = cJSON_Parse(factory_settings.c_str());
+            ret = defaults && apply_values(defaults) ? ESP_OK : ESP_FAIL;
+            fall_back_to_defaults = ret == ESP_OK;
+            cJSON_Delete(defaults);
+            ESP_LOGW("camera", "Saved settings invalid; using configured defaults");
+        } else ESP_LOGI("camera", "Restored saved camera settings");
+        cJSON_Delete(value);
+    } else if (ret == ESP_ERR_NVS_NOT_FOUND || (ret == ESP_OK && size > 4096)) ret = ESP_OK;
+    nvs_close(handle);
+    // Persist the healed state so an invalid blob (narrowed control range after
+    // a firmware update, flash wear) is not silently re-applied and re-rejected
+    // on every future boot.
+    if (fall_back_to_defaults) {
+        cJSON *defaults = cJSON_Parse(factory_settings.c_str());
+        store_values(defaults);
+        cJSON_Delete(defaults);
+    }
+    return ret;
+}
 cJSON *camera_settings() {
     cJSON *reply = cJSON_CreateObject();
     cJSON_AddStringToObject(reply, "type", "settings");
@@ -93,6 +198,7 @@ cJSON *camera_settings() {
     cJSON_AddNumberToObject(reply, "resolution", sensor->status.framesize);
     cJSON *sizes = cJSON_AddArrayToObject(reply, "resolutions");
     for (int i = FRAMESIZE_96X96; i <= max_resolution(); ++i) {
+        if (!valid_resolution(i)) continue;
         cJSON *size = cJSON_CreateObject();
         cJSON_AddNumberToObject(size, "value", i);
         cJSON_AddNumberToObject(size, "width", resolution[i].width);
@@ -130,18 +236,39 @@ esp_err_t camera_recover() {
     }
     esp_err_t err = esp_camera_deinit();
     if (err != ESP_OK) return err;
-    err = camera_start();
+    err = camera_start(false);
     if (err != ESP_OK) return err;
     if (sensor->id.PID != expected_sensor) return ESP_ERR_INVALID_STATE;
     if (!set_resolution(size)) return ESP_FAIL;
     for (size_t i = 0; i < count; ++i) {
         if (enabled[i] && controls[i].set(sensor, values[i]) != 0) return ESP_FAIL;
     }
-    return timing.apply(profile) == 0 ? ESP_OK : ESP_FAIL;
+    if (timing.apply(profile) != 0) return ESP_FAIL;
+    settle();
+    return ESP_OK;
 }
 cJSON *camera_command(const cJSON *request) {
     const auto *op = cJSON_GetObjectItemCaseSensitive(request, "op");
     if (cJSON_IsString(op) && !strcmp(op->valuestring, "get")) return camera_settings();
+    if (cJSON_IsString(op) && (!strcmp(op->valuestring, "apply") || !strcmp(op->valuestring, "reset_defaults"))) {
+        cJSON *defaults = !strcmp(op->valuestring, "reset_defaults") ? cJSON_Parse(factory_settings.c_str()) : nullptr;
+        const cJSON *values = defaults ? defaults : cJSON_GetObjectItemCaseSensitive(request, "settings");
+        const char *error = "Invalid camera settings";
+        if (validate_values(values)) {
+            cJSON *previous = settings_values();
+            if (apply_values(values)) {
+                if (store_values(values) == ESP_OK) {
+                    cJSON_Delete(previous); cJSON_Delete(defaults);
+                    cJSON *reply = camera_settings(); cJSON_AddBoolToObject(reply, "saved", true); return reply;
+                }
+                error = "Could not save settings; previous settings restored";
+            } else error = "Sensor rejected settings; previous settings restored";
+            ESP_ERROR_CHECK(apply_values(previous) ? ESP_OK : ESP_FAIL);
+            cJSON_Delete(previous);
+        }
+        cJSON_Delete(defaults);
+        cJSON *reply = cJSON_CreateObject(); cJSON_AddStringToObject(reply, "type", "error"); cJSON_AddStringToObject(reply, "error", error); return reply;
+    }
     const auto *name = cJSON_GetObjectItemCaseSensitive(request, "name");
     const auto *value = cJSON_GetObjectItemCaseSensitive(request, "value");
     const char *error = "Unknown camera command";
@@ -149,7 +276,7 @@ cJSON *camera_command(const cJSON *request) {
         !strcmp(name->valuestring, "resolution")) {
         if (!cJSON_IsNumber(value) || !std::isfinite(value->valuedouble) ||
             value->valuedouble != std::floor(value->valuedouble) ||
-            value->valuedouble < int(FRAMESIZE_96X96) || value->valuedouble > int(max_resolution())) {
+            !valid_resolution(value->valueint)) {
             error = "Unsupported camera resolution";
         } else if (set_resolution(static_cast<framesize_t>(value->valueint))) {
             return camera_settings();

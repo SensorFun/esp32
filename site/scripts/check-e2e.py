@@ -22,7 +22,7 @@ with sync_playwright() as p:
     page.on('request', lambda request: requests.append(request.url))
     page.on('pageerror', lambda error: print('PAGE ERROR', error))
     page.add_init_script("""const NativePeer=window.RTCPeerConnection;
-window.__exposed=0;window.__sessions=0;window.__frameStats={messages:0,bytes:0,frameStarts:0,frameEnds:0};
+window.__exposed=0;window.__sessions=0;window.__commands=[];window.__frameStats={messages:0,bytes:0,frameStarts:0,frameEnds:0};
 window.RTCPeerConnection=class extends NativePeer{
   constructor(config){super(config);window.__testPeer=this;window.__sessions++;}
   createDataChannel(...args){const channel=super.createDataChannel(...args),send=channel.send.bind(channel);
@@ -30,7 +30,9 @@ window.RTCPeerConnection=class extends NativePeer{
       window.__exposed++;window.__frameStats.messages++;window.__frameStats.bytes+=event.data.byteLength||event.data.size||0;
       if(event.data instanceof ArrayBuffer&&event.data.byteLength>=16){const v=new DataView(event.data),offset=v.getUint32(12,true),total=v.getUint32(8,true);if(!offset)window.__frameStats.frameStarts++;if(offset+event.data.byteLength-16===total)window.__frameStats.frameEnds++;window.__frameStats.last={offset,total};}
     }else if(JSON.parse(event.data).type==='settings')window.__exposed++;});
-    channel.send=data=>{const msg=JSON.parse(data);if(msg.op==='authenticate'){
+    channel.send=data=>{const msg=JSON.parse(data);if(['apply','set','reset_defaults'].includes(msg.op)){
+      window.__commands.push({op:msg.op,bytes:new TextEncoder().encode(data).length});window.__commands=window.__commands.slice(-10);
+    }if(msg.op==='authenticate'){
       if(window.__unauthenticated){send(JSON.stringify({op:'set',name:'contrast',value:2}));send(JSON.stringify({op:'get'}));return;}
       if(window.__replay && window.__sessions>1){msg.proof=window.__savedProof;data=JSON.stringify(msg);}
       else window.__savedProof=msg.proof;
@@ -65,6 +67,9 @@ window.RTCPeerConnection=class extends NativePeer{
         else: raise TimeoutError('No camera image within 60 seconds')
         assert not any('localhost:8787' in url or '/cameras' in url or '/session/' in url for url in requests), 'Unexpected signaling bridge request'
         expect(page.get_by_role('spinbutton', name='contrast', exact=True)).to_be_visible(timeout=10000)
+        original_settings = page.locator('.remote-settings').evaluate('(panel)=>panel.value')
+        page.set_viewport_size({'width': 320, 'height': 844})
+        assert page.evaluate('document.documentElement.scrollWidth<=innerWidth'), 'Connected settings overflow phone viewport'
         page.wait_for_function("parseFloat(document.querySelector('[data-testid=remote-fps]').textContent) > 0", timeout=5000)
         print('Remote displayed frame rate:', page.get_by_test_id('remote-fps').inner_text())
         sizes = page.get_by_role('combobox', name='Resolution', exact=True).locator('option').evaluate_all("options=>options.map(option=>({value:option.value,label:option.textContent}))")
@@ -79,10 +84,14 @@ window.RTCPeerConnection=class extends NativePeer{
         before = page.get_by_role('spinbutton', name='contrast', exact=True).input_value()
         page.get_by_role('spinbutton', name='contrast', exact=True).fill('1')
         expect(page.get_by_role('spinbutton', name='contrast', exact=True)).to_have_value('1')
+        page.wait_for_function("document.querySelector('.remote-settings').value.controls.find(c=>c.name==='contrast').value===1")
         page.get_by_role('combobox', name='Light timing', exact=True).select_option('balanced')
+        page.get_by_role('button', name='Save', exact=True).first.click()
+        expect(page.get_by_role('status').filter(has_text='Settings saved on camera.')).to_be_visible(timeout=20000)
         expect(page.get_by_role('combobox', name='Light timing', exact=True)).to_have_value('balanced')
-        page.get_by_role('combobox', name='Light timing', exact=True).select_option('high_light')
+        page.get_by_role('combobox', name='Light timing', exact=True).select_option(original_settings['timing_profile'])
         page.get_by_role('spinbutton', name='contrast', exact=True).fill(before)
+        page.get_by_role('button', name='Save', exact=True).first.click()
         frame_count = page.evaluate('window.__frameStats.frameEnds')
         page.wait_for_function('window.__frameStats.frameEnds >= ' + str(frame_count + 3), timeout=20000)
         expect(page.locator('.monitor-top')).to_contain_text('Direct · DTLS', timeout=15000)
@@ -92,6 +101,16 @@ window.RTCPeerConnection=class extends NativePeer{
         assert 'relay' not in stats, stats
         assert not any('192.168.' in url or '/api/session' in url for url in requests), requests
         print('PASS: direct public WebSocket signaling, live JPEG, contrast, timing, no board HTTP requests; STUN only, no relay candidates')
+        page.get_by_role('button', name='Reset to Default', exact=True).last.click()
+        expect(page.get_by_role('status').filter(has_text='Settings saved on camera.')).to_be_visible(timeout=20000)
+        page.get_by_role('combobox', name='Resolution', exact=True).select_option(str(original_settings['resolution']))
+        page.get_by_role('combobox', name='Light timing', exact=True).select_option(original_settings['timing_profile'])
+        for control in original_settings['controls']:
+            if control['supported']:
+                page.get_by_role('spinbutton', name=control['name'].replace('_', ' '), exact=True).fill(str(control['value']))
+        page.get_by_role('button', name='Save', exact=True).first.click()
+        expect(page.get_by_role('status').filter(has_text='Settings saved on camera.')).to_be_visible(timeout=20000)
+        print('PASS: website live changes, Reset to Default and Save; original settings restored; connected panel fits 320px')
         page.get_by_role('button', name='Disconnect', exact=True).click()
         expect(page.get_by_test_id('remote-status')).to_have_text('Disconnected')
         expect(page.get_by_test_id('remote-fps')).to_have_text('0.0 FPS')
@@ -110,10 +129,14 @@ window.RTCPeerConnection=class extends NativePeer{
             page.wait_for_function('window.__frameStats.frameEnds >= ' + str(frame_count + 3), timeout=20000)
             print('PASS: reconnect to the same camera session')
             page.get_by_role('button', name='Disconnect', exact=True).click()
-    except Exception:
+    except Exception as error:
         print('STATUS:', page.get_by_test_id('remote-status').inner_text())
         print('ICE:', page.evaluate("window.__testPeer && ({state:__testPeer.iceConnectionState,relay:__testPeer.localDescription?.sdp.includes('typ relay'),signaling:__testPeer.signalingState})"))
         print('STREAM:', page.evaluate('({frames:window.__frameStats,settings:document.querySelectorAll(".remote-settings").length})'))
-        raise
+        print('COMMANDS:', page.evaluate('window.__commands'))
+        # Playwright includes input values in assertion snapshots, even for
+        # password fields. Never emit the raw exception or its traceback.
+        print('FAIL:', str(error).replace(password, '<redacted>') if password else str(error))
+        sys.exit(1)
     finally:
         browser.close()

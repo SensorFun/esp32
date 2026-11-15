@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { webcrypto, pbkdf2Sync, createHmac, createHash } from 'node:crypto';
-import { normalizeMac, roomForMac, deriveCameraAccess, createProof, verifyServer, fingerprint } from '../src/spaces/webrtc/access.mjs';
+import { normalizeMac, roomForMac, deriveCameraAccess, createProof, verifyServer, fingerprint } from '../src/projects/webrtc/access.mjs';
 globalThis.crypto ??= webcrypto;
 const hmac = (key, value) => createHmac('sha256', key).update(value).digest();
 const digest = value => createHash('sha256').update(value).digest();

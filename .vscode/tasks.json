@@ -1,0 +1,55 @@
+{
+  "version": "2.0.0",
+  "inputs": [
+    {
+      "id": "device",
+      "type": "pickString",
+      "description": "Device profile to flash (config/device/*.yaml)",
+      "options": [
+        "esp32_cam_ov2640_62",
+        "esp32s3_wroom_ov3660_62"
+      ]
+    }
+  ],
+  "tasks": [
+    {
+      "label": "Run Website Locally",
+      "type": "shell",
+      "command": "npm run dev",
+      "options": {
+        "cwd": "${workspaceFolder}/site"
+      },
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      }
+    },
+    {
+      "label": "Flash Board",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/python3 tools/flash.py project=webrtc device=${input:device} clear_nvs=false",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      }
+    },
+    {
+      "label": "Flash Board (Clear NVS)",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/python3 tools/flash.py project=webrtc device=${input:device} clear_nvs=true",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      }
+    }
+  ]
+}

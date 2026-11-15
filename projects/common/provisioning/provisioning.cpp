@@ -190,7 +190,20 @@ esp_err_t status(httpd_req_t *request) {
     if (!setup_request(request)) return json_response(request, "403 Forbidden", "{\"error\":\"Use setup Wi-Fi\"}");
     const State current = state.load();
     if (current == State::storage_error) return json_response(request, "500 Internal Server Error", "{\"error\":\"Could not save Wi-Fi settings; try again\"}");
-    const char *body = current == State::connected ? "{\"state\":\"connected\"}" :
+    if (current == State::connected) {
+        esp_netif_ip_info_t ip{};
+        if (esp_netif_get_ip_info(station_netif, &ip) != ESP_OK || !ip.ip.addr)
+            return json_response(request, "200 OK", "{\"state\":\"connecting\"}");
+        char address[16]{};
+        std::snprintf(address, sizeof(address), IPSTR, IP2STR(&ip.ip));
+        std::string body = "{\"state\":\"connected\",\"ip\":" + provisioning::json_quote(address);
+#if CONFIG_CAMERA_REMOTE_ACCESS
+        body += ",\"local_url\":" + provisioning::json_quote(std::string("https://") + address + "/");
+#endif
+        body += "}";
+        return json_response(request, "200 OK", body.c_str());
+    }
+    const char *body =
         (current == State::connecting || submitting.load()) ? "{\"state\":\"connecting\"}" : "{\"state\":\"provisioning\"}";
     return json_response(request, "200 OK", body);
 }
@@ -378,7 +391,7 @@ void supervisor(void *) {
                 state = State::connecting;
                 started = last_attempt = now;
                 esp_wifi_connect();
-            } else if (ap_active && now - close_ap >= pdMS_TO_TICKS(5000)) {
+            } else if (ap_active && now - close_ap >= pdMS_TO_TICKS(30000)) {
 #if CONFIG_PROVISIONING_SECURE
                 ESP_ERROR_CHECK(httpd_ssl_stop(server));
 #else

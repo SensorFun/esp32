@@ -38,7 +38,7 @@ class FlashTests(unittest.TestCase):
         (self.build / "flash_args").write_text("--flash-mode dio\n0x0 bootloader.bin\n0x10000 app.bin\n")
         (self.build / "bootloader.bin").touch()
         (self.build / "app.bin").touch()
-        self.config = OmegaConf.create(dict(project="hello_world", board="test", port=None, baud=460800, dry_run=False))
+        self.config = OmegaConf.create(dict(project="hello_world", board="test", port=None, baud=460800, dry_run=False, clear_nvs=False))
 
     @patch("esp32_workspace.flashing.list_ports.comports")
     def test_single_supported_usb_port(self, ports):
@@ -120,6 +120,26 @@ class FlashTests(unittest.TestCase):
             run_flash(self.root, self.config)
         call.assert_not_called()
 
+    @patch("esp32_workspace.flashing.subprocess.call", return_value=0)
+    @patch("esp32_workspace.flashing.list_ports.comports", return_value=[serial_port("/dev/ttyACM1")])
+    def test_clear_nvs_erases_partition_before_flashing(self, ports, call):
+        self.config.clear_nvs = True
+        self.assertEqual(run_flash(self.root, self.config), 0)
+        self.assertEqual(call.call_count, 2)
+        erase_args, flash_args = call.call_args_list[0].args[0], call.call_args_list[1].args[0]
+        self.assertEqual(erase_args[-3:], ["erase-region", "0x9000", "0x6000"])
+        self.assertEqual(erase_args[erase_args.index("--after") + 1], "no-reset")
+        self.assertEqual(flash_args[-2:], ["write-flash", "@flash_args"])
+        self.assertEqual(flash_args[flash_args.index("--after") + 1], "hard-reset")
+
+    @patch("esp32_workspace.flashing.subprocess.call")
+    @patch("esp32_workspace.flashing.list_ports.comports", return_value=[serial_port("/dev/ttyACM1")])
+    def test_clear_nvs_stops_if_erase_fails(self, ports, call):
+        call.return_value = 11
+        self.config.clear_nvs = True
+        self.assertEqual(run_flash(self.root, self.config), 11)
+        call.assert_called_once()
+
     @patch("esp32_workspace.flashing.list_ports.comports")
     def test_two_connected_board_profiles_select_distinct_ports(self, ports):
         root = Path(__file__).resolve().parents[1]
@@ -137,3 +157,4 @@ class FlashTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("port: null", result.stdout)
         self.assertIn("baud: 460800", result.stdout)
+        self.assertIn("clear_nvs: false", result.stdout)

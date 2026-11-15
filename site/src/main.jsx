@@ -1,28 +1,23 @@
 import { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { Home } from './pages/Home';
-import { spaces } from './spaces';
+import { projects } from './projects';
 import './styles.css';
+import './sensorfan.css';
 
-function getRoute() {
-  return (window.location.hash.slice(1) || '/').split('/').filter(Boolean);
-}
 function App() {
-  const [route, setRoute] = useState(getRoute);
+  const readRoute = () => (window.location.hash.slice(1) || '/').replace(/^\/spaces(?=\/|$)/, '/projects');
+  const [route, setRoute] = useState(readRoute);
   useEffect(() => {
-    const update = () => setRoute(getRoute());
+    const update = () => { setRoute(readRoute()); window.scrollTo(0, 0); };
     window.addEventListener('hashchange', update);
     return () => window.removeEventListener('hashchange', update);
   }, []);
-  const space = route[0] === 'spaces' && route[1] ? spaces.find(s => s.id === route[1]) : null;
-  const knownHome = route.length === 0 || (route.length === 1 && ['spaces', 'about'].includes(route[0]));
-  useEffect(() => {
-    document.title = space ? `${space.name} · Device Spaces` : 'Device Spaces';
-    document.querySelector('meta[name="theme-color"]').content = space ? '#101713' : '#f3f5ef';
-    window.scrollTo(0, 0);
-    document.getElementById('main-content')?.focus({ preventScroll: true });
-  }, [route, space]);
-  const Space = space?.component;
-  return <><a className="skip-link" href="#main-content" onClick={e => { e.preventDefault(); document.getElementById('main-content')?.focus(); }}>Skip to content</a>{Space ? <Space subpage={route.slice(2).join('/')} /> : knownHome ? <Home page={route[0]} /> : <div className="not-found"><main id="main-content" tabIndex="-1"><p className="eyebrow">DEVICE SPACES</p><h1>This space isn’t here.</h1><p>Choose an available project from the collection.</p><a className="button home-primary" href="#/spaces">Find a project space →</a></main></div>}</>;
+  const project = projects.find(item => route === `/projects/${item.id}` || route === `/projects/${item.id}/`);
+  useEffect(() => { document.title = project ? `${project.name} · SensorFan` : 'SensorFan'; }, [project]);
+  const Project = project?.component;
+  if (Project) return <Project />;
+  const home = route === '/' || route === '/projects';
+  return <div className="rtc-theme sensorfan"><div className="rtc-body"><header className="sensorfan-header"><a href="#/" className="sensorfan-brand"><img src="./logo.png" alt="" /><span>SensorFan</span></a></header><main id="main-content" tabIndex="-1" className="rtc-content"><div className="sensorfan-intro"><h1>{home ? 'Projects' : 'Project not found'}</h1><p>{home ? 'Choose a project to get started.' : 'Return home to choose an available project.'}</p></div>{home ? <div className="sensorfan-projects">{projects.map(item => <a className="rtc-panel sensorfan-project" key={item.id} href={`#/projects/${item.id}`}><span className="pill">{item.category}</span><h2>{item.name}</h2><p>{item.description}</p><span className="sensorfan-project-open">Open {item.name} →</span></a>)}</div> : <a className="button rtc-primary" href="#/">Back to projects</a>}</main></div></div>;
 }
-createRoot(document.getElementById('root')).render(<App />);
+
+createRoot(document.getElementById('root')).render(<><a className="skip-link" href="#main-content" onClick={event => { event.preventDefault(); document.getElementById('main-content')?.focus(); }}>Skip to content</a><App /></>);

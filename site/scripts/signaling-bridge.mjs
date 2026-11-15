@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import { parseArgs } from 'node:util';
 import WebSocket, { WebSocketServer } from 'ws';
 import { MembershipStore } from './membership-store.mjs';
-import { stunOnlyServers } from '../src/spaces/webrtc/ice.mjs';
+import { stunOnlyServers } from '../src/projects/webrtc/ice.mjs';
 const { values } = parseArgs({ options: { state: { type: 'string' }, config: { type: 'string' }, port: { type: 'string' }, origin: { type: 'string' } } });
 if (!values.state || !values.port || !values.origin) throw Error('Required: --state PATH --port PORT --origin FRONTEND_ORIGIN [--config PATH]');
 const port = Number(values.port);

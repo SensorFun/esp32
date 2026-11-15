@@ -4,6 +4,7 @@
 #include "camera_controls.h"
 #include "remote_signaling.h"
 #include "remote_auth.h"
+#include "peer_receive.h"
 #include "local_candidates.h"
 #include "lwip/sockets.h"
 #include "esp_camera.h"
@@ -14,6 +15,8 @@
 #include "esp_netif.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "esp_wifi.h"
+#include "esp_heap_caps.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include <algorithm>
@@ -24,6 +27,21 @@
 namespace {
 constexpr char TAG[] = "local_webrtc";
 constexpr size_t CHUNK = 4096;
+esp_peer_default_cfg_t peer_defaults(uint8_t candidates) {
+    esp_peer_default_cfg_t cfg{};
+    cfg.agent_recv_timeout = CAMERA_ICE_RECEIVE_MS;
+    // Encrypted application pings already maintain NAT mappings and update
+    // activity; the worker closes peers after 30 seconds without them. Avoid
+    // a second STUN keepalive checker dropping an otherwise active channel.
+    cfg.alive_binding_retries = 0xff;
+    // The browser creates a reliable, ordered channel. Retain its packets
+    // beyond our inactivity deadline, rather than expiring them after 5 s.
+    cfg.data_ch_cfg.cache_timeout = 60000;
+    cfg.data_ch_cfg.send_cache_size = 32768;
+    cfg.data_ch_cfg.recv_cache_size = 8192;
+    cfg.max_candidates = candidates;
+    return cfg;
+}
 std::string pending_resolution;
 SemaphoreHandle_t mutex;
 esp_peer_handle_t peer;
@@ -35,6 +53,8 @@ uint16_t stream_id;
 int64_t activity = 0;
 extern const unsigned char page_start[] asm("_binary_viewer_html_start");
 extern const unsigned char page_end[] asm("_binary_viewer_html_end");
+extern const unsigned char settings_start[] asm("_binary_settings_js_start");
+extern const unsigned char settings_end[] asm("_binary_settings_js_end");
 
 struct Lock {
     Lock() { xSemaphoreTakeRecursive(mutex, portMAX_DELAY); }
@@ -66,8 +86,12 @@ int on_message(esp_peer_msg_t *msg, void *) {
     return 0;
 }
 int on_channel(esp_peer_data_channel_info_t *info, void *) {
+    // SCTP may retransmit DCEP OPEN. One camera channel is already active;
+    // generating another challenge would reset and disconnect its browser.
+    if (channel_ready) return 0;
     stream_id = info->stream_id;
     channel_ready = true;
+    camera_peer_transport_ready(true);
     activity = esp_timer_get_time();
     if (remote_peer) send_text(remote_auth.begin(remote_offer, answer));
     return 0;
@@ -86,7 +110,8 @@ int on_data(esp_peer_data_frame_t *frame, void *) {
     activity = esp_timer_get_time();
     const cJSON *op = cJSON_GetObjectItemCaseSensitive(request, "op");
     const cJSON *name = cJSON_GetObjectItemCaseSensitive(request, "name");
-    if (cJSON_IsString(op) && !strcmp(op->valuestring, "set") && cJSON_IsString(name) && !strcmp(name->valuestring, "resolution")) {
+    if (cJSON_IsString(op) && !strcmp(op->valuestring, "apply")) ESP_LOGI(TAG, "Received settings Save (%d bytes)", frame->size);
+    if (cJSON_IsString(op) && (!strcmp(op->valuestring, "apply") || !strcmp(op->valuestring, "reset_defaults") || (!strcmp(op->valuestring, "set") && cJSON_IsString(name) && !strcmp(name->valuestring, "resolution")))) {
         // Apply only after the worker releases any in-flight framebuffer.
         pending_resolution = text;
     } else if (!(cJSON_IsString(op) && !strcmp(op->valuestring, "ping"))) send_text(camera_command(request));
@@ -95,6 +120,7 @@ int on_data(esp_peer_data_frame_t *frame, void *) {
 }
 void close_peer() {
     channel_ready = false;
+    camera_peer_transport_ready(false);
     if (peer) { esp_peer_close(peer); peer = nullptr; }
     answer.clear(); pending_reply.clear(); pending_resolution.clear(); remote_offer.clear(); remote_auth.clear(); failed = false; remote_peer = false;
 }
@@ -123,8 +149,14 @@ esp_err_t page(httpd_req_t *r) {
     httpd_resp_set_type(r, "text/html; charset=utf-8");
     httpd_resp_set_hdr(r, "Cache-Control", "no-store");
     httpd_resp_set_hdr(r, "X-Content-Type-Options", "nosniff");
-    httpd_resp_set_hdr(r, "Content-Security-Policy", "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src blob:; frame-ancestors 'none'; base-uri 'none'");
+    httpd_resp_set_hdr(r, "Content-Security-Policy", "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src blob:; frame-ancestors 'none'; base-uri 'none'");
     return httpd_resp_send(r, reinterpret_cast<const char *>(page_start), page_end - page_start - 1);
+}
+esp_err_t settings_script(httpd_req_t *r) {
+    if (!same_origin(r)) return respond(r, "403 Forbidden", "{}");
+    httpd_resp_set_type(r, "application/javascript");
+    httpd_resp_set_hdr(r, "Cache-Control", "no-store");
+    return httpd_resp_send(r, reinterpret_cast<const char *>(settings_start), settings_end - settings_start - 1);
 }
 esp_err_t session(httpd_req_t *r) {
     if (!same_origin(r)) return respond(r, "403 Forbidden", "{\"error\":\"Use the local device page\"}");
@@ -168,11 +200,8 @@ esp_err_t session(httpd_req_t *r) {
     char remote_ip[INET_ADDRSTRLEN]{};
     if (!inet_ntop(AF_INET, &address, remote_ip, sizeof(remote_ip))) return ESP_FAIL;
     normalize_local_candidates(offer, remote_ip);
-    esp_peer_default_cfg_t extra{};
-    extra.agent_recv_timeout = 10;
-    extra.data_ch_cfg.send_cache_size = 32768;
-    extra.data_ch_cfg.recv_cache_size = 8192;
-    extra.max_candidates = 4;
+    esp_peer_default_cfg_t extra = peer_defaults(4);
+    camera_peer_transport_ready(false);
     esp_peer_cfg_t cfg{};
     cfg.role = ESP_PEER_ROLE_CONTROLLED;
     cfg.no_auto_reconnect = true;
@@ -216,9 +245,8 @@ void remote_events() {
             if (!RemoteAuth::configured()) { remote_send(4, "password_not_configured"); continue; }
             if (RemoteAuth::blocked()) { remote_send(4, "authentication_rate_limited"); continue; }
             remote_offer = event.data;
-            esp_peer_default_cfg_t extra{};
-            extra.agent_recv_timeout = 10; extra.data_ch_cfg.send_cache_size = 32768;
-            extra.data_ch_cfg.recv_cache_size = 8192; extra.max_candidates = 8;
+            esp_peer_default_cfg_t extra = peer_defaults(8);
+            camera_peer_transport_ready(false);
             esp_peer_ice_server_cfg_t ice{}; remote_ice(ice);
             esp_peer_cfg_t cfg{};
             cfg.server_lists = &ice; cfg.server_num = 1;
@@ -252,10 +280,20 @@ void start_server() {
     httpd_ssl_config_t cfg = HTTPD_SSL_CONFIG_DEFAULT();
 #pragma GCC diagnostic pop
     cfg.httpd.stack_size = 12288;
-    cfg.httpd.max_open_sockets = 2;
+    // Browsers open speculative TLS sockets alongside the HTML, module and
+    // session requests. Two slots evict the module's connection mid-load.
+    cfg.httpd.max_open_sockets = 4;
     cfg.httpd.lru_purge_enable = true;
     cfg.httpd.recv_wait_timeout = 5;
     cfg.httpd.send_wait_timeout = 5;
+    cfg.user_cb = [](esp_https_server_user_cb_arg_t *event) {
+        if (event->user_cb_state != HTTPD_SSL_USER_CB_SESS_ERROR) return;
+        wifi_ap_record_t ap{};
+        esp_wifi_sta_get_ap_info(&ap);
+        ESP_LOGW(TAG, "HTTPS handshake failed: internal heap %u, largest %u, RSSI %d",
+                 unsigned(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+                 unsigned(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)), int(ap.rssi));
+    };
     cfg.servercert = reinterpret_cast<const uint8_t *>(tls_identity_cert());
     cfg.servercert_len = strlen(tls_identity_cert()) + 1;
     cfg.prvtkey_pem = reinterpret_cast<const uint8_t *>(tls_identity_key());
@@ -263,6 +301,8 @@ void start_server() {
     ESP_ERROR_CHECK(httpd_ssl_start(&server, &cfg));
     httpd_uri_t route{};
     route.uri = "/"; route.method = HTTP_GET; route.handler = page;
+    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &route));
+    route.uri = "/camera-settings.js"; route.handler = settings_script;
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &route));
     route.uri = "/api/session"; route.handler = session;
     for (auto method : {HTTP_GET, HTTP_POST, HTTP_DELETE}) {
@@ -277,7 +317,7 @@ void worker(void *) {
     camera_fb_t *fb = nullptr;
     size_t offset = 0;
     uint32_t sequence = 0;
-    unsigned capture_timeouts = 0;
+    int64_t capture_stalled_since = 0;
     int64_t last_progress = 0;
     uint8_t packet[CHUNK + 16];
     for (;;) {
@@ -317,14 +357,15 @@ void worker(void *) {
             if (channel_ready && !reply_waiting && (!remote_peer || remote_auth.allowed())) {
                 if (!fb) {
                     fb = esp_camera_fb_get(); offset = 0; ++sequence; last_progress = esp_timer_get_time();
-                    if (fb) capture_timeouts = 0;
-                    else if (++capture_timeouts >= 2) {
+                    if (fb) capture_stalled_since = 0;
+                    else if (!capture_stalled_since) capture_stalled_since = esp_timer_get_time();
+                    else if (esp_timer_get_time() - capture_stalled_since >= 8000000) {
                         // The OV2640 capture pipeline can stall across control
                         // changes/reconnects. Recover with no held buffer and
                         // retain the connection and all current user settings.
                         ESP_LOGW(TAG, "Restarting stalled camera capture");
                         ESP_ERROR_CHECK(camera_recover());
-                        capture_timeouts = 0;
+                        capture_stalled_since = 0;
                         send_text(camera_settings());
                     }
                 }
@@ -344,7 +385,10 @@ void worker(void *) {
                     }
                     if (ret != 0) break;
                 }
-            } else if (!channel_ready && fb) { esp_camera_fb_return(fb); fb = nullptr; }
+            } else if (!channel_ready) {
+                capture_stalled_since = 0;
+                if (fb) { esp_camera_fb_return(fb); fb = nullptr; }
+            }
         }
         vTaskDelay(pdMS_TO_TICKS(2));
     }

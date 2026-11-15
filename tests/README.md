@@ -1,0 +1,59 @@
+# Board end-to-end tests
+
+Run from any directory:
+
+```sh
+/path/to/esp32/tests/boards_test.sh
+```
+
+The launcher uses `uv` to provide Python, pytest-xdist, browser automation,
+esptool and Node dependencies. Docker must be running, and Chromium must already
+be installed at `browser` in `tests/config/e2e.yaml`.
+The configured signaling server and tunnel must already be reachable.
+
+Each configured device gets its own worker. The workers run concurrently through
+firmware build, USB flash, fresh provisioning, public-signaling streaming and
+controls, three HTTPS reboot/reconnect cycles, and three randomized Save/reboot
+rounds plus unsaved-change and Reset-to-Default persistence checks. Operations
+on an individual board remain sequential. A failure on one board does not cancel
+the other board; the launcher exits unsuccessfully if any board fails.
+Each run prints the path to its full log and JUnit report under ignored
+`build/board-tests/`. Failure summaries name the failed stage; the log retains
+the detailed browser and USB diagnostics. Report directories are private.
+Workers also write a private `*.failure.log` immediately when a stage fails,
+so its details are available while the other board is still running.
+Local browser tests allow the board's self-signed certificate in Chromium's
+browser and context settings, preventing certificate-warning retries during
+repeated reboots while exercising HTTPS asset loading and encrypted WebRTC.
+
+Edit `tests/config/e2e.yaml` to select devices. Devices must use distinct board
+build directories and USB ports. Board ports are detected automatically. The
+launcher locks each board against another launcher run. Close serial monitors
+and other flashing tools before running.
+
+Configure signaling in each `build/webrtc/<board>/sdkconfig` beforehand, matching
+the server in the test configuration. Builds run in separate Docker containers,
+mount source read-only, and keep managed components, dependency locks and outputs
+in each board's build directory. Containers publish no ports. Each worker builds
+the website into a private temporary directory and serves it on its own host
+loopback port; tests do not modify the development website's `site/dist` output.
+
+Wi-Fi credentials come from `E2E_WIFI_SSID` / `E2E_WIFI_PASSWORD`, or ignored
+`tests/.secrets/wifi_ssid` / `tests/.secrets/wifi_password` files. If necessary,
+the launcher prompts once before starting workers. Credentials are never passed
+in command-line arguments. The tests replace board provisioning and use random
+camera passwords held only in memory. Automated USB provisioning reads its
+credentials from stdin without opening a terminal or printing prompts.
+Provision your preferred camera password
+again after testing. Camera settings are restored at the end of persistence
+tests.
+
+Useful commands:
+
+```sh
+tests/boards_test.sh --collect-only
+tests/boards_test.sh --device <configured-device>
+tests/boards_test.sh --help
+```
+
+`--collect-only` does not access USB, Docker or credentials.

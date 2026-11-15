@@ -10,7 +10,7 @@ provisioning the board Wi-Fi:
 The launcher builds the static React frontend, discovers stable MAC-derived camera room
 IDs over the USB consoles, and starts two processes:
 
-- `http://localhost:5173/#/spaces/webrtc`: the production React build.
+- `http://localhost:5173/#/projects/webrtc`: the production React build.
 - `http://localhost:8787`: a loopback-only signaling bridge.
 
 Open the frontend, click **Load cameras**, select a board, enter its camera password, and click **Connect
@@ -59,7 +59,7 @@ While the launcher is running, execute from the workspace root:
 ```sh
 .venv/bin/python site/scripts/check-e2e.py \
   --browser /path/to/chromium \
-  --url 'http://localhost:5173/#/spaces/webrtc'
+  --url 'http://localhost:5173/#/projects/webrtc'
 ```
 
 It prompts for the camera password, then checks real JPEG decoding, settings, absence of TURN servers and relay candidates, and that the browser

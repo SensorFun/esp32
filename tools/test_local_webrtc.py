@@ -33,7 +33,12 @@ def identity(port):
         if url and fingerprint:
             def drain():
                 while console.is_open:
-                    line = console.readline().decode(errors='replace').strip()
+                    try:
+                        line = console.readline().decode(errors='replace').strip()
+                    except (TypeError, OSError, serial.SerialException):
+                        if not console.is_open:
+                            return
+                        raise
                     if any(term in line.lower() for term in ('peer state', 'dtls', 'e (', 'abort()', 'assert failed', 'sctp', 'ice agent')):
                         print('USB:', line)
             threading.Thread(target=drain, daemon=True).start()
@@ -108,12 +113,12 @@ def main():
             print('Viewer status:', page.locator('#status').inner_text())
             print('Peer state:', page.evaluate("pc && ({connection:pc.connectionState, ice:pc.iceConnectionState, signaling:pc.signalingState})"))
             raise
-        wait_js(page, "document.querySelectorAll('#controls label').length > 0")
-        print('Decoded live JPEG:', page.locator('#sensor').inner_text())
+        wait_js(page, "document.querySelector('#settings-panel').value?.controls.length > 0")
+        print('Decoded live JPEG:', page.locator('#settings-panel').evaluate('(panel)=>panel.value.sensor'))
         wait_js(page, "parseFloat(document.querySelector('#fps').textContent) > 0", timeout=5000)
         print('Local displayed frame rate:', page.locator('#fps').inner_text())
         assert request_status('POST', b'busy') == 409
-        controls = page.locator('#controls label').evaluate_all("labels=>labels.map(l=>({name:l.firstChild.textContent,value:Number(l.querySelector('input').value),disabled:l.querySelector('input').disabled}))")
+        controls = page.locator('#settings-panel').evaluate("panel=>panel.value.controls.map(c=>({name:c.name,value:c.value,disabled:!c.supported}))")
         page.evaluate("window.lastResponse=null; channel.addEventListener('message', e=>{if(typeof e.data==='string') window.lastResponse=JSON.parse(e.data);})")
         for control in controls:
             if control['disabled']:
@@ -127,6 +132,8 @@ def main():
         initial = page.evaluate('window.lastResponse')
         maximum = (1600, 1200) if initial['sensor'] == 'ov2640' else (2048, 1536)
         sizes = initial['resolutions']
+        assert (sizes[0]['width'], sizes[0]['height']) == (160, 120)
+        assert all(size['width'] >= 160 and size['height'] >= 120 for size in sizes)
         assert (sizes[-1]['width'], sizes[-1]['height']) == maximum
         original_resolution = initial['resolution']
         for size in sizes:
@@ -138,7 +145,7 @@ def main():
         page.get_by_role('combobox', name='Resolution', exact=True).select_option(str(original_resolution))
         wait_js(page, "document.querySelector('#preview').naturalWidth===320 && document.querySelector('#preview').naturalHeight===240", timeout=30000)
         print('All', len(sizes), 'resolutions decoded, including', maximum)
-        for invalid in (-1, 999, 6.5, 'invalid'):
+        for invalid in (-1, 0, 2, 999, 6.5, 'invalid'):
             page.evaluate("value=>{window.lastResponse=null;command({op:'set',name:'resolution',value});}", invalid)
             wait_js(page, "window.lastResponse?.type==='error'")
             assert page.evaluate('window.lastResponse.error') == 'Unsupported camera resolution'
@@ -151,7 +158,7 @@ def main():
         readbacks = []
         for profile, factor in [('balanced', 2), ('low_light', 3 if initial['sensor'] == 'ov3660' else 4), ('high_light', 1)]:
             page.evaluate('window.lastResponse=null')
-            page.locator('#timing select').select_option(profile)
+            page.get_by_role('combobox', name='Light timing', exact=True).select_option(profile)
             wait_js(page, 'window.lastResponse !== null')
             response = page.evaluate('window.lastResponse')
             assert response.get('timing_profile') == profile, (profile, response)
@@ -170,11 +177,11 @@ def main():
         original = next(c['value'] for c in controls if c['name'] == 'contrast')
         new = -1 if original != -1 else 1
         page.evaluate("value=>command({op:'set',name:'contrast',value})", new)
-        wait_js(page, "v=>Array.from(document.querySelectorAll('#controls label')).some(l=>l.firstChild.textContent==='contrast' && Number(l.querySelector('input').value)===v)", arg=new)
+        wait_js(page, "v=>document.querySelector('#settings-panel').value.controls.some(c=>c.name==='contrast'&&c.value===v)", arg=new)
         page.evaluate("command({op:'set',name:'contrast',value:999})")
         wait_js(page, "document.querySelector('#status').textContent.includes('within the advertised range')")
         page.evaluate("value=>command({op:'set',name:'contrast',value})", original)
-        wait_js(page, "v=>Array.from(document.querySelectorAll('#controls label')).some(l=>l.firstChild.textContent==='contrast' && Number(l.querySelector('input').value)===v)", arg=original)
+        wait_js(page, "v=>document.querySelector('#settings-panel').value.controls.some(c=>c.name==='contrast'&&c.value===v)", arg=original)
         stats = page.evaluate("async()=>Array.from((await pc.getStats()).values()).filter(s=>s.type==='transport').map(s=>({dtlsState:s.dtlsState,tlsVersion:s.tlsVersion,dtlsCipher:s.dtlsCipher}))")
         assert any(s['dtlsState'] == 'connected' for s in stats), stats
         print('WebRTC transport:', stats)

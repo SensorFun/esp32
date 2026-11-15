@@ -186,3 +186,34 @@ or Wi-Fi settings. With the signaling stack running:
 If provisioning is needed, `tools/provision.py --camera-password-file` can read
 one of these private camera password files while prompting for Wi-Fi credentials
 locally. Do not send Wi-Fi passwords in chat or put them in command arguments.
+
+## Fresh flash-and-provision test
+
+`tests/e2e/test_provision_and_stream.py` exercises the complete first-run
+path instead of a pre-provisioned board: it builds and flashes the firmware,
+`wifi-reset`s any previous provisioning, provisions over the USB console with
+a disposable random camera password (never written to disk), waits for the
+board to reach the default public signaling server, then builds and serves
+the site locally and drives a real browser through the public tunnel to
+confirm streaming, live setting changes, Save ("apply"), and Reset to
+Default. It assumes the board/device's local sdkconfig already has the
+matching signaling API secret configured (menuconfig), the same prerequisite
+as the test above.
+
+The boards under test come from the Hydra fixture config `tests/config/e2e.yaml`
+(`devices`, `server`, `browser`), composed by `tests/e2e/conftest.py`. Edit
+`devices` to the device profiles (`config/device/*.yaml`) you have physically
+connected — the test runs once per listed device. Each board's USB port is
+auto-detected per run (via the same `boards/programming_ports.tsv` identity
+matching `tools/flash.py` uses), since ports can change; a device missing
+from `tests/config/e2e.yaml`'s list, or not actually connected, fails the fixture
+rather than being silently skipped.
+
+```sh
+.venv/bin/python -m pytest tests/e2e/test_provision_and_stream.py
+```
+
+Wi-Fi credentials are never read from `tests/config/e2e.yaml` (that file is
+tracked). Set `E2E_WIFI_SSID`/`E2E_WIFI_PASSWORD` or leave them unset to be
+prompted once per run, interactively, for all boards under test; do not pass
+the password as a command argument.

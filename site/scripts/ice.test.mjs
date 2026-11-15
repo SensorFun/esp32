@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { stunOnlyServers } from '../src/spaces/webrtc/ice.mjs';
+import { stunOnlyServers } from '../src/projects/webrtc/ice.mjs';
 
 test('STUN-only policy removes relays and credentials from mixed service configuration', () => {
   const input = [

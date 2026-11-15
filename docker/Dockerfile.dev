@@ -4,9 +4,16 @@ USER root
 ARG HOST_USER
 ARG HOST_UID
 ARG HOST_GID
-RUN if id ubuntu >/dev/null 2>&1; then userdel --remove ubuntu; fi \
-    && if ! getent group "${HOST_GID}"; then groupadd --gid "${HOST_GID}" "${HOST_USER}"; fi \
-    && useradd --uid "${HOST_UID}" --gid "${HOST_GID}" --create-home --shell /bin/bash "${HOST_USER}"
+# A root host (HOST_UID=0, e.g. a root-only sandbox/CI container) already has
+# that user; useradd would collide with it. Everyone else gets a matching
+# host user/group so bind-mounted files keep the host's ownership.
+RUN if [ "${HOST_UID}" = "0" ]; then \
+        if [ "${HOST_USER}" != "root" ]; then echo "HOST_UID=0 must be root" >&2; exit 1; fi; \
+    else \
+        if id ubuntu >/dev/null 2>&1; then userdel --remove ubuntu; fi \
+        && if ! getent group "${HOST_GID}"; then groupadd --gid "${HOST_GID}" "${HOST_USER}"; fi \
+        && useradd --uid "${HOST_UID}" --gid "${HOST_GID}" --create-home --shell /bin/bash "${HOST_USER}"; \
+    fi
 COPY pyproject.toml README.md /opt/esp32-workspace/
 COPY python /opt/esp32-workspace/python
 RUN /bin/bash -c "source /opt/esp/idf/export.sh && python -m pip install --no-cache-dir /opt/esp32-workspace"

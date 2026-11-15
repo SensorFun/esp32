@@ -121,7 +121,7 @@ int main() {
         harness = r'''
 const vm=require('node:vm'),assert=require('node:assert/strict');
 const elements={};
-for(const id of ['setup','ssid','manual-ssid','manual-network','password','camera-access','camera-password','signal-server','signal-server-url','custom-signal-server','refresh','save','status']) {
+for(const id of ['setup','ssid','manual-ssid','manual-network','password','camera-access','camera-password','signal-server','signal-server-url','custom-signal-server','refresh','save','status','local-viewer','local-viewer-link']) {
     elements[id]={value:'',disabled:false,textContent:'',children:[],handlers:{},
         addEventListener(name,fn){this.handlers[name]=fn;},
         replaceChildren(){this.children=[];},append(child){this.children.push(child);}};
@@ -184,8 +184,13 @@ const flush=async()=>{for(let i=0;i<8;i++)await Promise.resolve();};
     assert.equal(calls.at(-1).options.body.get('ssid'),'Hidden network');
     assert.equal(calls.at(-1).options.body.get('signal_server'),'custom');
     assert.equal(calls.at(-1).options.body.get('signal_server_url'),'wss://signal.example.test/camera');
-    reply({state:'connected'});await timers.shift()();
+    reply({state:'connected',ip:'192.0.2.25',local_url:'https://192.0.2.25/'});await timers.shift()();
     assert.match(elements.status.textContent,/settings are saved/);
+    assert.equal(elements['local-viewer'].hidden,false);
+    assert.equal(elements['local-viewer-link'].href,'https://192.0.2.25/');
+    assert.equal(elements['local-viewer-link'].textContent,'https://192.0.2.25/');
+    vm.runInContext('showLocalViewer({ip:"192.0.2.25",local_url:"javascript:alert(1)"})',context);
+    assert.equal(elements['local-viewer'].hidden,true);
     assert.ok(!calls.some(call=>call.path==='/api/reset'));
 })().catch(error=>{console.error(error);process.exitCode=1;});
 '''

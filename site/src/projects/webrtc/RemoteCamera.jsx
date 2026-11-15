@@ -3,6 +3,7 @@ import { createProof, deriveCameraAccess, normalizeMac, verifyServer } from './a
 import { Signaling } from './signaling.mjs';
 import { stunOnlyServers } from './ice.mjs';
 import { Icon } from '../../components/Icon';
+import '../../../../projects/common/camera_ui/settings.js';
 
 const cameraCookie = 'esp32_camera_mac';
 const formatMac = value => normalizeMac(value).match(/../g).join(':').toUpperCase();
@@ -24,13 +25,23 @@ export function RemoteCamera({ onSessionState }) {
   const [camera, setCamera] = useState(savedCamera);
   useEffect(() => { rememberCamera(camera); }, [camera]);
   const [password, setPassword] = useState('');
-  const [status, setStatus] = useState('Enter your camera MAC address and provisioning password.');
+  const [status, setStatus] = useState('');
   const [state, setState] = useState('idle');
   const [settings, setSettings] = useState(null);
   const [transport, setTransport] = useState('—');
   const [fps, setFps] = useState(0);
   const image = useRef(null);
   const connection = useRef(null);
+  const settingsPanel = useRef(null);
+  useEffect(() => { if (settings && settingsPanel.current) settingsPanel.current.settings = settings; }, [settings]);
+  const hasSettings = settings !== null;
+  useEffect(() => {
+    const panel = settingsPanel.current;
+    if (!panel) return;
+    const send = event => command(event.detail);
+    panel.addEventListener('camera-command', send);
+    return () => panel.removeEventListener('camera-command', send);
+  }, [hasSettings]);
   useEffect(() => {
     if (state !== 'connected') return;
     const session = connection.current;
@@ -96,7 +107,7 @@ export function RemoteCamera({ onSessionState }) {
             startAuthenticated();
           } else if (message.type === 'auth_error') throw Error(message.error || 'Camera authentication failed');
           else if (session.authenticated && message.type === 'settings') setSettings(message);
-          else if (session.authenticated && message.type === 'error') setStatus(message.error);
+          else if (session.authenticated && message.type === 'error') { setStatus(message.error); if (settingsPanel.current) settingsPanel.current.error = message.error; }
         } catch (error) { if (alive()) stop(error.message); }
         return;
       }
@@ -184,12 +195,12 @@ export function RemoteCamera({ onSessionState }) {
     session.socket.onclose = () => { if (alive() && connection.current) stop('Signaling connection disconnected'); };
   }
   return <section className="remote-camera" data-state={state}>
-    <div className="rtc-panel remote-connection"><div className="panel-title"><Icon name="signal" /><h2>Remote camera</h2></div><p>Enter the camera MAC and the password chosen during setup. Your camera room is derived privately from both.</p>
-      <div className="remote-credentials">
-        <label htmlFor="camera-mac">Camera MAC address</label><input id="camera-mac" value={camera} placeholder="AA:BB:CC:DD:EE:FF" autoComplete="off" disabled={state !== 'idle'} onChange={e => setCamera(e.target.value)} /><label htmlFor="camera-access-password">Camera password</label><input id="camera-access-password" type="password" autoComplete="current-password" value={password} disabled={state !== 'idle'} onChange={e => setPassword(e.target.value)} /><div className="remote-actions"><button className="button rtc-primary" disabled={!password || !camera || state !== 'idle'} onClick={connect}>Connect camera</button><button className="button rtc-secondary" disabled={state === 'idle'} onClick={() => stop()}>Disconnect</button></div></div>
-      <p className="muted">Direct WebRTC · STUN enabled · TURN relay disabled</p><p role="status" data-testid="remote-status">{status}</p>
+    <div className="rtc-panel remote-connection"><div className="panel-title"><Icon name="signal" /><h2>Remote camera</h2></div>
+      <form className="remote-credentials" onSubmit={event => { event.preventDefault(); if (camera && password && state === 'idle') connect(); }}>
+        <label htmlFor="camera-mac">Camera MAC address</label><input id="camera-mac" value={camera} placeholder="AA:BB:CC:DD:EE:FF" autoComplete="off" disabled={state !== 'idle'} onChange={e => setCamera(e.target.value)} /><label htmlFor="camera-access-password">Camera password</label><input id="camera-access-password" type="password" autoComplete="current-password" value={password} disabled={state !== 'idle'} onChange={e => setPassword(e.target.value)} /><div className="remote-actions"><button type="submit" className="button rtc-primary" disabled={!password || !camera || state !== 'idle'}>Connect camera</button><button type="button" className="button rtc-secondary" disabled={state === 'idle'} onClick={() => stop()}>Disconnect</button></div></form>
+      <p className="muted">Direct WebRTC</p><p role="status" data-testid="remote-status">{status}</p>
     </div>
     <div className="monitor"><div className="monitor-top"><span>CAMERA PREVIEW</span><span data-testid="remote-fps" title="Displayed frames per second · 1-second average">{fps.toFixed(1)} FPS</span><span>{transport}</span></div><div className="remote-preview"><img ref={image} alt="Remote camera stream" data-testid="remote-image" onLoad={() => { const session = connection.current; if (session?.authenticated && image.current?.getAttribute('src') === session.url) session.displayedFrames++; }} />{state !== 'connected' && <span>Awaiting encrypted camera stream</span>}</div></div>
-    {settings && <section className="rtc-panel remote-settings"><h2>Camera settings · {settings.sensor}</h2>{settings.resolutions?.length > 0 && <label>Resolution<select aria-label="Resolution" value={settings.resolution} onChange={e => command({ op: 'set', name: 'resolution', value: Number(e.target.value) })}>{settings.resolutions.map(size => <option key={size.value} value={size.value}>{size.width} × {size.height}</option>)}</select></label>}<label>Light timing<select aria-label="Light timing" value={settings.timing_profile} onChange={e => command({ op: 'set', name: 'timing_profile', value: e.target.value })}>{settings.timing_profiles.map(name => <option key={name} value={name}>{({ high_light: 'High light', balanced: 'Mid light', low_light: 'Low light' })[name]}</option>)}</select></label><div className="remote-controls">{settings.controls.map(c => <label key={c.name}>{c.name}<input aria-label={c.name} type="number" min={c.min} max={c.max} step="1" value={c.value} disabled={!c.supported} onChange={e => { const value = Number(e.target.value); if (Number.isInteger(value) && value >= c.min && value <= c.max) command({ op: 'set', name: c.name, value }); }} /></label>)}</div></section>}
+    {settings && <sensorfan-camera-settings className="remote-settings" ref={settingsPanel} />}
   </section>;
 }

@@ -99,7 +99,7 @@ def main():
         reader.start()
         for port, camera, password, _ in devices:
             command = [sys.executable, str(ROOT / 'site/scripts/check-e2e.py'), '--browser', str(args.browser),
-                       '--url', f'http://127.0.0.1:{server.server_port}/#/spaces/webrtc', '--mac', camera, '--password-stdin']
+                       '--url', f'http://127.0.0.1:{server.server_port}/#/projects/webrtc', '--mac', camera, '--password-stdin']
             for flags, value in [(['--reject'], password + '-wrong'), (['--unauthenticated'], password), (['--replay'], password), ([], password)]:
                 subprocess.run(command + flags, input=value + '\n', text=True, check=True)
                 time.sleep(3)

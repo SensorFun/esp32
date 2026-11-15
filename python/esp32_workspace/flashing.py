@@ -15,6 +15,35 @@ from .cli import command
 # Espressif native USB and common USB-to-UART bridge vendors.
 USB_VENDORS = {0x303A, 0x10C4, 0x1A86, 0x0403, 0x067B}
 
+# ESP-IDF's standard single-app partition table places nvs here; projects
+# without a custom partitions.csv (e.g. hello_world) use that default table.
+DEFAULT_NVS_PARTITION = (0x9000, 0x6000)
+
+
+def _parse_partition_size(value: str) -> int:
+    value = value.strip()
+    if value.lower().startswith("0x"):
+        return int(value, 16)
+    if value[-1:].upper() == "K":
+        return int(value[:-1]) * 1024
+    if value[-1:].upper() == "M":
+        return int(value[:-1]) * 1024 * 1024
+    return int(value)
+
+
+def nvs_partition(root: Path, project: str) -> tuple[int, int]:
+    path = root / "projects" / project / "partitions.csv"
+    if not path.is_file():
+        return DEFAULT_NVS_PARTITION
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        fields = [field.strip() for field in line.split(",")]
+        if len(fields) >= 5 and fields[2] == "nvs":
+            return _parse_partition_size(fields[3]), _parse_partition_size(fields[4])
+    raise ValueError(f"No nvs partition found in {path}")
+
 
 def detect_port(root: Path, board: str) -> str:
     ports = sorted(list_ports.comports(), key=lambda port: port.device)
@@ -50,6 +79,8 @@ def run_flash(root: Path, config: DictConfig) -> int:
         raise ValueError("dry_run must be true or false")
     if type(config.baud) is not int or config.baud <= 0:
         raise ValueError("baud must be a positive integer")
+    if not isinstance(config.clear_nvs, bool):
+        raise ValueError("clear_nvs must be true or false")
     # Reuse the firmware selection validation without running idf.py.
     command(root, config.project, config.board, "build", None, config.get("camera_sensor"))
     build = root / "build" / config.project / config.board
@@ -79,13 +110,19 @@ def run_flash(root: Path, config: DictConfig) -> int:
         print(f"Detected programming port: {port}", flush=True)
     elif not isinstance(port, str) or not port.strip():
         raise ValueError("port must be null for automatic detection or a nonempty device name")
-    cmd = [sys.executable, "-m", "esptool", "--chip", extra["chip"],
-           "--port", port, "--baud", str(config.baud),
-           "--before", extra["before"], "--after", extra["after"]]
+    base = [sys.executable, "-m", "esptool", "--chip", extra["chip"], "--port", port, "--baud", str(config.baud)]
     if not extra["stub"]:
-        cmd.append("--no-stub")
-    cmd += ["write-flash", "@flash_args"]
+        base.append("--no-stub")
+    cmd = [*base, "--before", extra["before"], "--after", extra["after"], "write-flash", "@flash_args"]
     print(f"Working directory: {build}", flush=True)
+    if config.clear_nvs:
+        offset, size = nvs_partition(root, config.project)
+        erase_cmd = [*base, "--before", extra["before"], "--after", "no-reset", "erase-region", hex(offset), hex(size)]
+        print(shlex.join(erase_cmd), flush=True)
+        if not config.dry_run:
+            result = subprocess.call(erase_cmd, cwd=build)
+            if result:
+                return result
     print(shlex.join(cmd), flush=True)
     if config.dry_run:
         return 0

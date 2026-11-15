@@ -1,0 +1,10 @@
+# Hardware e2e fixture: the boards expected to be connected for
+# tests/e2e, and where to reach the public signaling server and browser.
+# Edit `devices` to match the device profiles (config/device/*.yaml) you
+# have physically connected; USB ports are auto-detected per board by
+# tools/flash.py's own identity matching (boards/programming_ports.tsv),
+# since ports can change between runs.
+devices: [esp32_cam_ov2640_62, esp32s3_wroom_ov3660_62]
+server: signalserver.sensorfun.net
+# Installed Chromium executable; required, no auto-detection.
+browser: /root/.cache/ms-playwright/chromium-1255/chrome-linux64/chrome

@@ -33,7 +33,7 @@ try {
   const result = spawnSync('docker', ['run', '--rm', '--read-only', '--cap-drop=ALL', '--network', `container:${server}`,
     '-e', 'SIGNALING_API_SECRET', '-e', 'TEST_VIEWER_URL', '-e', 'TEST_CAMERA_URL',
     ...mount(`${folder}/client-test.mjs`, '/workspace/tools/signal_server/client-test.mjs'),
-    ...mount(`${root}/site/src/spaces/webrtc/signaling.mjs`, '/workspace/site/src/spaces/webrtc/signaling.mjs'),
+    ...mount(`${root}/site/src/projects/webrtc/signaling.mjs`, '/workspace/site/src/projects/webrtc/signaling.mjs'),
     ...mount(`${root}/site/node_modules/ws`, '/workspace/site/node_modules/ws'),
     'node:22-bookworm-slim', 'node', '--test', '/workspace/tools/signal_server/client-test.mjs'], { env: environment, stdio: 'inherit' });
   process.exitCode = result.status ?? 1;

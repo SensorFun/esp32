@@ -7,3 +7,5 @@ defaults:
 # null selects a programming port automatically; override with port=... .
 port: null
 baud: 460800
+# Erase the nvs partition (Wi-Fi/camera provisioning) before flashing.
+clear_nvs: false

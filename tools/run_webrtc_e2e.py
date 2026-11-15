@@ -49,7 +49,7 @@ def main():
         config.write_text(json.dumps(cameras))
         processes.append(subprocess.Popen(['node', 'scripts/signaling-bridge.mjs', '--state', str(ROOT / 'build/e2e/signaling-memberships.json'), '--config', str(config), '--port', '8787', '--origin', 'http://localhost:5173'], cwd=ROOT / 'site'))
         processes.append(subprocess.Popen(['npm', 'run', 'preview', '--', '--host', 'localhost', '--port', '5173', '--strictPort'], cwd=ROOT / 'site', start_new_session=True))
-        print('Open http://localhost:5173/#/spaces/webrtc and enter a MAC + camera password (Load cameras is optional).', flush=True)
+        print('Open http://localhost:5173/#/projects/webrtc and enter a MAC + camera password (Load cameras is optional).', flush=True)
         print('STUN-only mode: TURN relay is disabled. Same-LAN tests do not prove connectivity through every NAT.', flush=True)
         while all(p.poll() is None for p in processes):
             # Drain serial output without logging credentials/session details.

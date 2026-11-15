@@ -71,8 +71,14 @@ All numeric settings in the current YAML profiles have sensor-driver mappings.
 The viewer also exposes the other common image/exposure/white-balance controls.
 OV2640 sharpness and denoise are disabled because its driver does not implement
 them. Settings are validated on the device and acknowledged with the sensor
-status; failures return errors. Changes are volatile and YAML defaults are
-reapplied on reboot.
+status; failures return errors. Both viewers use the same settings component at
+`projects/common/camera_ui/settings.js`. Edits take effect immediately without
+writing flash. **Save** validates and stores the complete configuration in the
+board's NVS. Save and Reset buttons appear above and below the controls. Resolution, light
+timing, and supported numeric controls are restored after reboot. **Reset to
+Default** applies and saves the firmware's YAML/driver defaults. Invalid stored
+configurations fall back to defaults. Writes occur only on Save or Reset, not
+on keystrokes or periodic status refreshes. Legacy `set` commands remain volatile.
 
 `timing_profile` offers **High light**, **Mid light (balanced)**, and **Low light**
 on both cameras. High restores the driver's resolution-specific native timing;
@@ -81,18 +87,36 @@ limit) and 4x for OV2640. OV3660 changes HTS (`0x380c/0x380d`),
 while OV2640 changes the sensor clock divider (sensor-bank `CLKRC`). Timing
 registers are read back before acknowledging a change, and failures restore the
 previous setting. Longer line periods allow longer exposure but reduce the
-sensor's maximum frame rate; the stream still has its separate 5 fps cap.
+sensor's maximum frame rate.
 
 The profile names match the server. The OV5647/P4's absolute HTS/VTS values are
 sensor-specific and are not copied to these sensors. Both sensor YAML files
 can select `high_light`, `balanced`, or `low_light` as a startup default.
 
-The initial stream is hardware JPEG, 320x240, capped at 5 fps to accommodate
-ESP32-CAM. Frames are split into 4096-byte chunks with a 16-byte little-endian
+The stream is hardware JPEG, initially 320x240 unless saved settings select
+another resolution. Streaming has no fixed FPS cap. Frames are split into
+4096-byte chunks with a 16-byte little-endian
 header (`JPEG` magic, frame sequence, total size, byte offset). The viewer
 bounds-checks and reassembles frames. Backpressure retries are bounded and
 incomplete frames are discarded. Commands are bounded JSON messages on the
 same encrypted channel; no camera-control HTTP endpoints exist.
+Frame capture waits at most 100 ms per poll so the worker continues processing
+WebRTC traffic between missing frames. Eight seconds without a frame triggers
+camera recovery while retaining the current settings.
+
+The pinned `esp_peer` transport uses a 500 ms receive wait during ICE/DTLS/SCTP
+setup and switches to 10 ms after the data channel opens. `peer_receive.c`
+implements that transition, including resetting it for reconnects. This allows
+STUN replies time to arrive while preserving short idle polls during streaming.
+Peer liveness uses encrypted data-channel pings and the application's 30-second
+inactivity deadline. The library's redundant periodic STUN keepalive checker is
+disabled; initial ICE/STUN negotiation remains enabled.
+Reliable data-channel packets are retained for 60 seconds, beyond the inactivity
+deadline, to avoid discarding ordered messages during temporary backpressure.
+`peer_send.c` gives the pinned UDP transport's explicit queue-full result a
+250 ms retry budget (plus the final transport call), preserving the same
+encrypted datagram. Other results pass through unchanged. Persistent failures
+report packet size and available internal memory without recording payloads.
 
 ## Security scope
 
@@ -123,6 +147,20 @@ HTTPS certificate, checks access without credentials and origin rules, connects 
 decodes camera JPEG, exercises sensor controls and invalid values, inspects
 DTLS connection statistics, and reconnects. It writes no credentials or camera
 images. Keep serial monitors closed while flashing or running either USB tool.
+
+The full hardware E2E suite (`python -m pytest tests/e2e -v -s`) also runs
+`tools/test_https_reconnect.py` and `tools/test_camera_settings.py` after its
+public-signaling browser checks. The HTTPS test checks HTML, the shared settings
+module, parallel requests, settings and video after repeated hardware resets.
+The viewer allows four HTTPS sockets so browser parallel connections do not
+evict a controls-module download, and enables Connect only after controls load.
+Three randomized rounds change at least five supported image controls, resolution,
+and light timing. Each round saves through the GUI, restarts the board over USB,
+opens a new viewer, and compares the complete reported configuration. It also
+checks unsaved changes and Reset to Default across restarts, then restores the
+original settings. The printed seed can be replayed with `--seed`; use `--rounds`
+to increase coverage. The persistence tool needs `--url` and `--port`; snapshots
+are optional and contain settings only.
 
 ## Private signaling
 

@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { randomBytes, webcrypto } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { setTimeout as delay } from 'node:timers/promises';
-import { Signaling } from '../../site/src/spaces/webrtc/signaling.mjs';
+import { Signaling } from '../../site/src/projects/webrtc/signaling.mjs';
 const require = createRequire(new URL('../../site/package.json', import.meta.url));
 const WebSocket = require('ws');
 globalThis.WebSocket = WebSocket;
