@@ -182,11 +182,13 @@ unique board ID. For example:
 esp32_ai-thinker_cam:
   name: AI Thinker ESP32-CAM
   header: esp32_ai-thinker_cam.h
+  image: images/esp32_ai-thinker_cam.png
   target: esp32
   supported_frame_grabber: [ov]
 ```
 
-`header` is relative to `boards/`; several entries may share one header. Headers
+`header` is relative to `boards/`; several entries may share one header.
+`image` is relative to `config/boards/` and must be a file in `config/boards/images/`. Headers
 contain pin assignments and `common_board_config` for reset wiring and Wi-Fi
 capability. Use `board_display_name` for its `.name`; CMake generates that value
 from YAML in a build-local wrapper, then includes the selected pinout header.

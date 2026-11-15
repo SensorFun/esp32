@@ -1,5 +1,6 @@
 esp32s3n16r8_espressif_cam:
   name: ESP32-S3-WROOM N16R8 CAM
   header: esp32s3n16r8_espressif_cam.h
+  image: images/esp32s3n16r8_espressif_cam.png
   target: esp32s3
   supported_frame_grabber: [ov, gc]

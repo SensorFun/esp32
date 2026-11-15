@@ -3,6 +3,7 @@
 esp32s3n16r8_goouuu_cam:
   name: Goouuu Tech ESP32-S3-CAM N16R8
   header: esp32s3n16r8_espressif_cam.h
+  image: images/esp32s3n16r8_goouuu_cam.jpg
   target: esp32s3
   supported_frame_grabber: [ov, gc]
   sdkconfig_defaults: [esp32s3_n16r8.defaults]

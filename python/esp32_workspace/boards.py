@@ -28,6 +28,12 @@ def load_catalog(root: Path) -> dict:
             header_path = (root / 'boards' / header).resolve()
             if not header_path.is_relative_to((root / 'boards').resolve()) or not header_path.is_file():
                 raise ValueError(f'Missing or invalid header for {board}: {header}')
+            image = metadata.get('image')
+            if image is not None:
+                images = (root / 'config/boards/images').resolve()
+                image_path = (root / 'config/boards' / str(image)).resolve()
+                if not isinstance(image, str) or Path(image).is_absolute() or not image_path.is_relative_to(images) or not image_path.is_file():
+                    raise ValueError(f'Missing or invalid image for {board}: {image}')
             grabbers = metadata.get('supported_frame_grabber', [])
             if not isinstance(grabbers, list) or any(
                 not isinstance(name, str) or not re.fullmatch(r'[a-zA-Z0-9_]+', name)

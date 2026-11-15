@@ -57,6 +57,12 @@ class BoardCatalogTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'frame grabber'):
             load_catalog(self.root)
 
+    def test_board_images_exist(self):
+        catalog = load_catalog(ROOT)
+        for board, metadata in catalog.items():
+            with self.subTest(board=board):
+                self.assertTrue((ROOT / 'config/boards' / metadata['image']).is_file())
+
     def test_duplicate_board_rejected(self):
         (self.root / 'config/boards/other.yaml').write_text(yaml.safe_dump(self.entries))
         with self.assertRaisesRegex(ValueError, 'Duplicate board'):
@@ -66,7 +72,8 @@ class BoardCatalogTests(unittest.TestCase):
         for change in ({'name': ''}, {'target': 'wrong'}, {'header': 'missing.h'},
                        {'header': '../outside.h'}, {'header': '/tmp/outside.h'},
                        {'supported_frame_grabber': ['unknown']}, {'supported_frame_grabber': 'ov'},
-                       {'sdkconfig_defaults': ['../outside']}):
+                       {'sdkconfig_defaults': ['../outside']}, {'image': 'images/missing.png'},
+                       {'image': '../boards/maker.yaml'}, {'image': '/tmp/outside.png'}, {'image': 3}):
             with self.subTest(change=change):
                 original = self.entries['first'].copy()
                 self.entries['first'].update(change)
