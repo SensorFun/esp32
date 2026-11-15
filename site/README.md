@@ -42,7 +42,7 @@ repository subpaths and custom-domain roots:
 
 - `/#/` — ESP32 project list
 - `/#/projects/webrtc` — WebRTC camera workspace
-- `/#/projects/flasher` — browser firmware flasher
+- `/#/tools/flasher` — browser firmware flasher (`?project=<id>` selects a project)
 
 Other hashes show a page-not-found screen with links to the project list and to
 SensorFun.
@@ -95,35 +95,92 @@ encrypted WebRTC.
 
 ## Flasher
 
-`/#/projects/flasher` writes firmware you built locally to a board over USB,
-using Web Serial and Espressif's [esptool-js](https://github.com/espressif/esptool-js).
+`/#/tools/flasher` writes firmware to a board over USB entirely in the
+browser, using Web Serial and Espressif's [esptool-js](https://github.com/espressif/esptool-js).
 It needs Chrome or Edge on a computer, over HTTPS or localhost; other browsers
-see an explanation instead.
+see an explanation instead. The older `/#/projects/flasher` address still works.
 
-1. Build: `python3 tools/build.py project=webrtc device=<device>`.
-2. **Choose build folder**: pick `build/webrtc` (every board build inside is
-   listed) or one `build/webrtc/<board>` folder. The page reads
-   `flasher_args.json` for files, offsets, chip, and flash settings, the same
-   data `tools/flash.py` uses, and shows `firmware_selection.json`'s board and
-   camera.
-3. **Add USB port**: the browser's chooser lists every serial port. Allowed
-   ports stay listed, named by USB vendor (Espressif USB, CP210x, CH340, FTDI,
-   Prolific), and can be forgotten.
-4. **Flash firmware**: the page stops before writing if the connected chip does
+What it offers comes from two catalogs, read at build time by
+`scripts/boards-plugin.mjs`, so adding an entry needs no site changes:
+
+- `config/firmware/<project>.yaml`: each flashable project, its boards, and
+  what to do after flashing ([fields](../config/firmware/README.md)).
+- `config/boards/*.yaml`: each board's `name` and `image`.
+
+Packages come from `build/firmware/<project>/<board>/`, produced by
+`tools/firmware_artifacts.py` locally and in CI. `#/tools/flasher?project=<id>`
+opens one project directly, so a project page can link to its firmware.
+
+1. **Firmware**: pick a project under **Firmware source**, then its board
+   card; boards without a package show *No firmware yet*, and a ready package
+   offers **Download firmware file** (a single full image). Or choose
+   **Upload your firmware** and select one `.bin`, read in the browser and
+   sent only to the board. The page reads its ESP image header:
+   - an app image (for example `build/webrtc/<board>/webrtc.bin`) keeps the
+     board's bootloader and partition table, so the board must already have
+     them; it is written at its project's app offset when the image names a
+     catalog project, otherwise 0x10000, and full erase is unavailable;
+   - a full flash image (`esptool merge-bin`, or a downloaded
+     `firmware.bin`) is written at its bootloader offset (0x1000 for ESP32 and
+     ESP32-S2, 0x0 for most others, or 0x0 when the file starts with erased
+     padding) and replaces everything.
+
+   Other files are rejected. Uploaded files keep the board's flash settings.
+2. **Select USB port**: flash one board at a time. The browser's chooser lists
+   every serial port; the page shows the selected one by USB vendor (Espressif
+   USB, CP210x, CH340, FTDI, Prolific). Selecting another port replaces it and
+   forgets the previous one. A single port allowed on an earlier visit is
+   selected again automatically while it is connected.
+3. **Flash firmware**: the page stops before writing if the connected chip does
    not match the build, verifies every file by MD5 after writing, then
-   restarts the board. **Erase entire flash first** also clears saved Wi-Fi,
-   the camera password, and camera settings.
+   restarts the board and shows the project's `after_flash` text and link.
+   **Erase entire flash first** also clears saved Wi-Fi and settings.
 
-Firmware files are read in the browser and sent only to the board; nothing is
-uploaded or hosted. Builds contain the signaling API secret, so keep them
-private. If the board doesn't connect, close other programs using the port,
-hold BOOT while starting, or lower the speed.
+If the board doesn't connect, close other programs using the port, hold BOOT
+while starting, or lower the speed.
+
+### Adding a flashable project
+
+1. Create `projects/<project>/` as described in the main README.
+2. Add `config/firmware/<project>.yaml` with `name`, `description`, `boards`,
+   and optionally `requires_frame_grabber`, `private_settings`, `after_flash`.
+3. Check the build list: `python3 tools/firmware_artifacts.py --list`.
+
+CI then builds every listed project and board pair, and the flasher offers it.
+
+### Firmware packages, locally and in CI
+
+CI (`.github/workflows/site-pages.yml`) and local runs use the same script and
+the same `espressif/idf:v6.1` image, one container per project and board:
+
+```sh
+python3 tools/firmware_artifacts.py --list           # project/board pairs CI builds
+python3 tools/firmware_artifacts.py --ci             # exactly as CI: fresh builds, default settings
+python3 tools/firmware_artifacts.py                  # reuse your build/<project>/<board> folders
+python3 tools/firmware_artifacts.py --project hello_world --board esp32s3n16r8_goouuu_cam
+python3 tools/firmware_artifacts.py --package-only   # package existing builds without building
+cd site && npm run dev                               # http://127.0.0.1:5173/#/tools/flasher
+npm run build && node scripts/check-bundle.mjs dist --all-boards   # CI's bundle check
+```
+
+In CI, a job lists the pairs, a matrix job builds each one and uploads
+`firmware-<project>-<board>`, and the site job downloads them into
+`build/firmware`, runs `npm test`, builds the site with the packages under
+`firmware/`, and checks that every pair is bundled. Pull requests stop there;
+`main` deploys to GitHub Pages.
+
+A package is private when its `sdkconfig` sets any of the project's
+`private_settings` (WebRTC lists its signaling secret). The dev server serves
+private packages to this computer only; `npm run build` never bundles them,
+and the bundle check fails if one is present. Default builds (`--ci` and CI)
+set none, so they can be published; WebRTC builds without a secret cannot join
+a signaling server that requires one, while local viewing is unaffected.
 
 ## Browser verification
 
 With the production preview running, the optional Playwright smoke test checks
 branding, the project list, breadcrumbs, links back to SensorFun, unknown routes,
-the flasher (with simulated serial ports and a generated build folder), mobile layouts,
+the flasher (with simulated serial ports, firmware packages, and uploaded files), mobile layouts,
 and the camera connection form. It never contacts a real camera.
 
 ```sh

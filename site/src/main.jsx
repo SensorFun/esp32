@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { projects } from './projects';
+import { projects, tools } from './projects';
 import { SiteHeader, siteHome } from './components/SiteHeader';
 import './styles.css';
 import './sensorfan.css';
 
-const strip = route => route.replace(/^\/spaces(?=\/|$)/, '/projects').replace(/(.)\/$/, '$1');
+const strip = route => route.replace(/\?.*$/, '').replace(/^\/projects\/flasher$/, '/tools/flasher').replace(/^\/spaces(?=\/|$)/, '/projects').replace(/(.)\/$/, '$1');
 
 function App() {
   const readRoute = () => strip(window.location.hash.slice(1) || '/');
@@ -15,14 +15,15 @@ function App() {
     window.addEventListener('hashchange', update);
     return () => window.removeEventListener('hashchange', update);
   }, []);
-  const project = projects.find(item => route === `/projects/${item.id}`);
-  const home = route === '/' || route === '/projects';
+  const project = projects.find(item => route === `/projects/${item.id}`) || tools.find(item => route === `/tools/${item.id}`);
+  const home = route === '/' || route === '/projects' || route === '/tools';
   useEffect(() => { document.title = project ? `${project.name} · ESP32 · SensorFun` : home ? 'ESP32 · SensorFun' : 'Page not found · SensorFun'; }, [project, home]);
   const Project = project?.component;
   if (Project) return <Project />;
   return <div className="rtc-theme sensorfan"><div className="rtc-body"><SiteHeader /><main id="main-content" tabIndex="-1" className="rtc-content">{home ? <>
     <div className="sensorfan-intro"><h1>ESP32 projects</h1><p>Choose a project to get started.</p></div>
     <div className="sensorfan-projects">{projects.map(item => <a className="rtc-panel sensorfan-project" key={item.id} href={`#/projects/${item.id}`}><span className="pill">{item.category}</span><h2>{item.name}</h2><p>{item.description}</p><span className="sensorfan-project-open">Open {item.name} →</span></a>)}</div>
+    <section aria-labelledby="tools-heading"><h2 id="tools-heading" className="sensorfan-tools-heading">Tools</h2><div className="sensorfan-projects">{tools.map(item => <a className="rtc-panel sensorfan-project" key={item.id} href={`#/tools/${item.id}`}><span className="pill">{item.category}</span><h2>{item.name}</h2><p>{item.description}</p><span className="sensorfan-project-open">Open {item.name} →</span></a>)}</div></section>
   </> : <>
     <div className="sensorfan-intro"><h1>Page not found</h1><p>Return to the ESP32 projects or to SensorFun.</p></div>
     <div className="sensorfan-actions"><a className="button rtc-primary" href="#/">ESP32 projects</a><a className="button sensorfan-secondary" href={siteHome}>All SensorFun spaces</a></div>

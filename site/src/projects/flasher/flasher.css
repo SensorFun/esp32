@@ -9,15 +9,9 @@
 .flasher .rtc-primary{background:#00d4cb;color:#07302c}
 .flasher .rtc-primary:hover:not(:disabled){background:#63e9df}
 .flasher .button:disabled{opacity:.45}
-.flasher-choices{border:1px solid var(--rtc-line);border-radius:8px;padding:8px 14px 10px;margin:4px 0 16px;min-width:0}
-.flasher-choices legend{font-size:12px;color:#8b998b;padding:0 6px}
-.flasher-choices label{display:flex;align-items:center;gap:12px;min-height:44px;font-size:14px;cursor:pointer;min-width:0;flex:1}
-.flasher-choices label>span{min-width:0;overflow-wrap:anywhere}
-.flasher-choices input[type=radio]{width:20px;height:20px;flex-shrink:0;accent-color:#00d4cb}
-.flasher-choices small{display:block;font-size:12px;color:#00d4cb}
-.flasher-port{display:flex;align-items:center;gap:10px}
-.flasher-forget{min-height:44px;padding:0 12px;border:1px solid var(--rtc-line);border-radius:6px;background:transparent;color:#9aa995;font-size:13px}
-.flasher-forget:hover{border-color:#00d4cb;color:#00d4cb}
+.flasher-selected-port{display:flex!important;align-items:center;gap:12px;min-height:44px;border:1px solid #00d4cb;border-radius:8px;padding:8px 14px;margin:4px 0 16px!important;color:#e4eadd}
+.flasher-selected-port span{min-width:0;overflow-wrap:anywhere}
+.flasher-selected-port small{display:block;font-size:12px;color:#00d4cb}
 .flasher-error{color:#f0a08a!important;font-size:14px!important}
 .flasher-firmware{margin-top:18px;border-top:1px solid var(--rtc-line);padding-top:16px;min-width:0}
 .flasher-firmware dl{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,210px),1fr));gap:12px 20px;margin:0 0 16px}
@@ -48,3 +42,28 @@
   .flasher-options select,.flasher .button,.flasher-go{max-width:none;width:100%;font-size:16px}
   .flasher-step>p{font-size:14px}
 }
+.flasher-hidden{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+.flasher-boards{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,220px),1fr));gap:12px;border:0;padding:0;margin:4px 0 16px;min-width:0}
+.flasher-board{position:relative;display:grid;grid-template-rows:auto 1fr;border:1px solid var(--rtc-line);border-radius:10px;overflow:hidden;cursor:pointer;background:#0f1612;min-width:0}
+.flasher-board:hover{border-color:#3d5a4f}
+.flasher-board:has(input:checked){border-color:#00d4cb;box-shadow:0 0 0 1px #00d4cb}
+.flasher-board:has(input:focus-visible){outline:2px solid #00d4cb;outline-offset:2px}
+.flasher-board[data-available=false]{cursor:not-allowed;opacity:.55}
+.flasher-board input{position:absolute;top:10px;left:10px;width:20px;height:20px;margin:0;accent-color:#00d4cb}
+.flasher-board img,.flasher-board-blank{width:100%;aspect-ratio:4/3;object-fit:contain;background:#f4f5f2;display:block}
+.flasher-board-blank{display:grid;place-items:center;background:#16201a;color:#728568}
+.flasher-board-text{display:grid;gap:4px;padding:12px 14px;min-height:44px;min-width:0}
+.flasher-board-text strong{font-size:14px;font-weight:600;overflow-wrap:anywhere}
+.flasher-board-text small{font-size:12px;color:#8b998b}
+.flasher-board[data-available=true] .flasher-board-text small{color:#00d4cb}
+.flasher-note{font-size:13px;line-height:1.6;color:#c5d5bd;margin:8px 0 0}
+.flasher-upload{border-top:1px solid var(--rtc-line);margin-top:8px;padding-top:16px}
+.flasher-upload h3{margin:0;font-size:15px;font-weight:600;color:#e4eadd}
+.flasher-upload>p{font-size:14px;line-height:1.7}
+@media(max-width:600px){
+  .flasher-board{grid-template-rows:none;grid-template-columns:96px 1fr;align-items:center}
+  .flasher-board img,.flasher-board-blank{width:96px;height:96px;aspect-ratio:auto;object-fit:contain}
+  .flasher-board input{top:8px;left:8px}
+}
+
+.flasher-source{display:grid;gap:8px;margin:18px 0;font-size:16px}.flasher-source select{min-height:44px;font:inherit;padding:10px;max-width:100%;min-width:0;background:#0d180e;color:#d8e8cb;border:1px solid #415335;border-radius:6px}

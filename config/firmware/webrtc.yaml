@@ -1,0 +1,11 @@
+# Flashable firmware for projects/webrtc. CI builds it for every listed board,
+# and the browser flasher offers it. See config/firmware/README.md.
+name: WebRTC camera
+description: Stream the board's camera to your browser, locally or through the signaling server.
+boards: all
+requires_frame_grabber: true
+# A build with any of these set is private: served by the local dev server only.
+private_settings: [CONFIG_CAMERA_SIGNALING_API_SECRET]
+after_flash:
+  text: Set up Wi-Fi from the board's CAM_<MAC> setup network, then open the camera in WebRTC.
+  link: '#/projects/webrtc'

@@ -3,4 +3,4 @@ esp32_ai-thinker_cam:
   header: esp32_ai-thinker_cam.h
   image: images/esp32_ai-thinker_cam.png
   target: esp32
-  supported_frame_grabber: [ov]
+  supported_frame_grabber: [ov, gc]

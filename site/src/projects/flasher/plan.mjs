@@ -60,10 +60,37 @@ export function checkLayout(plan, sizes) {
   });
 }
 
-// Finds folders that hold flasher_args.json among relative file paths.
-export function firmwareRoots(paths) {
-  return paths.filter(path => path === 'flasher_args.json' || path.endsWith('/flasher_args.json'))
-    .map(path => path.slice(0, -'flasher_args.json'.length).replace(/\/$/, '')).sort();
+// A single uploaded .bin: an app image (flashed at the app partition) or a full
+// flash image starting with the bootloader. ESP image headers carry the chip ID.
+const imageChips = { 0: 'esp32', 2: 'esp32s2', 5: 'esp32c3', 9: 'esp32s3', 12: 'esp32c2', 13: 'esp32c6', 16: 'esp32h2', 18: 'esp32p4', 23: 'esp32c5' };
+const bootloaderOffsets = { esp32: 0x1000, esp32s2: 0x1000, esp32p4: 0x2000, esp32c5: 0x2000 };
+export const appOffset = 0x10000;
+const imageMagic = 0xe9, appDescMagic = 0xabcd5432;
+const text = (bytes, start, length) => decoder.decode(bytes.subarray(start, start + length)).replace(/\0.*$/s, '');
+
+export function inspectImage(bytes, name = 'firmware.bin') {
+  if (!(bytes instanceof Uint8Array) || bytes.length < 0x40) throw Error(`${name} is too small to be ESP32 firmware`);
+  if (bytes.length > 128 << 20) throw Error(`${name} is larger than any ESP32 flash`);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  // A full image may start with erased 0xFF padding before the bootloader.
+  let header = 0;
+  if (bytes[0] !== imageMagic) {
+    header = [0x1000, 0x2000].find(offset => bytes.length > offset + 0x40 && bytes[offset] === imageMagic && bytes.subarray(0, offset).every(byte => byte === 0xff));
+    if (header === undefined) throw Error(`${name} is not an ESP32 firmware image (.bin)`);
+  }
+  const chip = imageChips[view.getUint16(header + 12, true)];
+  if (!chip) throw Error(`${name} is for an unsupported chip`);
+  if (header === 0 && view.getUint32(0x20, true) === appDescMagic) {
+    return { kind: 'app', chip, address: appOffset, version: text(bytes, 0x30, 32), project: text(bytes, 0x50, 32) };
+  }
+  if (header && header !== (bootloaderOffsets[chip] ?? 0)) throw Error(`${name} does not start with a ${chipName(chip)} bootloader`);
+  const address = header ? 0 : bootloaderOffsets[chip] ?? 0;
+  const app = appOffset - address;
+  if (bytes.length <= app + 0x70 || bytes[app] !== imageMagic || view.getUint32(app + 0x20, true) !== appDescMagic) {
+    throw Error(`${name} is not a complete flash image; choose an app .bin or a merged firmware .bin`);
+  }
+  if (imageChips[view.getUint16(app + 12, true)] !== chip) throw Error(`${name} contains images for different chips`);
+  return { kind: 'full', chip, address };
 }
 
 // MD5 for esptool-js's post-write verification; Web Crypto has no MD5.

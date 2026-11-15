@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash, randomBytes } from 'node:crypto';
-import { checkLayout, chipId, firmwareRoots, md5, parseFlasherArgs, portLabel, safePath } from '../src/projects/flasher/plan.mjs';
+import { appOffset, checkLayout, chipId, inspectImage, md5, parseFlasherArgs, portLabel, safePath } from '../src/projects/flasher/plan.mjs';
 
 const args = {
   flash_settings: { flash_mode: 'dio', flash_size: '4MB', flash_freq: '80m' },
@@ -32,10 +32,9 @@ test('layouts that overlap or exceed the flash size are rejected', () => {
   assert.throws(() => checkLayout(plan, [0x5000, 0xc00, 0x400000]), /does not fit/);
 });
 
-test('chip names, firmware folders, and port labels', () => {
+test('chip names and port labels', () => {
   assert.equal(chipId('ESP32-S3'), 'esp32s3');
   assert.equal(chipId('ESP32'), 'esp32');
-  assert.deepEqual(firmwareRoots(['webrtc/esp32_ai-thinker_cam/flasher_args.json', 'webrtc/esp32_ai-thinker_cam/webrtc.bin', 'flasher_args.json', 'x/not_flasher_args.json']), ['', 'webrtc/esp32_ai-thinker_cam']);
   assert.equal(portLabel({ usbVendorId: 0x303a, usbProductId: 0x1001 }), 'Espressif USB (303a:1001)');
   assert.equal(portLabel({ usbVendorId: 0x1a86, usbProductId: 0x7523 }), 'WCH CH340 (1a86:7523)');
   assert.equal(portLabel({ usbVendorId: 0x1234, usbProductId: 1 }), 'USB serial (1234:0001)');
@@ -47,4 +46,47 @@ test('MD5 matches Node for empty, block-boundary, and firmware-sized data', () =
     const data = randomBytes(size);
     assert.equal(md5(new Uint8Array(data)), createHash('md5').update(data).digest('hex'), `size ${size}`);
   }
+});
+
+// Minimal ESP image: magic, chip ID at byte 12, optional app descriptor at 0x20.
+function image(chipCode, { app = false, padding = 0, size = 4096 } = {}) {
+  const bytes = new Uint8Array(padding + size).fill(0xff, 0, padding);
+  const view = new DataView(bytes.buffer);
+  bytes[padding] = 0xe9;
+  view.setUint16(padding + 12, chipCode, true);
+  if (app) {
+    view.setUint32(padding + 0x20, 0xabcd5432, true);
+    bytes.set(new TextEncoder().encode('1.2.3'), padding + 0x30);
+    bytes.set(new TextEncoder().encode('webrtc'), padding + 0x50);
+  }
+  return bytes;
+}
+
+test('uploaded app images go to the app partition with their chip and version', () => {
+  assert.deepEqual(inspectImage(image(9, { app: true })), { kind: 'app', chip: 'esp32s3', address: appOffset, version: '1.2.3', project: 'webrtc' });
+  assert.equal(inspectImage(image(0, { app: true })).chip, 'esp32');
+});
+
+function fullImage(chipCode, padding = 0) {
+  const offset = !padding && chipCode === 0 ? 0x1000 : 0;
+  const full = new Uint8Array(0x12000 - offset).fill(0xff);
+  full.set(image(chipCode, { padding }), 0);
+  full.set(image(chipCode, { app: true }), 0x10000 - offset);
+  return full;
+}
+
+test('uploaded full images start at the chip bootloader offset', () => {
+  assert.deepEqual(inspectImage(fullImage(9)), { kind: 'full', chip: 'esp32s3', address: 0 });
+  assert.deepEqual(inspectImage(fullImage(0)), { kind: 'full', chip: 'esp32', address: 0x1000 });
+  assert.deepEqual(inspectImage(fullImage(0, 0x1000)), { kind: 'full', chip: 'esp32', address: 0 });
+  assert.throws(() => inspectImage(image(9, { padding: 0x1000 })), /bootloader/);
+});
+
+test('files that are not ESP32 firmware are rejected', () => {
+  assert.throws(() => inspectImage(new Uint8Array(10), 'x.bin'), /too small/);
+  assert.throws(() => inspectImage(new TextEncoder().encode('\x7fELF'.padEnd(200, 'x')), 'app.elf'), /not an ESP32 firmware/);
+  assert.throws(() => inspectImage(image(99)), /unsupported chip/);
+  assert.throws(() => inspectImage(image(9)), /not a complete flash image/);
+  const padded = image(0, { padding: 0x1000 }); padded[5] = 0;
+  assert.throws(() => inspectImage(padded), /not an ESP32 firmware/);
 });

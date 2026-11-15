@@ -1,0 +1,6 @@
+# Flashable firmware for projects/hello_world: a quick check that a board works.
+name: Hello World
+description: Check a new board. Wi-Fi setup plus a serial log message every second.
+boards: all
+after_flash:
+  text: Join the board's CAM_<MAC> Wi-Fi to set it up, and watch its serial log at 115200 baud.

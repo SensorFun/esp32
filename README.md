@@ -21,7 +21,7 @@ shared components.
 - `config/boards/`: manufacturer dictionaries of board names, header paths, chip targets, and supported frame grabbers.
 - `cmake/board.cmake`: shared board selection for native firmware projects.
 - `docker/`: base and development Docker images and Compose.
-- `config/`: Hydra firmware build and flash configuration.
+- `config/`: Hydra firmware build and flash configuration; `config/firmware/` lists flashable firmware.
 - `tools/`: configuration-driven firmware build and flash entry points.
 
 ## Local use
@@ -143,6 +143,11 @@ starts Docker. Port detection uses USB identities for Espressif and common seria
 bridges, plus `boards/programming_ports.tsv` to identify known boards. If several
 ports remain ambiguous, select one with `port=...`; if none are detected, connect
 the board or provide its port explicitly.
+
+For the browser flasher, `config/firmware/<project>.yaml` lists which
+projects are flashable and for which boards. `python3 tools/firmware_artifacts.py`
+builds and packages every listed pair into `build/firmware/`; CI runs the same
+script. See [the site README](site/README.md#flasher).
 
 Both tools preserve failure exit codes. `dry_run=true` prints the command without
 building firmware or flashing; build dry runs still start Docker. Flash dry runs

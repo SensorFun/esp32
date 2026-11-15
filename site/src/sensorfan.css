@@ -44,3 +44,5 @@
 .sensorfan-secondary{border-color:#2a352c;color:#c5d5bd}
 .sensorfan-secondary:hover{border-color:#00d4cb}
 @media(max-width:600px){.sensorfan-trail{border-left:0;padding-left:0;margin-left:-6px}}
+
+.sensorfan-tools-heading{margin:36px 0 18px;font-size:26px}

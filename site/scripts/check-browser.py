@@ -1,9 +1,11 @@
 """Check the SensorFun ESP32 camera interface on desktop and mobile."""
 import argparse
 import json
+import re
 import tempfile
 from pathlib import Path
 from playwright.sync_api import sync_playwright, expect
+import yaml
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--url', required=True)
@@ -49,10 +51,32 @@ with sync_playwright() as p:
         expect(page.get_by_role('heading', name='ESP32 projects', exact=True)).to_be_visible()
     assert not errors, errors
 
-    # Flasher: fake Web Serial ports and a synthetic build folder; no board is contacted.
-    fixture = Path(tempfile.mkdtemp())
-    for board, chip in (('esp32_ai-thinker_cam', 'esp32'), ('esp32s3n16r8_espressif_cam', 'esp32s3')):
-        folder = fixture / 'webrtc' / board
+    # Flasher: fake Web Serial ports, synthetic firmware packages served by route,
+    # and a synthetic build folder; no board is contacted.
+    workspace = Path(__file__).resolve().parents[2]
+    catalog = {}
+    for catalog_file in sorted((workspace / 'config/boards').glob('*.yaml')):
+        for board, entry in yaml.safe_load(catalog_file.read_text()).items():
+            catalog[board] = entry
+    hosted = Path(tempfile.mkdtemp())
+    uploads = Path(tempfile.mkdtemp())
+    def esp_image(chip_code, app, project=b'webrtc'):
+        data = bytearray(8192)
+        data[0] = 0xE9
+        data[12:14] = chip_code.to_bytes(2, 'little')
+        if app:
+            data[0x20:0x24] = (0xABCD5432).to_bytes(4, 'little')
+            data[0x30:0x35] = b'1.2.3'
+            data[0x50:0x50 + len(project)] = project
+        return bytes(data)
+    (uploads / 'hello_world.bin').write_bytes(esp_image(9, True, b'hello_world'))
+    (uploads / 'webrtc.bin').write_bytes(esp_image(9, True))
+    merged = bytearray(b'\xff' * 0x12000)
+    merged[0x1000:0x3000] = esp_image(0, False)
+    merged[0x10000:0x12000] = esp_image(0, True)
+    (uploads / 'merged.bin').write_bytes(merged)
+    (uploads / 'notes.bin').write_bytes(b'not firmware' * 20)
+    def write_build(folder, board, chip):
         (folder / 'bootloader').mkdir(parents=True)
         (folder / 'partition_table').mkdir()
         (folder / 'bootloader' / 'bootloader.bin').write_bytes(bytes(2048))
@@ -63,42 +87,76 @@ with sync_playwright() as p:
             'flash_settings': {'flash_mode': 'dio', 'flash_size': '4MB', 'flash_freq': '80m'},
             'flash_files': {'0x0': 'bootloader/bootloader.bin', '0x8000': 'partition_table/partition-table.bin', '0x10000': 'webrtc.bin'},
             'extra_esptool_args': {'after': 'hard-reset', 'before': 'default-reset', 'stub': True, 'chip': chip}}))
+    for board in ('esp32_ai-thinker_cam', 'esp32s3n16r8_espressif_cam'):
+        write_build(hosted / 'webrtc' / board, board, catalog[board]['target'])
+    missing = 'esp32s3n16r8_goouuu_cam'
+    write_build(hosted / 'hello_world' / missing, missing, catalog[missing]['target'])
+    manifest = {'webrtc': {board: {'commit': 'abc123def456', 'built': 1763200000, 'frame_grabber': 'ov', 'private': False}
+                           for board in ('esp32_ai-thinker_cam', 'esp32s3n16r8_espressif_cam')},
+                # A non-default app offset proves uploads follow the project's partition table.
+                'hello_world': {missing: {'commit': 'fedcba987654', 'built': 1763200000, 'frame_grabber': 'ov', 'private': False, 'app_offset': '0x20000'}}}
+    firmware_catalog = {path.stem: yaml.safe_load(path.read_text()) for path in sorted((workspace / 'config/firmware').glob('*.yaml'))}
+    def serve_firmware(route):
+        relative = route.request.url.split('/firmware/', 1)[1].split('?')[0]
+        if relative == 'index.json':
+            return route.fulfill(json=manifest)
+        target = (hosted / relative).resolve()
+        if not target.is_relative_to(hosted) or not target.is_file():
+            return route.fulfill(status=404, body='')
+        return route.fulfill(body=target.read_bytes(), content_type='application/octet-stream')
     fake_serial = '''(() => {
       const make = (vid, pid) => ({ getInfo: () => ({ usbVendorId: vid, usbProductId: pid }), async forget() { ports.splice(ports.indexOf(this), 1); } });
-      const ports = [make(0x303a, 0x1001), make(0x1a86, 0x7523)];
-      Object.defineProperty(navigator, 'serial', { value: { getPorts: async () => [...ports], requestPort: async () => { const port = make(0x10c4, 0xea60); ports.push(port); return port; }, addEventListener() {}, removeEventListener() {} } });
+      // Two previously allowed ports: neither is assumed to be the board.
+      const ports = [make(0x303a, 0x1001), make(0x0403, 0x6001)];
+      const offered = [[0x10c4, 0xea60], [0x1a86, 0x7523]];
+      Object.defineProperty(navigator, 'serial', { value: { getPorts: async () => [...ports], requestPort: async () => { const port = make(...offered.shift()); ports.push(port); return port; }, addEventListener() {}, removeEventListener() {} } });
+      window.allowedPorts = () => ports.map(port => port.getInfo().usbVendorId);
       Object.defineProperty(window, 'showDirectoryPicker', { value: undefined });
     })();'''
-    flasher_url = args.url.split('#')[0] + '#/projects/flasher'
+    flasher_url = args.url.split('#')[0] + '#/tools/flasher'
     for width in (320, 390, 768, 1440):
         context = browser.new_context(viewport={'width': width, 'height': 1000})
         context.add_init_script(fake_serial)
         page = context.new_page()
         page.on('pageerror', lambda error: errors.append(str(error)))
+        page.route('**/firmware/**', serve_firmware)
         page.goto(flasher_url)
         expect(page).to_have_title('Flasher · ESP32 · SensorFun')
         expect(page.get_by_role('heading', name='Flash firmware', exact=True)).to_be_visible()
         expect(page.get_by_text('This browser cannot flash boards')).to_have_count(0)
-        expect(page.get_by_role('radio', name='Espressif USB (303a:1001)')).to_be_visible()
-        expect(page.get_by_role('radio', name='WCH CH340 (1a86:7523)')).to_be_visible()
-        page.get_by_role('button', name='Add USB port', exact=True).click()
-        expect(page.get_by_role('radio', name='Silicon Labs CP210x (10c4:ea60)')).to_be_checked()
-        page.get_by_role('button', name='Forget WCH CH340 (1a86:7523)').click()
-        expect(page.get_by_role('radio', name='WCH CH340 (1a86:7523)')).to_have_count(0)
+        # Every catalog board appears with its name and a loaded image.
+        cards = page.locator('.flasher-board')
+        expect(cards).to_have_count(len(catalog))
+        for board, entry in catalog.items():
+            card = cards.filter(has_text=entry['name'])
+            expect(card).to_have_count(1)
+            expect(card.locator('img')).to_have_count(1)
+        page.wait_for_function("()=>[...document.querySelectorAll('.flasher-board img')].every(img=>img.complete&&img.naturalWidth>0)")
+        goouuu = page.get_by_role('radio', name=re.compile('^' + re.escape(catalog[missing]['name'])))
+        expect(goouuu).to_be_disabled()
+        expect(cards.filter(has_text=catalog[missing]['name'])).to_contain_text('No firmware yet')
+        # One board: Select USB port picks a single port; there is no list to add to.
+        selected = page.get_by_test_id('selected-port')
+        expect(selected).to_have_count(0)
+        expect(page.get_by_role('button', name='Add USB port', exact=True)).to_have_count(0)
+        expect(page.get_by_role('radio', name=re.compile('USB|CP210x|FTDI'))).to_have_count(0)
+        page.get_by_role('button', name='Select USB port', exact=True).click()
+        expect(selected).to_contain_text('Silicon Labs CP210x (10c4:ea60)')
+        expect(selected).to_contain_text('ESP32 programmer')
         flash = page.get_by_role('button', name='Flash firmware', exact=True)
         expect(flash).to_be_disabled()
-        # Chromium's automated directory upload fails below ~600px; upload wide, then restore the width.
-        page.set_viewport_size({'width': 1280, 'height': 1000})
-        page.locator('input[type=file]').set_input_files(str(fixture))
-        page.set_viewport_size({'width': width, 'height': 1000})
-        page.get_by_role('radio', name='webrtc/esp32s3n16r8_espressif_cam').check()
+        # Hosted firmware: choose a board card.
+        s3 = catalog['esp32s3n16r8_espressif_cam']['name']
+        page.get_by_role('radio', name=re.compile('^' + re.escape(s3))).check()
         summary = page.get_by_test_id('firmware-summary')
+        expect(summary).to_contain_text(s3)
         expect(summary).to_contain_text('ESP32-S3')
+        expect(summary).to_contain_text('abc123def456')
         expect(summary).to_contain_text('0x10000')
-        expect(summary).to_contain_text('webrtc.bin')
         expect(flash).to_be_enabled()
-        for name in ('Choose build folder', 'Add USB port', 'Flash firmware'):
+        for name in ('Select USB port', 'Flash firmware'):
             assert page.get_by_role('button', name=name, exact=True).bounding_box()['height'] >= 44
+        assert cards.first.bounding_box()['height'] >= 44
         if width <= 600:
             assert page.get_by_label('Speed').evaluate('(select)=>parseFloat(getComputedStyle(select).fontSize)>=16')
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
@@ -106,13 +164,78 @@ with sync_playwright() as p:
         expect(page.get_by_test_id('flash-status')).not_to_have_text('Connecting to the board…', timeout=10000)
         expect(page.get_by_test_id('flash-status')).not_to_be_empty()
         expect(flash).to_be_enabled()
+        # Upload one firmware file instead of a board package.
+        page.get_by_label('Firmware source', exact=True).select_option('upload')
+        upload = page.get_by_role('button', name='Upload firmware file', exact=True)
+        assert upload.bounding_box()['height'] >= 44
+        page.get_by_label('Firmware file').set_input_files(str(uploads / 'webrtc.bin'))
+        expect(summary).to_contain_text('webrtc.bin')
+        expect(summary).to_contain_text('App image · webrtc 1.2.3')
+        expect(summary).to_contain_text('0x10000')
+        expect(summary).to_contain_text('ESP32-S3')
+        expect(page.locator('.flasher-board')).to_have_count(0)
+        expect(page.get_by_role('checkbox', name=re.compile('^Erase entire flash first'))).to_be_disabled()
+        expect(flash).to_be_enabled()
+        page.get_by_label('Firmware file').set_input_files(str(uploads / 'merged.bin'))
+        expect(summary).to_contain_text('Full flash image')
+        expect(summary).to_contain_text('0x0')
+        expect(summary).to_contain_text('ESP32')
+        expect(page.get_by_role('checkbox', name=re.compile('^Erase entire flash first'))).to_be_enabled()
+        page.get_by_label('Firmware file').set_input_files(str(uploads / 'notes.bin'))
+        expect(page.get_by_role('alert')).to_contain_text('notes.bin is not an ESP32 firmware image')
+        expect(summary).to_have_count(0)
+        expect(flash).to_be_disabled()
+        assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         context.close()
+    # Every config/firmware project is offered; ?project= links straight to one.
+    context = browser.new_context(viewport={'width': 1280, 'height': 1000})
+    context.add_init_script(fake_serial)
+    page = context.new_page()
+    page.on('pageerror', lambda error: errors.append(str(error)))
+    page.route('**/firmware/**', serve_firmware)
+    page.goto(flasher_url + '?project=hello_world')
+    source = page.get_by_label('Firmware source', exact=True)
+    expect(source).to_have_value('hello_world')
+    options = source.locator('option').all_inner_texts()
+    for entry in firmware_catalog.values():
+        assert entry['name'] in options, (entry['name'], options)
+    expect(page.get_by_text(firmware_catalog['hello_world']['description'])).to_be_visible()
+    hello = page.get_by_role('radio', name=re.compile('^' + re.escape(catalog[missing]['name'])))
+    expect(hello).to_be_enabled()
+    expect(page.get_by_role('radio', name=re.compile('^' + re.escape(catalog['esp32_ai-thinker_cam']['name'])))).to_be_disabled()
+    hello.check()
+    expect(page.get_by_test_id('firmware-summary')).to_contain_text('fedcba987654')
+    source.select_option('webrtc')
+    assert page.evaluate('location.hash') == '#/tools/flasher?project=webrtc'
+    expect(page.get_by_test_id('firmware-summary')).to_have_count(0)
+    expect(page.get_by_role('radio', name=re.compile('^' + re.escape(catalog[missing]['name'])))).to_be_disabled()
+    source.select_option('upload')
+    page.get_by_label('Firmware file').set_input_files(str(uploads / 'hello_world.bin'))
+    expect(page.get_by_test_id('firmware-summary')).to_contain_text('App image · hello_world 1.2.3')
+    expect(page.get_by_test_id('firmware-summary')).to_contain_text('0x20000')
+    # Selecting another board replaces the port and forgets the previous one.
+    page.get_by_role('button', name='Select USB port', exact=True).click()
+    expect(page.get_by_test_id('selected-port')).to_contain_text('Silicon Labs CP210x (10c4:ea60)')
+    page.get_by_role('button', name='Select USB port', exact=True).click()
+    expect(page.get_by_test_id('selected-port')).to_contain_text('WCH CH340 (1a86:7523)')
+    assert page.evaluate('window.allowedPorts()') == [0x303a, 0x0403, 0x1a86], page.evaluate('window.allowedPorts()')
+    page.goto(flasher_url + '?project=nonexistent')
+    page.reload()
+    expect(page.get_by_label('Firmware source', exact=True)).to_have_value('webrtc')
+    context.close()
+    # A single port allowed earlier is selected again automatically.
+    context = browser.new_context()
+    context.add_init_script("Object.defineProperty(navigator, 'serial', { value: { getPorts: async () => [{ getInfo: () => ({ usbVendorId: 0x1a86, usbProductId: 0x55d3 }) }], requestPort: async () => { throw new DOMException('none', 'NotFoundError'); }, addEventListener() {}, removeEventListener() {} } });")
+    page = context.new_page()
+    page.goto(flasher_url)
+    expect(page.get_by_test_id('selected-port')).to_contain_text('WCH CH340 (1a86:55d3)')
+    context.close()
     context = browser.new_context()
     context.add_init_script("Object.defineProperty(Navigator.prototype, 'serial', { get: () => undefined }); delete Navigator.prototype.serial;")
     page = context.new_page()
     page.goto(flasher_url)
     expect(page.get_by_text('This browser cannot flash boards')).to_be_visible()
-    expect(page.get_by_role('button', name='Add USB port', exact=True)).to_be_disabled()
+    expect(page.get_by_role('button', name='Select USB port', exact=True)).to_be_disabled()
     context.close()
     assert not errors, errors
     print('Passed: SensorFun ESP32 branding, logo, project list, breadcrumbs, flasher, remote-only camera interface, and desktop/mobile layouts.')
