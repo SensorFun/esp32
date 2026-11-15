@@ -1,4 +1,28 @@
 sensor: ov2640
+timing_profile: high_light
+brightness: 0
+contrast: 0
+saturation: 0
 jpeg_quality: 12
+gain_ceiling: 0
+colorbar: 0
 horizontal_mirror: 0
 vertical_flip: 0
+automatic_white_balance: 1
+awb_gain: 1
+white_balance_mode: 0
+automatic_gain: 1
+agc_gain: 0
+automatic_exposure: 1
+aec_value: 300
+ae_level: 0
+aec2: 0
+downsize: 1
+black_pixel_correction: 0
+white_pixel_correction: 1
+raw_gamma: 1
+lens_correction: 1
+# sharpness and denoise are omitted: the OV2640 driver's set_sharpness/
+# set_denoise are unconditional no-op stubs (always return -1), so
+# camera_controls.cpp's supported() excludes them for this sensor and
+# the website's settings panel disables their inputs accordingly.
