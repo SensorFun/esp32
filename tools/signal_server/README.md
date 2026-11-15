@@ -106,8 +106,8 @@ Under **Camera remote signaling**, set:
 Build and flash using the matching device profile:
 
 ```sh
-python3 tools/build.py project=webrtc device=esp32s3_wroom_ov3660_62
-python3 tools/flash.py project=webrtc device=esp32s3_wroom_ov3660_62
+python3 tools/build.py project=webrtc device=esp32s3_wroom_ov3660
+python3 tools/flash.py project=webrtc device=esp32s3_wroom_ov3660
 ```
 
 Menuconfig stores these values in ignored `build/webrtc/<board>/sdkconfig`.

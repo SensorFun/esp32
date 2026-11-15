@@ -6,8 +6,8 @@
       "type": "pickString",
       "description": "Device profile to flash (config/device/*.yaml)",
       "options": [
-        "esp32_cam_ov2640_62",
-        "esp32s3_wroom_ov3660_62"
+        "esp32_cam_ov2640",
+        "esp32s3_wroom_ov3660"
       ]
     }
   ],

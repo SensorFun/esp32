@@ -2,5 +2,4 @@
 defaults:
   - /board: esp32s3n16r8_espressif_cam
   - /frame_grabber: ov3660
-  - /lens: "62"
   - _self_

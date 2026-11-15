@@ -17,10 +17,10 @@ fingerprint. Normal browser privacy settings can remain enabled.
 From the workspace root:
 
 ```sh
-python tools/build.py project=webrtc device=esp32_cam_ov2640_62
-python tools/flash.py project=webrtc device=esp32_cam_ov2640_62
-python tools/build.py project=webrtc device=esp32s3_wroom_ov3660_62
-python tools/flash.py project=webrtc device=esp32s3_wroom_ov3660_62
+python tools/build.py project=webrtc device=esp32_cam_ov2640
+python tools/flash.py project=webrtc device=esp32_cam_ov2640
+python tools/build.py project=webrtc device=esp32s3_wroom_ov3660
+python tools/flash.py project=webrtc device=esp32s3_wroom_ov3660
 ```
 
 Builds run in the existing ESP-IDF 6.1 Docker environment. Flashing uses the

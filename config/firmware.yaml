@@ -1,6 +1,6 @@
 # Select a board/sensor pair with device=...; project and board remain overridable.
 defaults:
-  - device: esp32_cam_ov2640_62
+  - device: esp32_cam_ov2640
   - _self_
 
 project: hello_world

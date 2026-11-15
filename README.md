@@ -82,22 +82,23 @@ python tools/flash.py
 
 `tools/build.py` reads `config/build.yaml`; `tools/flash.py` reads
 `config/flash.yaml`. Both inherit `config/firmware.yaml`, selecting `hello_world`
-and its board/camera device profile. The default is `esp32_cam_ov2640_62`.
+and its board/camera device profile. The default is `esp32_cam_ov2640`.
 Select either connected device:
 
 ```sh
-python tools/build.py device=esp32_cam_ov2640_62
-python tools/flash.py device=esp32_cam_ov2640_62
-python tools/build.py device=esp32s3_wroom_ov3660_62
-python tools/flash.py device=esp32s3_wroom_ov3660_62
+python tools/build.py device=esp32_cam_ov2640
+python tools/flash.py device=esp32_cam_ov2640
+python tools/build.py device=esp32s3_wroom_ov3660
+python tools/flash.py device=esp32s3_wroom_ov3660
 # Build both profiles in sequence:
-python tools/build.py --multirun device=esp32_cam_ov2640_62,esp32s3_wroom_ov3660_62
+python tools/build.py --multirun device=esp32_cam_ov2640,esp32s3_wroom_ov3660
 python tools/flash.py port=/dev/ttyACM0 baud=460800
 python tools/flash.py port=/dev/ttyACM0 dry_run=true
 ```
 
-The profiles live in `config/device/` and compose `frame_grabber` and `lens`
-directly. Both select lens `62`; there is no intermediate `camera` group.
+The profiles live in `config/device/` and compose `board` and `frame_grabber`
+directly; there is no intermediate `camera` group. Camera lens doesn't affect
+this project's configuration, so there is no lens selector.
 `camera_sensor` resolves from `frame_grabber.sensor`. Hydra board metadata validates sensor selection, and each build records its
 selection in `firmware_selection.json`; the host flasher rejects mismatched
 camera profiles. USB adapter identities select the connected board without
@@ -148,7 +149,7 @@ Add `config/board/<board>.yaml` with the global `board` identifier and a
 `hardware` mapping containing `target`, supported `camera_sensors`, and
 `default_camera`. Add a matching `boards/<board>.h` pin header with
 `common_board_config` for reset wiring and Wi-Fi capability. Device profiles
-compose `/board`, `/frame_grabber`, and `/lens` directly.
+compose `/board` and `/frame_grabber` directly.
 
 Python tools and CMake read the same board YAML; there are no separate board JSON
 files. For native CMake use, install the Python package in the active ESP-IDF
