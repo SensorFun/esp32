@@ -6,7 +6,7 @@
 extern "C" void app_main(void) {
     static common::Application common(common_board_config);
     ESP_ERROR_CHECK(common.setup());
-    ESP_LOGI("hello_world", "Camera profile: %s (capture not initialized)", FIRMWARE_CAMERA_SENSOR);
+    ESP_LOGI("hello_world", "Frame grabber profile: %s (capture not initialized)", FIRMWARE_FRAME_GRABBER);
     TickType_t last_message = xTaskGetTickCount();
     while (true) {
         common.main();

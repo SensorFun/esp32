@@ -18,7 +18,7 @@ shared components.
 - `projects/common/application/`: shared setup/main lifecycle and board-specific NVS reset.
 - `projects/common/provisioning/`: reusable Wi-Fi setup page and credential storage.
 - `boards/`: pin headers and USB programming identities.
-- `config/board/`: Hydra board metadata (chip target and supported sensors).
+- `config/boards/`: manufacturer dictionaries of board names, header paths, chip targets, and supported frame grabbers.
 - `cmake/board.cmake`: shared board selection for native firmware projects.
 - `docker/`: base and development Docker images and Compose.
 - `config/`: Hydra firmware build and flash configuration.
@@ -31,9 +31,9 @@ Install ESP-IDF v6.1 and source its `export.sh`, then run from this directory:
 ```sh
 python -m pip install -e .
 esp32 list
-esp32 build --project hello_world --board esp32s3_seeed_cam
-esp32 flash --project hello_world --board esp32s3_seeed_cam --port /dev/ttyACM0
-esp32 monitor --project hello_world --board esp32s3_seeed_cam --port /dev/ttyACM0
+esp32 build --project hello_world --board esp32_ai-thinker_cam
+esp32 flash --project hello_world --board esp32_ai-thinker_cam --port /dev/ttyACM0
+esp32 monitor --project hello_world --board esp32_ai-thinker_cam --port /dev/ttyACM0
 ```
 
 Use `--dry-run` to inspect a command without compiling or accessing hardware.
@@ -82,30 +82,60 @@ python tools/flash.py
 
 `tools/build.py` reads `config/build.yaml`; `tools/flash.py` reads
 `config/flash.yaml`. Both inherit `config/firmware.yaml`, selecting `hello_world`
-and its board/camera device profile. The default is `esp32_cam_ov2640`.
+and its board/camera device profile. The default is `esp32_cam`.
 Select either connected device:
 
 ```sh
-python tools/build.py device=esp32_cam_ov2640
-python tools/flash.py device=esp32_cam_ov2640
-python tools/build.py device=esp32s3_wroom_ov3660
-python tools/flash.py device=esp32s3_wroom_ov3660
+python tools/build.py device=esp32_cam
+python tools/flash.py device=esp32_cam
+python tools/build.py device=esp32s3_wroom
+python tools/flash.py device=esp32s3_wroom
 # Build both profiles in sequence:
-python tools/build.py --multirun device=esp32_cam_ov2640,esp32s3_wroom_ov3660
+python tools/build.py --multirun device=esp32_cam,esp32s3_wroom
 python tools/flash.py port=/dev/ttyACM0 baud=460800
 python tools/flash.py port=/dev/ttyACM0 dry_run=true
 ```
 
-The profiles live in `config/device/` and compose `board` and `frame_grabber`
-directly; there is no intermediate `camera` group. Camera lens doesn't affect
-this project's configuration, so there is no lens selector.
-`camera_sensor` resolves from `frame_grabber.sensor`. Hydra board metadata validates sensor selection, and each build records its
+The profiles live in `config/device/` and compose `board`, `frame_grabber`, and
+`lens` directly. OV devices use `config/frame_grabber/ov.yaml`; the S3-WROOM device uses
+`config/frame_grabber/gc.yaml` for its attached GC0308. All select
+`config/lens/general.yaml`, currently an empty lens profile. Firmware detects
+the physical sensor and applies the corresponding profile and supported controls.
+The device selects `frame_grabber=ov` or `frame_grabber=gc`; board entries list supported profile names in `supported_frame_grabber`
+that must exist under `config/frame_grabber/`. Sensor identification is automatic
+in firmware; there is no default camera selection.
+Hydra board metadata validates frame grabber selection, and each build records its
 selection in `firmware_selection.json`; the host flasher rejects mismatched
-camera profiles. USB adapter identities select the connected board without
+frame grabber profiles. USB adapter identities select the connected board without
 storing unique device serial numbers. With multiple identical adapters, set a
 port explicitly. The S3 profile uses the existing N16R8 WROOM camera board header;
 "WROOM" alone does not verify a carrier's camera wiring. Hello World selects and
-logs the sensor profile; camera capture/initialization is not implemented yet.
+logs the frame grabber profile; camera capture/initialization is not implemented yet.
+
+GC0308 captures RGB565 and uses software JPEG encoding for the existing WebRTC
+viewer. Its resolutions are limited to VGA (640 × 480). `gc.yaml` contains only
+implemented sensor controls; OV light timing, hardware JPEG quality, brightness,
+denoise, gain ceiling, AWB gain, AEC2, downsize, pixel correction, raw gamma, and
+lens correction are not exposed as supported GC0308 controls. Sharpness uses
+its GC0308 range of −2 to +2. Resolution changes reconfigure raw DMA buffers;
+Save and Reset retain the same per-sensor persistence behavior as OV cameras.
+
+The GOOUUU Tech ESP32-S3-CAM N16R8 profile is `device=esp32s3_goouuu`:
+
+```sh
+python tools/build.py project=webrtc device=esp32s3_goouuu
+python tools/flash.py project=webrtc device=esp32s3_goouuu port=/dev/ttyUSB0
+```
+
+Its camera and microSD pins match the existing S3 header, so the board entry
+shares that header. It supports both `ov` and `gc` frame grabbers; select a GC0308
+with `frame_grabber=gc`. Board defaults select 16 MB flash and octal PSRAM. The
+[GOOUUU V1.5 supplier guide](https://www.phippselectronics.com/support/esp32-s3-cam-ov2640-2mp-wifi-camera-development-board-users-guide/)
+documents the pin mapping. The [board image source](https://www.phippselectronics.com/wp-content/uploads/2026/11/PHI1001972-ESP32-S3-CAM-OV2640-2MP-WiFi-Camera-Development-Board-03.jpg)
+was downloaded unchanged into `config/boards/images/esp32s3n16r8_goouuu_cam.jpg`.
+Use an explicit `port=` when multiple boards are connected; a GOOUUU-specific
+USB identity has not been verified. This profile does not add OV5640 sensor
+support; the shared OV firmware currently recognizes OV2640 and OV3660.
 
 Flash reads the binaries, flash addresses, and settings generated by ESP-IDF in
 `build/<project>/<board>/`. It requires an existing build and never compiles or
@@ -145,16 +175,36 @@ or connect U0T/UART TX to ground. No real credentials belong in this repository.
 
 Copy `projects/hello_world` to a new project folder and change its CMake project
 name. Keep its `main/` component and add more ESP-IDF components as needed.
-Add `config/board/<board>.yaml` with the global `board` identifier and a
-`hardware` mapping containing `target`, supported `camera_sensors`, and
-`default_camera`. Add a matching `boards/<board>.h` pin header with
-`common_board_config` for reset wiring and Wi-Fi capability. Device profiles
-compose `/board` and `/frame_grabber` directly.
+Add a board entry to `config/boards/<manufacturer>.yaml`, keyed by its
+unique board ID. For example:
 
-Python tools and CMake read the same board YAML; there are no separate board JSON
-files. For native CMake use, install the Python package in the active ESP-IDF
-Python environment so CMake's board resolver can read YAML. Docker already does
-this. Optional `hardware.sdkconfig_defaults` entries name files under `boards/`.
+```yaml
+esp32_ai-thinker_cam:
+  name: AI Thinker ESP32-CAM
+  header: esp32_ai-thinker_cam.h
+  target: esp32
+  supported_frame_grabber: [ov]
+```
+
+`header` is relative to `boards/`; several entries may share one header. Headers
+contain pin assignments and `common_board_config` for reset wiring and Wi-Fi
+capability. Use `board_display_name` for its `.name`; CMake generates that value
+from YAML in a build-local wrapper, then includes the selected pinout header.
+Physical headers do not define display names.
+
+Device profiles select a `board` ID and compose frame grabber and lens profiles.
+The firmware defaults compose manufacturer catalogs into `board_catalog` and
+resolve `hardware` from the selected board. Add new manufacturer filenames to
+that defaults list. Use `device=esp32_cam` or `device=esp32s3_wroom` as before;
+`board=<id>` overrides work across manufacturers. Build folders remain keyed by
+board ID, even when headers are shared.
+
+Python tools and CMake read the same manufacturer YAML; there are no separate
+board JSON files. Duplicate IDs, missing headers, invalid metadata, and paths
+outside `boards/` fail before compilation. For native CMake use, install the
+Python package in the active ESP-IDF Python environment so the resolver can read
+YAML. Docker already does this. Optional `sdkconfig_defaults` entries in a board
+entry name files under `boards/`.
 
 Firmware builds use native ESP-IDF. Project
 `sdkconfig.defaults` loads first, followed by any defaults explicitly listed in

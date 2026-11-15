@@ -322,7 +322,7 @@ void worker(void *) {
     uint8_t packet[CHUNK + 16];
     for (;;) {
         if (!provisioning_is_ready()) {
-            { Lock guard; if (fb) { esp_camera_fb_return(fb); fb = nullptr; } close_peer(); }
+            { Lock guard; if (fb) { camera_frame_return(fb); fb = nullptr; } close_peer(); }
             if (server) { ESP_ERROR_CHECK(httpd_ssl_stop(server)); server = nullptr; }
             vTaskDelay(pdMS_TO_TICKS(100));
             continue;
@@ -334,12 +334,12 @@ void worker(void *) {
             remote_events();
             const int64_t now = esp_timer_get_time();
             if (peer && (failed || (remote_peer && remote_auth.expired(now)) || now - activity > 30000000)) {
-                if (fb) { esp_camera_fb_return(fb); fb = nullptr; }
+                if (fb) { camera_frame_return(fb); fb = nullptr; }
                 close_peer();
             }
             if (peer) esp_peer_main_loop(peer);
             if (!pending_resolution.empty()) {
-                if (fb) { esp_camera_fb_return(fb); fb = nullptr; }
+                if (fb) { camera_frame_return(fb); fb = nullptr; }
                 cJSON *request = cJSON_Parse(pending_resolution.c_str());
                 pending_resolution.clear();
                 if (request) { send_text(camera_command(request)); cJSON_Delete(request); }
@@ -356,7 +356,7 @@ void worker(void *) {
             }
             if (channel_ready && !reply_waiting && (!remote_peer || remote_auth.allowed())) {
                 if (!fb) {
-                    fb = esp_camera_fb_get(); offset = 0; ++sequence; last_progress = esp_timer_get_time();
+                    fb = camera_frame_get(); offset = 0; ++sequence; last_progress = esp_timer_get_time();
                     if (fb) capture_stalled_since = 0;
                     else if (!capture_stalled_since) capture_stalled_since = esp_timer_get_time();
                     else if (esp_timer_get_time() - capture_stalled_since >= 8000000) {
@@ -381,13 +381,13 @@ void worker(void *) {
                     int ret = esp_peer_send_data(peer, &frame);
                     if (ret == 0) { offset += size; last_progress = esp_timer_get_time(); }
                     if (offset == fb->len || esp_timer_get_time() - last_progress > 2000000 || (ret != 0 && ret != ESP_PEER_ERR_WOULD_BLOCK)) {
-                        esp_camera_fb_return(fb); fb = nullptr;
+                        camera_frame_return(fb); fb = nullptr;
                     }
                     if (ret != 0) break;
                 }
             } else if (!channel_ready) {
                 capture_stalled_since = 0;
-                if (fb) { esp_camera_fb_return(fb); fb = nullptr; }
+                if (fb) { camera_frame_return(fb); fb = nullptr; }
             }
         }
         vTaskDelay(pdMS_TO_TICKS(2));

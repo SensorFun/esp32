@@ -41,11 +41,11 @@ class FirmwareToolTests(unittest.TestCase):
         )
 
     def test_build_override_from_another_directory(self):
-        result = self.run_tool("build", "board=esp32_ai_thinker_cam")
+        result = self.run_tool("build", "board=esp32_ai-thinker_cam")
         self.assertEqual(result.returncode, 0, result.stderr)
         args = json.loads(self.log.read_text())
         self.assertIn("-DIDF_TARGET=esp32", args)
-        self.assertIn(str(ROOT / "build/hello_world/esp32_ai_thinker_cam"), args)
+        self.assertIn(str(ROOT / "build/hello_world/esp32_ai-thinker_cam"), args)
         self.assertEqual(args[-1], "build")
 
     def test_dry_run_does_not_execute_idf(self):
@@ -57,33 +57,35 @@ class FirmwareToolTests(unittest.TestCase):
     def test_device_profiles_compose_frame_grabber_directly(self):
         from hydra import compose, initialize_config_dir
         with initialize_config_dir(version_base="1.3", config_dir=str(ROOT / "config")):
-            ai = compose(config_name="build", overrides=["device=esp32_cam_ov2640"])
-            self.assertEqual(ai.board, "esp32_ai_thinker_cam")
+            ai = compose(config_name="build", overrides=["device=esp32_cam"])
+            self.assertEqual(ai.board, "esp32_ai-thinker_cam")
             self.assertEqual(ai.hardware.target, "esp32")
-            self.assertEqual(ai.camera_sensor, "ov2640")
+            self.assertEqual(ai.frame_grabber.name, "ov")
             self.assertNotIn("camera", ai)
-            s3 = compose(config_name="build", overrides=["device=esp32s3_wroom_ov3660"])
+            s3 = compose(config_name="build", overrides=["device=esp32s3_wroom"])
             self.assertEqual(s3.board, "esp32s3n16r8_espressif_cam")
             self.assertEqual(s3.hardware.target, "esp32s3")
-            self.assertEqual(s3.camera_sensor, "ov3660")
-            self.assertEqual(s3.frame_grabber.timing_profile, "high_light")
-            self.assertEqual(s3.frame_grabber.vertical_flip, 1)
+            self.assertEqual(s3.frame_grabber.name, "gc")
+            self.assertNotIn("timing_profile", s3.frame_grabber)
+            self.assertEqual(s3.frame_grabber.vertical_flip, 0)
+            self.assertEqual(dict(ai.lens), {})
+            self.assertEqual(dict(s3.lens), {})
             self.assertNotIn("camera", s3)
 
     def test_both_device_profiles_run_in_one_hydra_sweep(self):
         result = subprocess.run(
             [sys.executable, str(ROOT / "tools/build.py"), "--multirun",
-             "device=esp32_cam_ov2640,esp32s3_wroom_ov3660", "dry_run=true"],
+             "device=esp32_cam,esp32s3_wroom", "dry_run=true"],
             cwd=self.scratch, env=self.env, capture_output=True, text=True,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         for selection in ("-DIDF_TARGET=esp32 ", "-DIDF_TARGET=esp32s3 ",
-                          "-DCAMERA_SENSOR=ov2640", "-DCAMERA_SENSOR=ov3660"):
+                          "-DFRAME_GRABBER=ov", "-DFRAME_GRABBER=gc"):
             self.assertIn(selection, result.stdout)
         self.assertFalse(self.log.exists())
 
-    def test_incompatible_camera_fails_before_idf(self):
-        result = self.run_tool("build", "device=esp32_cam_ov2640", "frame_grabber=ov3660")
+    def test_incompatible_frame_grabber_fails_before_idf(self):
+        result = self.run_tool("build", "device=esp32_cam", "frame_grabber.name=missing")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("not supported", result.stderr)
         self.assertFalse(self.log.exists())
@@ -112,11 +114,11 @@ class FirmwareToolTests(unittest.TestCase):
         for tool in ("build",):
             with self.subTest(tool=tool):
                 self.log.unlink(missing_ok=True)
-                result = self.run_tool(tool, "project=hello_world", "board=esp32_ai_thinker_cam", "dry_run=true")
+                result = self.run_tool(tool, "project=hello_world", "board=esp32_ai-thinker_cam", "dry_run=true")
                 self.assertEqual(result.returncode, 17, result.stderr)
                 calls = json.loads(self.log.read_text())
                 self.assertEqual(len(calls), 2)
                 self.assertIn("build", calls[0])
                 self.assertIn("run", calls[1])
-                self.assertEqual(calls[1][-5:], ["python", f"/workspace/tools/{tool}.py", "project=hello_world", "board=esp32_ai_thinker_cam", "dry_run=true"])
+                self.assertEqual(calls[1][-5:], ["python", f"/workspace/tools/{tool}.py", "project=hello_world", "board=esp32_ai-thinker_cam", "dry_run=true"])
                 self.assertFalse(any("idf.py" in arg for call in calls for arg in call))

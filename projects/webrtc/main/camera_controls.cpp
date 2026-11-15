@@ -16,11 +16,14 @@ static CameraTiming timing;
 static constexpr const char *timing_names[] = {"high_light", "balanced", "low_light"};
 #include "camera_profiles.h"
 static sensor_t *sensor;
+static camera_config_t active_config{};
 static const char *sensor_name;
 static std::string factory_settings;
 static esp_err_t restore_settings();
 static cJSON *settings_values();
+static bool is_gc() { return sensor->id.PID == GC0308_PID; }
 static framesize_t max_resolution() {
+    if (is_gc()) return FRAMESIZE_VGA;
     return sensor->id.PID == OV2640_PID ? FRAMESIZE_UXGA : FRAMESIZE_QXGA;
 }
 static bool valid_resolution(int size) {
@@ -28,9 +31,18 @@ static bool valid_resolution(int size) {
         resolution[size].width >= 160 && resolution[size].height >= 120;
 }
 static bool supported(const Control &c) {
+    if (is_gc()) {
+        for (const auto &setting : defaults_gc) if (!strcmp(c.name, setting.name)) return true;
+        return false;
+    }
     // OV2640 driver has no implementation for these two controls.
     return sensor->id.PID != OV2640_PID || (strcmp(c.name, "sharpness") && strcmp(c.name, "denoise"));
 }
+static int control_low(const Control &c) { return is_gc() && !strcmp(c.name, "sharpness") ? -2 : c.low; }
+static int control_high(const Control &c) { return is_gc() && !strcmp(c.name, "sharpness") ? 2 : c.high; }
+static bool reset_timing() { return is_gc() || timing.apply(0) == 0; }
+static bool restore_timing(int profile) { return is_gc() || (timing.initialize(sensor) == 0 && timing.apply(profile) == 0); }
+
 static void settle() {
     // A sensor just reset, or moved to a different resolution/exposure, needs
     // a frame or two before auto exposure/gain converge; the first capture is
@@ -56,28 +68,41 @@ esp_err_t camera_start(bool restore_saved) {
     cfg.jpeg_quality = 12; cfg.fb_count = 2; cfg.fb_location = CAMERA_FB_IN_PSRAM;
     cfg.grab_mode = CAMERA_GRAB_LATEST;
     esp_err_t err = esp_camera_init(&cfg);
+    if (err == ESP_ERR_NOT_SUPPORTED) {
+        // esp_camera_init cleans up a failed JPEG probe. Detect non-JPEG
+        // sensors again with raw capture; use raw capture dimensions for the DMA buffer.
+        cfg.pixel_format = PIXFORMAT_RGB565;
+        cfg.frame_size = FRAMESIZE_QVGA;
+        cfg.fb_count = 1;
+        cfg.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
+        err = esp_camera_init(&cfg);
+    }
     if (err != ESP_OK) return err;
+    active_config = cfg;
     sensor = esp_camera_sensor_get();
-    const Default *defaults = nullptr;
-    size_t count = 0;
     if (sensor->id.PID == OV2640_PID) {
-        sensor_name = "ov2640"; defaults = defaults_ov2640; count = sizeof(defaults_ov2640) / sizeof(Default);
+        sensor_name = "ov2640";
     } else if (sensor->id.PID == OV3660_PID) {
-        sensor_name = "ov3660"; defaults = defaults_ov3660; count = sizeof(defaults_ov3660) / sizeof(Default);
+        sensor_name = "ov3660";
+    } else if (sensor->id.PID == GC0308_PID) {
+        sensor_name = "gc0308";
     } else return ESP_ERR_NOT_SUPPORTED;
-    if (sensor->set_framesize(sensor, FRAMESIZE_QVGA) || timing.initialize(sensor) || timing.apply(0)) return ESP_FAIL;
-    for (size_t i = 0; i < count; ++i) {
-        if (!strcmp(defaults[i].name, "timing_profile")) {
-            if (timing.apply(defaults[i].value)) return ESP_FAIL;
+    if (sensor->set_framesize(sensor, FRAMESIZE_QVGA) || !restore_timing(0)) return ESP_FAIL;
+    const Default *defaults = is_gc() ? defaults_gc : defaults_ov;
+    const size_t default_count = is_gc() ? sizeof(defaults_gc) / sizeof(Default) : sizeof(defaults_ov) / sizeof(Default);
+    for (size_t i = 0; i < default_count; ++i) {
+        const auto &setting = defaults[i];
+        if (!strcmp(setting.name, "timing_profile")) {
+            if (timing.apply(setting.value)) return ESP_FAIL;
         }
         for (const auto &c : controls) {
-        if (!strcmp(c.name, defaults[i].name) && (!supported(c) || c.set(sensor, defaults[i].value) != 0)) {
-            ESP_LOGE("camera", "Cannot apply %s", c.name);
-            return ESP_FAIL;
+            if (!strcmp(c.name, setting.name) && supported(c) && c.set(sensor, setting.value) != 0) {
+                ESP_LOGE("camera", "Cannot apply %s", c.name);
+                return ESP_FAIL;
+            }
         }
     }
-    }
-    ESP_LOGI("camera", "Detected %s; YAML defaults applied; JPEG 320x240", sensor_name);
+    ESP_LOGI("camera", "Detected %s; YAML defaults applied; %s 320x240", sensor_name, is_gc() ? "RGB565 + software JPEG" : "JPEG");
     cJSON *defaults_json = settings_values();
     char *defaults_text = cJSON_PrintUnformatted(defaults_json);
     if (!defaults_text) { cJSON_Delete(defaults_json); return ESP_ERR_NO_MEM; }
@@ -96,8 +121,17 @@ static bool set_resolution(framesize_t size) {
     constexpr size_t count = sizeof(controls) / sizeof(controls[0]);
     int values[count]{};
     for (size_t i = 0; i < count; ++i) if (supported(controls[i])) values[i] = controls[i].get(sensor);
+    const bool raw_sensor = is_gc();
     auto apply = [&](framesize_t requested) {
-        if (sensor->id.PID == OV2640_PID && requested == FRAMESIZE_320X320) {
+        if (raw_sensor) {
+            // Raw DMA lengths are fixed at init, unlike variable JPEG frames.
+            // Reconfigure the capture engine with the new raw dimensions.
+            camera_config_t next = active_config;
+            next.frame_size = requested;
+            if (esp_camera_reconfigure(&next) != ESP_OK) return false;
+            active_config = next;
+            sensor = esp_camera_sensor_get();
+        } else if (sensor->id.PID == OV2640_PID && requested == FRAMESIZE_320X320) {
             // Driver 2.1.6 incorrectly selects a <=296-line CIF source for
             // 320x320. Use its raw-window API with the SVGA mode (1), cropping
             // the native 800x600 image to its centered 600x600 square instead.
@@ -108,7 +142,7 @@ static bool set_resolution(framesize_t size) {
         for (size_t i = 0; i < count; ++i) {
             if (supported(controls[i]) && controls[i].set(sensor, values[i])) return false;
         }
-        return timing.initialize(sensor) == 0 && timing.apply(profile) == 0;
+        return restore_timing(profile);
     };
     if (apply(size)) return true;
     // Restore a working sensor configuration if any part of the update fails.
@@ -118,7 +152,7 @@ static bool set_resolution(framesize_t size) {
 static cJSON *settings_values() {
     cJSON *value = cJSON_CreateObject();
     cJSON_AddNumberToObject(value, "resolution", sensor->status.framesize);
-    cJSON_AddStringToObject(value, "timing_profile", timing_names[timing.selected()]);
+    if (!is_gc()) cJSON_AddStringToObject(value, "timing_profile", timing_names[timing.selected()]);
     for (const auto &c : controls) if (supported(c)) cJSON_AddNumberToObject(value, c.name, c.get(sensor));
     return value;
 }
@@ -126,22 +160,25 @@ static bool validate_values(const cJSON *values) {
     if (!cJSON_IsObject(values)) return false;
     const cJSON *size = cJSON_GetObjectItemCaseSensitive(values, "resolution");
     if (!cJSON_IsNumber(size) || !std::isfinite(size->valuedouble) || size->valuedouble != std::floor(size->valuedouble) || !valid_resolution(size->valueint)) return false;
-    const cJSON *profile = cJSON_GetObjectItemCaseSensitive(values, "timing_profile");
-    if (!cJSON_IsString(profile)) return false;
-    bool known = false;
-    for (const char *name : timing_names) if (!strcmp(name, profile->valuestring)) known = true;
-    if (!known) return false;
+    if (!is_gc()) {
+        const cJSON *profile = cJSON_GetObjectItemCaseSensitive(values, "timing_profile");
+        if (!cJSON_IsString(profile)) return false;
+        bool known = false;
+        for (const char *name : timing_names) if (!strcmp(name, profile->valuestring)) known = true;
+        if (!known) return false;
+    }
     for (const auto &c : controls) if (supported(c)) {
         const cJSON *v = cJSON_GetObjectItemCaseSensitive(values, c.name);
-        if (!cJSON_IsNumber(v) || !std::isfinite(v->valuedouble) || v->valuedouble != std::floor(v->valuedouble) || v->valuedouble < c.low || v->valuedouble > c.high) return false;
+        if (!cJSON_IsNumber(v) || !std::isfinite(v->valuedouble) || v->valuedouble != std::floor(v->valuedouble) || v->valuedouble < control_low(c) || v->valuedouble > control_high(c)) return false;
     }
     return true;
 }
 static bool apply_values(const cJSON *values) {
-    if (timing.apply(0)) return false;
+    if (!reset_timing()) return false;
     const int size = cJSON_GetObjectItemCaseSensitive(values, "resolution")->valueint;
     if (sensor->status.framesize != size && !set_resolution(static_cast<framesize_t>(size))) return false;
     for (const auto &c : controls) if (supported(c) && c.set(sensor, cJSON_GetObjectItemCaseSensitive(values, c.name)->valueint)) return false;
+    if (is_gc()) return true;
     const char *profile = cJSON_GetObjectItemCaseSensitive(values, "timing_profile")->valuestring;
     for (int i = 0; i < 3; ++i) if (!strcmp(profile, timing_names[i])) return timing.apply(i) == 0;
     return false;
@@ -205,18 +242,20 @@ cJSON *camera_settings() {
         cJSON_AddNumberToObject(size, "height", resolution[i].height);
         cJSON_AddItemToArray(sizes, size);
     }
-    cJSON_AddStringToObject(reply, "timing_profile", timing_names[timing.selected()]);
     cJSON *profiles = cJSON_AddArrayToObject(reply, "timing_profiles");
-    for (const char *name : timing_names) cJSON_AddItemToArray(profiles, cJSON_CreateString(name));
-    cJSON_AddNumberToObject(reply, "timing_register", timing.readback());
-    cJSON_AddStringToObject(reply, "timing_profile_status", sensor->id.PID == OV3660_PID
-        ? "High / Mid / Low light: native / 2x / 3x line period"
-        : "High / Mid / Low light: native / 2x / 4x line period");
+    if (!is_gc()) {
+        cJSON_AddStringToObject(reply, "timing_profile", timing_names[timing.selected()]);
+        for (const char *name : timing_names) cJSON_AddItemToArray(profiles, cJSON_CreateString(name));
+        cJSON_AddNumberToObject(reply, "timing_register", timing.readback());
+        cJSON_AddStringToObject(reply, "timing_profile_status", sensor->id.PID == OV3660_PID
+            ? "High / Mid / Low light: native / 2x / 3x line period"
+            : "High / Mid / Low light: native / 2x / 4x line period");
+    }
     cJSON *array = cJSON_AddArrayToObject(reply, "controls");
     for (const auto &c : controls) {
         cJSON *item = cJSON_CreateObject();
         cJSON_AddStringToObject(item, "name", c.name);
-        cJSON_AddNumberToObject(item, "min", c.low); cJSON_AddNumberToObject(item, "max", c.high);
+        cJSON_AddNumberToObject(item, "min", control_low(c)); cJSON_AddNumberToObject(item, "max", control_high(c));
         cJSON_AddNumberToObject(item, "value", c.get(sensor));
         cJSON_AddBoolToObject(item, "supported", supported(c));
         cJSON_AddItemToArray(array, item);
@@ -243,7 +282,7 @@ esp_err_t camera_recover() {
     for (size_t i = 0; i < count; ++i) {
         if (enabled[i] && controls[i].set(sensor, values[i]) != 0) return ESP_FAIL;
     }
-    if (timing.apply(profile) != 0) return ESP_FAIL;
+    if (!restore_timing(profile)) return ESP_FAIL;
     settle();
     return ESP_OK;
 }
@@ -285,7 +324,7 @@ cJSON *camera_command(const cJSON *request) {
     if (cJSON_IsString(op) && !strcmp(op->valuestring, "set") && cJSON_IsString(name) &&
         !strcmp(name->valuestring, "timing_profile")) {
         error = "Unknown timing profile";
-        if (cJSON_IsString(value)) for (int i = 0; i < 3; ++i) {
+        if (!is_gc() && cJSON_IsString(value)) for (int i = 0; i < 3; ++i) {
             if (strcmp(value->valuestring, timing_names[i])) continue;
             int ret = timing.apply(i);
             if (ret == -2) ESP_ERROR_CHECK(ESP_FAIL);
@@ -297,7 +336,7 @@ cJSON *camera_command(const cJSON *request) {
     if (cJSON_IsString(op) && !strcmp(op->valuestring, "set") && cJSON_IsString(name) && cJSON_IsNumber(value)) {
         for (const auto &c : controls) if (!strcmp(name->valuestring, c.name)) {
             if (!supported(c)) error = "Control is unsupported by this sensor";
-            else if (!std::isfinite(value->valuedouble) || value->valuedouble < c.low || value->valuedouble > c.high || std::floor(value->valuedouble) != value->valuedouble) error = "Value must be an integer within the advertised range";
+            else if (!std::isfinite(value->valuedouble) || value->valuedouble < control_low(c) || value->valuedouble > control_high(c) || std::floor(value->valuedouble) != value->valuedouble) error = "Value must be an integer within the advertised range";
             else if (c.set(sensor, value->valueint) != 0) error = "Sensor rejected setting";
             else return camera_settings();
             break;

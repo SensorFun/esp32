@@ -1,8 +1,6 @@
 #pragma once
 #include "common/board.h"
 
-inline constexpr char camera_board_name[] = "AI Thinker ESP32-CAM";
-
 #define PWDN_GPIO_NUM  32
 #define RESET_GPIO_NUM -1
 #define XCLK_GPIO_NUM  0
@@ -24,6 +22,6 @@ inline constexpr char camera_board_name[] = "AI Thinker ESP32-CAM";
 // GPIO12-to-GND setup jumper; reserve this pin instead of using SD D2.
 // GPIO12 is a voltage strapping pin: restore its low pull before restart.
 inline constexpr common::BoardConfig common_board_config = {
-    .name = camera_board_name,
+    .name = board_display_name,
     .setup_reset = {.sense_gpio = 12, .check_at_startup = true, .restart_pull = common::RestartPull::down},
 };

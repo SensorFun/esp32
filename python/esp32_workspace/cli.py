@@ -8,19 +8,17 @@ import shutil
 import subprocess
 
 
-from .boards import load_board
+from .boards import load_board, load_catalog
 
 
-def command(root: Path, project: str, board: str, action: str, port: str | None, camera: str | None = None) -> list[str]:
+def command(root: Path, project: str, board: str, action: str, port: str | None, frame_grabber: str | None = None) -> list[str]:
     projects = root / "projects"
     source = (projects / project).resolve()
     if source.parent != projects.resolve() or not (source / "CMakeLists.txt").is_file():
         raise ValueError(f"Unknown project: {project}")
     config = load_board(root, board)
-    if camera is None:
-        camera = config.get("default_camera", "none")
-    if camera != "none" and camera not in config.get("camera_sensors", []):
-        raise ValueError(f"Camera {camera!r} is not supported by board {board}")
+    if frame_grabber is not None and frame_grabber not in config.get("supported_frame_grabber", []):
+        raise ValueError(f"Frame grabber {frame_grabber!r} is not supported by board {board}")
     build = root / "build" / project / board
     defaults = [source / "sdkconfig.defaults"]
     defaults += [root / "boards" / item for item in config.get("sdkconfig_defaults", [])]
@@ -28,7 +26,7 @@ def command(root: Path, project: str, board: str, action: str, port: str | None,
     result = [
         "idf.py", "-C", str(source), "-B", str(build),
         f"-DIDF_TARGET={config['target']}", f"-DBOARD={board}",
-        f"-DCAMERA_SENSOR={camera}",
+        f"-DFRAME_GRABBER={frame_grabber if frame_grabber is not None else 'none'}",
         f"-DSDKCONFIG={build / 'sdkconfig'}",
     ]
     if defaults:
@@ -43,17 +41,18 @@ def main() -> int:
     parser.add_argument("action", choices=["list", "build", "flash", "monitor", "menuconfig", "clean"])
     parser.add_argument("--root", type=Path, default=Path(os.environ.get("ESP32_WORKSPACE", Path.cwd())))
     parser.add_argument("--project", default="hello_world")
-    parser.add_argument("--board", default="esp32s3_seeed_cam")
+    parser.add_argument("--board", default="esp32_ai-thinker_cam")
+    parser.add_argument("--frame-grabber", help="Frame grabber profile from config/frame_grabber")
     parser.add_argument("--port", help="Serial device, e.g. /dev/ttyACM0")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     root = args.root.resolve()
     if args.action == "list":
         print("Projects: " + ", ".join(p.parent.name for p in sorted((root / "projects").glob("*/CMakeLists.txt"))))
-        print("Boards: " + ", ".join(p.stem for p in sorted((root / "config/board").glob("*.yaml"))))
+        print("Boards: " + ", ".join(sorted(load_catalog(root))))
         return 0
     try:
-        cmd = command(root, args.project, args.board, args.action, args.port)
+        cmd = command(root, args.project, args.board, args.action, args.port, args.frame_grabber)
     except (ValueError, KeyError) as error:
         parser.error(str(error))
     print(shlex.join(cmd), flush=True)

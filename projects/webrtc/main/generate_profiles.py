@@ -25,22 +25,30 @@ for name, member, low, high in controls:
         setter = '[](sensor_t *s, int v) { return s->set_gainceiling(s, static_cast<gainceiling_t>(v)); }'
     lines.append(f'{{"{name}", {low}, {high}, {setter}, [](sensor_t *s) {{ return int(s->status.{member}); }}}},')
 lines += ['};', 'struct Default { const char *name; int value; };']
-for sensor in ('ov2640', 'ov3660'):
-    profile = yaml.safe_load((root / 'config/frame_grabber' / f'{sensor}.yaml').read_text())
+for family in ('ov', 'gc'):
+    profile = yaml.safe_load((root / 'config/frame_grabber' / f'{family}.yaml').read_text())
+    if profile.get('name') != family:
+        raise ValueError('Profile name must match filename')
+    if family == 'gc':
+        gc_controls = {'contrast', 'saturation', 'sharpness', 'colorbar', 'horizontal_mirror', 'vertical_flip', 'automatic_white_balance', 'white_balance_mode', 'automatic_gain', 'agc_gain', 'automatic_exposure', 'aec_value', 'ae_level'}
+        if set(profile) - gc_controls - {'name'}:
+            raise ValueError('Unsupported GC0308 control')
     timing_names = ('high_light', 'balanced', 'low_light')
     if profile.get('timing_profile') not in (None, *timing_names):
         raise ValueError('Unknown timing profile')
-    unknown = set(profile) - {x[0] for x in controls} - {'sensor', 'timing_profile'}
+    unknown = set(profile) - {x[0] for x in controls} - {'name', 'timing_profile'}
     if unknown:
         raise ValueError(f'Unmapped camera settings: {unknown}')
-    lines.append(f'static const Default defaults_{sensor}[] = {{')
+    lines.append(f'static const Default defaults_{family}[] = {{')
     if 'timing_profile' in profile:
         lines.append('{"timing_profile", ' + str(timing_names.index(profile['timing_profile'])) + '},')
     for name, _, low, high in controls:
         if name in profile:
             value = profile[name]
+            if family == 'gc' and name == 'sharpness':
+                low, high = -2, 2
             if type(value) is not int or not low <= value <= high:
-                raise ValueError(f'{sensor}.{name} out of range')
+                raise ValueError(f'{family}.{name} out of range')
             lines.append(f'{{"{name}", {value}}},')
     lines.append('};')
 output.write_text('\n'.join(lines) + '\n')

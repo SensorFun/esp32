@@ -47,7 +47,7 @@ class CameraSettings extends HTMLElement {
       control.value = value; add(name, title, control);
     };
     select('resolution', 'Resolution', this.value.resolutions.map(size => [size.value, `${size.width} × ${size.height}`]), this.value.resolution);
-    select('timing_profile', 'Light timing', this.value.timing_profiles.map(name => [name, ({high_light:'High light',balanced:'Mid light',low_light:'Low light'})[name]]), this.value.timing_profile);
+    if (this.value.timing_profiles.length) select('timing_profile', 'Light timing', this.value.timing_profiles.map(name => [name, ({high_light:'High light',balanced:'Mid light',low_light:'Low light'})[name]]), this.value.timing_profile);
     for (const c of this.value.controls) {
       const input = document.createElement('input'); input.type = 'number'; input.min = c.min; input.max = c.max; input.step = 1; input.value = c.value; input.disabled = !c.supported; input.required = c.supported;
       add(c.name, c.name.replaceAll('_', ' '), input);

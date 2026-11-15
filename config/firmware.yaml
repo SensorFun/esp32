@@ -1,10 +1,11 @@
-# Select a board/sensor pair with device=...; project and board remain overridable.
+# Select a board/frame grabber pair with device=...; project and board remain overridable.
 defaults:
-  - device: esp32_cam_ov2640
+  - boards@board_catalog: [ai-thinker, espressif, goouuu]
+  - device: esp32_cam
   - _self_
 
+hardware: ${board_catalog.${board}}
 project: hello_world
-camera_sensor: ${frame_grabber.sensor}
 dry_run: false
 
 hydra:

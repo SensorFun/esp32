@@ -1,8 +1,6 @@
 #pragma once
 #include "common/board.h"
 
-inline constexpr char camera_board_name[] = "ESP32-S3-WROOM N16R8 CAM";
-
 #define PWDN_GPIO_NUM  -1
 #define RESET_GPIO_NUM -1
 #define XCLK_GPIO_NUM  15
@@ -29,5 +27,5 @@ inline constexpr char camera_board_name[] = "ESP32-S3-WROOM N16R8 CAM";
 
 // BOOT is checked while running; do not hold strapping pins at power-on.
 inline constexpr common::BoardConfig common_board_config = {
-    .name = camera_board_name,
+    .name = board_display_name,
 };

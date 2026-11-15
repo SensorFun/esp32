@@ -1,5 +1,0 @@
-# @package _global_
-defaults:
-  - /board: esp32s3n16r8_espressif_cam
-  - /frame_grabber: ov3660
-  - _self_

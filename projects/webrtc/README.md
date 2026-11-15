@@ -17,10 +17,10 @@ fingerprint. Normal browser privacy settings can remain enabled.
 From the workspace root:
 
 ```sh
-python tools/build.py project=webrtc device=esp32_cam_ov2640
-python tools/flash.py project=webrtc device=esp32_cam_ov2640
-python tools/build.py project=webrtc device=esp32s3_wroom_ov3660
-python tools/flash.py project=webrtc device=esp32s3_wroom_ov3660
+python tools/build.py project=webrtc device=esp32_cam
+python tools/flash.py project=webrtc device=esp32_cam
+python tools/build.py project=webrtc device=esp32s3_wroom
+python tools/flash.py project=webrtc device=esp32s3_wroom
 ```
 
 Builds run in the existing ESP-IDF 6.1 Docker environment. Flashing uses the
@@ -64,9 +64,16 @@ stale room slot after reprovisioning.
 
 ## Camera controls
 
-The physical sensor PID chooses `config/frame_grabber/ov2640.yaml` or
-`ov3660.yaml`, even when a board supports both sensors. CMake generates initial
-values directly from those files and rejects unknown fields or invalid ranges.
+OV devices use `config/frame_grabber/ov.yaml`; the S3-WROOM device uses
+`config/frame_grabber/gc.yaml` for GC0308. Each device selects
+`config/lens/general.yaml` (currently without overrides). Sensor PID detection
+selects the defaults and capture path at runtime. GC0308 captures RGB565 and
+encodes JPEG in software, with a maximum resolution of VGA. Unsupported sensor
+controls are disabled, and OV light timing is omitted from its settings panel.
+CMake generates initial values from both YAML files and rejects unknown controls
+and invalid ranges. `gc.yaml` rejects controls absent from the GC0308 driver.
+GC gain defaults to 10 (hardware global gain 0x15, near the driver default
+0x14); the OV value of 0 would write zero global gain on this sensor.
 All numeric settings in the current YAML profiles have sensor-driver mappings.
 The viewer also exposes the other common image/exposure/white-balance controls.
 OV2640 sharpness and denoise are disabled because its driver does not implement

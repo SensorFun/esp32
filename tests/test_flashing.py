@@ -26,8 +26,9 @@ class FlashTests(unittest.TestCase):
         (self.root / "projects/hello_world").mkdir(parents=True)
         (self.root / "projects/hello_world/CMakeLists.txt").touch()
         (self.root / "boards").mkdir()
-        (self.root / "config/board").mkdir(parents=True)
-        (self.root / "config/board/test.yaml").write_text("board: test\nhardware:\n  target: esp32s3\n")
+        (self.root / "config/boards").mkdir(parents=True)
+        (self.root / "boards/shared.h").touch()
+        (self.root / "config/boards/test.yaml").write_text("test:\n  name: Test board\n  header: shared.h\n  target: esp32s3\n")
         self.build = self.root / "build/hello_world/test"
         self.build.mkdir(parents=True)
         self.metadata = {
@@ -109,13 +110,15 @@ class FlashTests(unittest.TestCase):
         call.assert_not_called()
 
     @patch("esp32_workspace.flashing.subprocess.call")
-    def test_wrong_camera_build_cannot_be_flashed(self, call):
-        (self.root / "config/board/test.yaml").write_text("board: test\nhardware:\n  target: esp32s3\n  camera_sensors: [ov3660]\n")
-        self.config.camera_sensor = "ov3660"
+    def test_wrong_frame_grabber_build_cannot_be_flashed(self, call):
+        (self.root / "config/boards/test.yaml").write_text("test:\n  name: Test board\n  header: shared.h\n  target: esp32s3\n  supported_frame_grabber: [ov]\n")
+        (self.root / "config/frame_grabber").mkdir()
+        (self.root / "config/frame_grabber/ov.yaml").write_text("name: ov\n")
+        self.config.frame_grabber = {"name": "ov"}
         selection = self.build / "firmware_selection.json"
         with self.assertRaisesRegex(ValueError, "metadata is missing"):
             run_flash(self.root, self.config)
-        selection.write_text('{"board":"test","camera":"ov2640"}')
+        selection.write_text('{"board":"test","frame_grabber":"other"}')
         with self.assertRaisesRegex(ValueError, "does not match"):
             run_flash(self.root, self.config)
         call.assert_not_called()
@@ -147,7 +150,7 @@ class FlashTests(unittest.TestCase):
             SimpleNamespace(device="/dev/ttyUSB0",vid=0x0403,pid=0x6001,product="FT232R USB UART",serial_number=""),
             SimpleNamespace(device="/dev/ttyUSB1",vid=0x1A86,pid=0x7523,product="USB Serial",serial_number=""),
         ]
-        self.assertEqual(detect_port(root, "esp32_ai_thinker_cam"), "/dev/ttyUSB0")
+        self.assertEqual(detect_port(root, "esp32_ai-thinker_cam"), "/dev/ttyUSB0")
         self.assertEqual(detect_port(root, "esp32s3n16r8_espressif_cam"), "/dev/ttyUSB1")
 
     def test_flash_config_can_be_inspected_without_docker(self):

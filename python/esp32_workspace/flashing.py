@@ -82,19 +82,19 @@ def run_flash(root: Path, config: DictConfig) -> int:
     if not isinstance(config.clear_nvs, bool):
         raise ValueError("clear_nvs must be true or false")
     # Reuse the firmware selection validation without running idf.py.
-    command(root, config.project, config.board, "build", None, config.get("camera_sensor"))
+    command(root, config.project, config.board, "build", None, config.frame_grabber.name if config.get("frame_grabber") is not None else None)
     build = root / "build" / config.project / config.board
     metadata_file = build / "flasher_args.json"
     args_file = build / "flash_args"
     if not metadata_file.is_file() or not args_file.is_file():
         raise ValueError("Firmware is not built. Run python3 tools/build.py with the same project and board first.")
-    if config.get("camera_sensor") is not None:
+    if config.get("frame_grabber") is not None:
         selection_file = build / "firmware_selection.json"
         if not selection_file.is_file():
-            raise ValueError("Camera selection metadata is missing; rebuild this device profile first.")
+            raise ValueError("Frame grabber selection metadata is missing; rebuild this device profile first.")
         selection = json.loads(selection_file.read_text())
-        if selection.get("board") != config.board or selection.get("camera") != config.camera_sensor:
-            raise ValueError("Built board/camera does not match this device profile; rebuild before flashing.")
+        if selection.get("board") != config.board or selection.get("frame_grabber") != config.frame_grabber.name:
+            raise ValueError("Built board/frame grabber does not match this device profile; rebuild before flashing.")
     metadata = json.loads(metadata_file.read_text())
     board = load_board(root, config.board)
     extra = metadata["extra_esptool_args"]

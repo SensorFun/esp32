@@ -1,0 +1,8 @@
+# GOOUUU ESP32-S3-CAM V1.5, N16R8 variant.
+# Camera and microSD wiring: https://www.phippselectronics.com/support/esp32-s3-cam-ov2640-2mp-wifi-camera-development-board-users-guide/
+esp32s3n16r8_goouuu_cam:
+  name: Goouuu Tech ESP32-S3-CAM N16R8
+  header: esp32s3n16r8_espressif_cam.h
+  target: esp32s3
+  supported_frame_grabber: [ov, gc]
+  sdkconfig_defaults: [esp32s3_n16r8.defaults]

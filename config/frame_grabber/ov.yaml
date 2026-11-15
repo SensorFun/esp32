@@ -1,8 +1,11 @@
-sensor: ov2640
+name: ov
+# Shared OV defaults; firmware detects the sensor and skips unsupported controls.
 timing_profile: high_light
 brightness: 0
 contrast: 0
 saturation: 0
+sharpness: 1
+denoise: 1
 jpeg_quality: 12
 gain_ceiling: 0
 colorbar: 0
@@ -22,7 +25,3 @@ black_pixel_correction: 0
 white_pixel_correction: 1
 raw_gamma: 1
 lens_correction: 1
-# sharpness and denoise are omitted: the OV2640 driver's set_sharpness/
-# set_denoise are unconditional no-op stubs (always return -1), so
-# camera_controls.cpp's supported() excludes them for this sensor and
-# the website's settings panel disables their inputs accordingly.

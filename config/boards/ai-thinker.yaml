@@ -1,0 +1,5 @@
+esp32_ai-thinker_cam:
+  name: AI Thinker ESP32-CAM
+  header: esp32_ai-thinker_cam.h
+  target: esp32
+  supported_frame_grabber: [ov]

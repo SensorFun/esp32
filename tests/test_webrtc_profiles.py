@@ -12,16 +12,16 @@ GENERATOR = ROOT / 'projects/webrtc/main/generate_profiles.py'
 
 
 class CameraProfileTests(unittest.TestCase):
-    def generate(self, overrides):
+    def generate(self, overrides, family="ov"):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             profiles = root / 'config/frame_grabber'
             profiles.mkdir(parents=True)
-            for sensor in ('ov2640', 'ov3660'):
-                profile = yaml.safe_load((ROOT / 'config/frame_grabber' / f'{sensor}.yaml').read_text())
-                if sensor == 'ov3660':
+            for name in ('ov', 'gc'):
+                profile = yaml.safe_load((ROOT / 'config/frame_grabber' / f'{name}.yaml').read_text())
+                if name == family:
                     profile.update(overrides)
-                (profiles / f'{sensor}.yaml').write_text(yaml.safe_dump(profile))
+                (profiles / f'{name}.yaml').write_text(yaml.safe_dump(profile))
             output = root / 'profiles.h'
             result = subprocess.run([sys.executable, str(GENERATOR), str(root), str(output)], capture_output=True, text=True)
             return result, output.read_text() if output.exists() else ''
@@ -29,8 +29,7 @@ class CameraProfileTests(unittest.TestCase):
     def test_existing_profiles_generate(self):
         result, content = self.generate({})
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('defaults_ov2640', content)
-        self.assertIn('defaults_ov3660', content)
+        self.assertIn('defaults_ov[]', content)
         self.assertIn('{"timing_profile", 0}', content)
         self.assertIn('s->set_whitebal(s, v)', content)
 
@@ -46,3 +45,15 @@ class CameraProfileTests(unittest.TestCase):
                 result, content = self.generate({'timing_profile': name})
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn('{"timing_profile", ' + str(index) + '}', content)
+
+    def test_gc_controls_and_ranges(self):
+        result, content = self.generate({})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        gc = content.split('defaults_gc[] = {', 1)[1]
+        self.assertIn('{"contrast", 0}', gc)
+        self.assertNotIn('timing_profile', gc)
+        self.assertNotIn('jpeg_quality', gc)
+        for override in ({'jpeg_quality': 12}, {'brightness': 0}, {'timing_profile': 'balanced'}, {'sharpness': -3}, {'sharpness': 3}, {'name': 'wrong'}):
+            with self.subTest(override=override):
+                result, _ = self.generate(override, 'gc')
+                self.assertNotEqual(result.returncode, 0)

@@ -42,6 +42,7 @@ repository subpaths and custom-domain roots:
 
 - `/#/` — ESP32 project list
 - `/#/projects/webrtc` — WebRTC camera workspace
+- `/#/projects/flasher` — browser firmware flasher
 
 Other hashes show a page-not-found screen with links to the project list and to
 SensorFun.
@@ -92,10 +93,37 @@ to the camera's Wi-Fi network and open that HTTPS link. The website uses remote
 signaling and makes no board HTTP requests: JPEG frames and settings use
 encrypted WebRTC.
 
+## Flasher
+
+`/#/projects/flasher` writes firmware you built locally to a board over USB,
+using Web Serial and Espressif's [esptool-js](https://github.com/espressif/esptool-js).
+It needs Chrome or Edge on a computer, over HTTPS or localhost; other browsers
+see an explanation instead.
+
+1. Build: `python3 tools/build.py project=webrtc device=<device>`.
+2. **Choose build folder**: pick `build/webrtc` (every board build inside is
+   listed) or one `build/webrtc/<board>` folder. The page reads
+   `flasher_args.json` for files, offsets, chip, and flash settings, the same
+   data `tools/flash.py` uses, and shows `firmware_selection.json`'s board and
+   camera.
+3. **Add USB port**: the browser's chooser lists every serial port. Allowed
+   ports stay listed, named by USB vendor (Espressif USB, CP210x, CH340, FTDI,
+   Prolific), and can be forgotten.
+4. **Flash firmware**: the page stops before writing if the connected chip does
+   not match the build, verifies every file by MD5 after writing, then
+   restarts the board. **Erase entire flash first** also clears saved Wi-Fi,
+   the camera password, and camera settings.
+
+Firmware files are read in the browser and sent only to the board; nothing is
+uploaded or hosted. Builds contain the signaling API secret, so keep them
+private. If the board doesn't connect, close other programs using the port,
+hold BOOT while starting, or lower the speed.
+
 ## Browser verification
 
 With the production preview running, the optional Playwright smoke test checks
-branding, the project list, breadcrumbs, links back to SensorFun, unknown routes, mobile layouts,
+branding, the project list, breadcrumbs, links back to SensorFun, unknown routes,
+the flasher (with simulated serial ports and a generated build folder), mobile layouts,
 and the camera connection form. It never contacts a real camera.
 
 ```sh
