@@ -1,4 +1,4 @@
-"""Check the SensorFan camera interface on desktop and mobile."""
+"""Check the SensorFun ESP32 camera interface on desktop and mobile."""
 import argparse
 from playwright.sync_api import sync_playwright, expect
 
@@ -14,17 +14,19 @@ with sync_playwright() as p:
     for width in (320, 375, 390, 768, 1440):
         page.set_viewport_size({'width': width, 'height': 1000})
         page.goto(args.url)
-        expect(page).to_have_title('SensorFan')
-        expect(page.get_by_role('heading', name='Projects', exact=True)).to_be_visible()
+        expect(page).to_have_title('ESP32 · SensorFun')
+        expect(page.get_by_role('heading', name='ESP32 projects', exact=True)).to_be_visible()
+        assert page.locator('.sensorfan-brand img').evaluate('(img)=>img.complete && img.naturalWidth>0')
+        assert page.get_by_role('link', name='SensorFun', exact=True).get_attribute('href') == 'https://sensorfun.net/'
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         expect(page.get_by_label('Camera MAC address', exact=True)).to_have_count(0)
         page.get_by_role('link', name='Connected cameras WebRTC', exact=False).click()
-        expect(page).to_have_title('WebRTC · SensorFan')
+        expect(page).to_have_title('WebRTC · ESP32 · SensorFun')
         page.reload()
         expect(page.get_by_role('heading', name='Remote camera', exact=True)).to_be_visible()
-        assert page.locator('.sensorfan-brand img').evaluate('(img)=>img.complete && img.naturalWidth>0')
-        assert 'Device Spaces' not in page.locator('body').inner_text()
-        assert page.get_by_role('navigation').count() == 0
+        trail = page.get_by_role('navigation', name='Breadcrumb')
+        assert trail.get_by_role('link', name='ESP32', exact=True).bounding_box()['height'] >= 44
+        expect(trail.get_by_role('link', name='WebRTC', exact=True)).to_have_attribute('aria-current', 'page')
         expect(page.get_by_label('Camera MAC address', exact=True)).to_be_visible()
         if width <= 600:
             assert page.get_by_label('Camera MAC address', exact=True).evaluate('(input)=>parseFloat(getComputedStyle(input).fontSize)>=16')
@@ -33,10 +35,15 @@ with sync_playwright() as p:
         expect(page.get_by_text('Connect on your local network', exact=True)).to_have_count(0)
         expect(page.get_by_label('Camera address', exact=True)).to_have_count(0)
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
-        page.get_by_role('link', name='SensorFan', exact=True).click()
-        expect(page.get_by_role('heading', name='Projects', exact=True)).to_be_visible()
+        trail.get_by_role('link', name='ESP32', exact=True).click()
+        expect(page.get_by_role('heading', name='ESP32 projects', exact=True)).to_be_visible()
         page.go_back()
         expect(page.get_by_label('Camera MAC address', exact=True)).to_be_visible()
+        page.goto(args.url.split('#')[0] + '#/missing')
+        expect(page.get_by_role('heading', name='Page not found', exact=True)).to_be_visible()
+        assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+        page.get_by_role('link', name='ESP32 projects', exact=True).click()
+        expect(page.get_by_role('heading', name='ESP32 projects', exact=True)).to_be_visible()
     assert not errors, errors
-    print('Passed: SensorFan branding, logo, remote-only camera interface, and desktop/mobile layouts.')
+    print('Passed: SensorFun ESP32 branding, logo, project list, breadcrumbs, remote-only camera interface, and desktop/mobile layouts.')
     browser.close()

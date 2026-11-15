@@ -33,3 +33,14 @@
  .sensorfan .remote-preview{min-height:200px}
 }
 @media(max-width:600px){.sensorfan-header{padding:14px 18px}.sensorfan-brand{font-size:22px}.sensorfan-brand img{width:48px;height:48px}.sensorfan .rtc-content{padding:24px 18px}.sensorfan-intro h1{font-size:26px}}
+.sensorfan-header{justify-content:flex-start}
+.sensorfan-trail{display:flex;align-items:center;gap:6px;border-left:1px solid #2a352c;padding-left:12px;font-family:monospace;font-size:13px;letter-spacing:1px}
+.sensorfan-trail a{display:inline-flex;align-items:center;min-height:44px;padding:0 6px;color:#9aa995}
+.sensorfan-trail a:hover,.sensorfan-trail a[aria-current=page]{color:#00d4cb}
+.sensorfan-trail span{color:#4f5e52}
+.sensorfan-status{margin-left:auto}
+.sensorfan-actions{display:flex;flex-wrap:wrap;gap:12px}
+.sensorfan-actions .button{min-height:44px}
+.sensorfan-secondary{border-color:#2a352c;color:#c5d5bd}
+.sensorfan-secondary:hover{border-color:#00d4cb}
+@media(max-width:600px){.sensorfan-trail{border-left:0;padding-left:0;margin-left:-6px}}

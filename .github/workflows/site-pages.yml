@@ -1,4 +1,4 @@
-name: Deploy project spaces to GitHub Pages
+name: Deploy ESP32 site to GitHub Pages
 
 on:
   push:

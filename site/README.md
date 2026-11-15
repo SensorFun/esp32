@@ -1,8 +1,10 @@
-# SensorFan
+# SensorFun ESP32
 
-A React site with a general project collection and independent project projects.
-The home page uses a light theme; the WebRTC project owns a dark camera workspace,
-navigation, connection guide, and project information.
+The ESP32 project space of [SensorFun](https://sensorfun.net/), served at
+`https://esp32.sensorfun.net/`. The SensorFun landing page lives in the separate
+main repository and links here. This site's home page lists the ESP32 projects;
+each project, such as WebRTC, owns its own workspace. The SensorFun logo returns
+to `https://sensorfun.net/`, and the **ESP32** breadcrumb returns to the project list.
 
 ## Develop
 
@@ -27,33 +29,30 @@ builds `site/dist`, and publishes that directory to GitHub Pages on changes to
 `site/` on `main`, or when manually dispatched.
 
 1. In the repository's **Settings → Pages**, choose **GitHub Actions** as source.
-2. The signaling endpoint is built in; no repository signaling URL variable is required.
+2. Set the custom domain to `esp32.sensorfun.net`, and add a DNS `CNAME` record
+   for `esp32` pointing to the GitHub Pages host of this repository's owner.
 3. Push the changes to `main`, or run the deployment workflow manually.
-4. Use the URL reported by the workflow's deployment environment.
 
-The site has not been published by adding these files. A deployment requires
-pushing the changes and enabling Pages in the repository.
+The signaling endpoint is built in; no repository signaling URL variable or
+secret is required.
 
-Routes use the URL hash, so refreshing or sharing a project URL works on static
-hosting without server rewrite rules. Asset URLs are relative, supporting both
+Routes use the URL hash, so refreshing or sharing a URL works on static hosting
+without server rewrite rules. Asset URLs are relative, supporting both
 repository subpaths and custom-domain roots:
 
-- `/#/` — general home
-- `/#/projects` — project collection
-- `/#/about` — about the collection
-- `/#/projects/webrtc` — WebRTC workspace
-- `/#/projects/webrtc/setup` — connection guide
-- `/#/projects/webrtc/notes` — project information
+- `/#/` — ESP32 project list
+- `/#/projects/webrtc` — WebRTC camera workspace
 
-For a repository site, these hashes follow the repository's base URL, such as
-`/<repository>/#/projects/webrtc`.
+Other hashes show a page-not-found screen with links to the project list and to
+SensorFun.
 
 ## Add a project
 
 Add its React component and scoped stylesheet under `src/projects/<id>/`, then
-register its ID, title, description, icon, and component in `src/projects/index.jsx`.
-Each component receives its remaining route as `subpage` and owns its interface.
-The home/index pages render the registry automatically.
+register its ID, name, category, description, and component in
+`src/projects/index.jsx`. The home page renders the registry automatically. Also
+add the project to the ESP32 card on the SensorFun landing page in the main
+repository.
 
 ## WebRTC connections
 
@@ -96,8 +95,8 @@ encrypted WebRTC.
 ## Browser verification
 
 With the production preview running, the optional Playwright smoke test checks
-navigation, project theme changes, refresh/history, unknown routes, mobile
-layouts, and the camera connection form. It never contacts a real camera.
+branding, the project list, breadcrumbs, links back to SensorFun, unknown routes, mobile layouts,
+and the camera connection form. It never contacts a real camera.
 
 ```sh
 python scripts/check-browser.py --url http://127.0.0.1:4173/ --browser /path/to/chromium
