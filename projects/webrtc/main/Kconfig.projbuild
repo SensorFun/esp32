@@ -15,4 +15,11 @@ config CAMERA_SIGNALING_STUN_URL
         signaling messages only; the browser and camera establish a direct
         WebRTC connection.
 
+config CAMERA_SNTP_SERVER
+    string "SNTP server for recording timestamps"
+    default "pool.ntp.org"
+    help
+        Motion recordings are named by UTC time. Until this server answers,
+        the camera uses the clock of the first connected viewer.
+
 endmenu

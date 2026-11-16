@@ -1,15 +1,19 @@
 <!doctype html>
 <html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Local WebRTC camera</title>
-<style>body{font:16px system-ui;max-width:1000px;margin:2rem auto;padding:0 1rem;background:#101923;color:#eef4fa}button,input,select{font:inherit;padding:.45rem;margin:.25rem}img{display:block;max-width:100%;min-height:240px;background:#202d3b}#controls{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:.5rem}label{display:flex;align-items:center;justify-content:space-between;background:#202d3b;padding:.5rem}input[type=number]{width:5rem}#status{white-space:pre-wrap}small{color:#b8cddd}</style>
+<style>body{font:16px system-ui;max-width:1000px;margin:2rem auto;padding:0 1rem;background:#101923;color:#eef4fa}button,input,select{font:inherit;padding:.45rem;margin:.25rem}img{display:block;max-width:100%;min-height:240px;background:#202d3b}#controls{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:.5rem}label{display:flex;align-items:center;justify-content:space-between;background:#202d3b;padding:.5rem}input[type=number]{width:5rem}#status{white-space:pre-wrap}small{color:#b8cddd}#frame{position:relative;width:fit-content;max-width:100%}#overlay{position:absolute;inset:0}sensorfan-camera-settings,sensorfan-motion-settings,sensorfan-recordings{margin-top:1rem}button{min-height:44px}@media(max-width:600px){body{margin:1rem auto}button,input,select{font-size:16px}}</style>
 <h1>Local WebRTC camera</h1>
 <p>Connect directly to the camera on your local network. No pairing or access key is required.</p>
 <button id="connect" disabled>Connect</button><button id="disconnect" disabled>Disconnect</button>
 <p id="status" role="status">Provision the board and connect to the same local network.</p>
 <p><output id="fps" title="Displayed frames per second, averaged over the last sampling interval">0.0 FPS</output> <small>(1-second average)</small></p>
-<img id="preview" alt="Live camera frames"><sensorfan-camera-settings id="settings-panel" hidden></sensorfan-camera-settings>
-<p><small>JPEG frames and camera commands travel over encrypted WebRTC. Save keeps settings on this camera across reboots. Reset to Default restores the configured defaults.</small></p>
-<script id="settings-module" type="module" src="/camera-settings.js"></script>
+<div id="frame"><img id="preview" alt="Live camera frames"><sensorfan-motion-overlay id="overlay"></sensorfan-motion-overlay></div><sensorfan-camera-tabs style="margin-top:1rem">
+<div data-label="Camera settings"><sensorfan-camera-settings id="settings-panel" hidden></sensorfan-camera-settings></div>
+<div data-label="Motion detection" hidden><sensorfan-motion-settings id="motion-panel" hidden></sensorfan-motion-settings></div>
+<div data-label="SD card recording" hidden><sensorfan-recordings id="recordings" hidden></sensorfan-recordings></div>
+</sensorfan-camera-tabs>
+<p><small>JPEG frames, camera commands, and recordings travel over encrypted WebRTC. Save keeps settings on this camera across reboots. Reset to Default restores the configured defaults.</small></p>
+<script id="settings-module" type="module" src="/camera-settings.js"></script><script id="motion-module" type="module" src="/camera-motion.js"></script>
 <script>
 'use strict';
 const $=id=>document.getElementById(id);
@@ -22,19 +26,20 @@ function startFps(){
 }
 $('preview').onload=()=>{if(channel?.readyState==='open'&&objectURL&&$('preview').getAttribute('src')===objectURL)displayedFrames++;};
 function status(text){$('status').textContent=text;}
-customElements.whenDefined('sensorfan-camera-settings').then(()=>{$('connect').disabled=false;});
-$('settings-module').addEventListener('error',()=>status('Camera controls could not load. Reload this page to retry.'));
+const motionViews=()=>[$('motion-panel'),$('recordings'),$('overlay')];
+Promise.all(['sensorfan-camera-settings','sensorfan-motion-settings','sensorfan-recordings','sensorfan-motion-overlay'].map(name=>customElements.whenDefined(name))).then(()=>{$('connect').disabled=false;});
+for(const id of ['settings-module','motion-module'])$(id).addEventListener('error',()=>status('Camera controls could not load. Reload this page to retry.'));
 async function api(method,body){const response=await fetch('/api/session',{method,headers:{'Content-Type':'application/sdp'},body,cache:'no-store'});if(!response.ok)throw Error(await response.text());return response;}
 function command(value){if(channel?.readyState==='open')channel.send(JSON.stringify(value));}
-$('settings-panel').addEventListener('camera-command',event=>command(event.detail));
+document.addEventListener('camera-command',event=>command(event.detail));
 function settings(data){
  if(data.type==='error'){status(data.error);$('settings-panel').error=data.error;return;}
  if(data.type!=='settings')return;
  $('settings-panel').hidden=false;$('settings-panel').settings=data;
 }
 function message(event){
- if(typeof event.data==='string'){try{settings(JSON.parse(event.data));}catch{status('Invalid camera response');}return;}
- if(!(event.data instanceof ArrayBuffer)||event.data.byteLength<16)return;
+ if(typeof event.data==='string'){let data;try{data=JSON.parse(event.data);}catch{status('Invalid camera response');return;}settings(data);for(const view of motionViews())view.handle(data);return;}
+ if(!(event.data instanceof ArrayBuffer)||event.data.byteLength<16||$('recordings').binary(event.data))return;
  const view=new DataView(event.data);if(view.getUint32(0,true)!==0x4745504a)return;
  const id=view.getUint32(4,true),total=view.getUint32(8,true),offset=view.getUint32(12,true),bytes=new Uint8Array(event.data,16);
  if(total===0||total>2*1024*1024||offset+bytes.length>total)return;
@@ -43,14 +48,14 @@ function message(event){
  frame.set(bytes,offset);received+=bytes.length;
  if(received===total){const url=URL.createObjectURL(new Blob([frame],{type:'image/jpeg'}));const old=objectURL;objectURL=url;$('preview').src=url;if(old)URL.revokeObjectURL(old);frame=null;}
 }
-async function stop(notify=true){++run;clearInterval(ping);resetFps();channel?.close();pc?.close();channel=null;pc=null;frame=null;$('preview').removeAttribute('src');if(objectURL)URL.revokeObjectURL(objectURL);objectURL=null;$('settings-panel').hidden=true;$('settings-panel').dirty=false;$('settings-panel').pending=false;$('connect').disabled=true;$('disconnect').disabled=true;if(notify){try{await api('DELETE');}catch{}}$('connect').disabled=false;status('Disconnected');}
+async function stop(notify=true){++run;clearInterval(ping);resetFps();channel?.close();pc?.close();channel=null;pc=null;frame=null;$('preview').removeAttribute('src');if(objectURL)URL.revokeObjectURL(objectURL);objectURL=null;$('settings-panel').hidden=true;$('settings-panel').dirty=false;$('settings-panel').pending=false;for(const view of motionViews())view.reset();$('connect').disabled=true;$('disconnect').disabled=true;if(notify){try{await api('DELETE');}catch{}}$('connect').disabled=false;status('Disconnected');}
 $('disconnect').onclick=()=>stop();
 $('connect').onclick=async()=>{
  $('connect').disabled=true;$('disconnect').disabled=false;const current=++run;
  try{
   pc=new RTCPeerConnection({iceServers:[]});const connection=pc;
   channel=pc.createDataChannel('camera',{ordered:true});channel.binaryType='arraybuffer';channel.onmessage=message;
-  channel.onopen=()=>{if(current!==run)return;startFps();status('Connected: DTLS encrypted camera data and controls');command({op:'get'});ping=setInterval(()=>command({op:'ping'}),5000);};
+  channel.onopen=()=>{if(current!==run)return;startFps();status('Connected: DTLS encrypted camera data and controls');command({op:'time',now:Date.now()});command({op:'get'});command({op:'motion_get'});command({op:'recordings'});ping=setInterval(()=>command({op:'ping'}),5000);};
   channel.onclose=()=>{if(run===current)stop();};
   pc.onconnectionstatechange=()=>{if(run===current&&['failed','disconnected'].includes(connection.connectionState))stop();};
   status('Gathering local ICE candidates…');

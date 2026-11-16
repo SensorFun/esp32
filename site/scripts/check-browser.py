@@ -237,6 +237,111 @@ with sync_playwright() as p:
     expect(page.get_by_text('This browser cannot flash boards')).to_be_visible()
     expect(page.get_by_role('button', name='Select USB port', exact=True)).to_be_disabled()
     context.close()
+
+    # Motion detection and recordings: the shared camera_ui elements on the
+    # React WebRTC page and on the board's own viewer page, answered by a
+    # simulated camera (motion-harness.js); no board or WebRTC connection.
+    harness = (Path(__file__).parent / 'motion-harness.js').read_text()
+    camera_ui = workspace / 'projects/common/camera_ui'
+    viewer_csp = "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src blob:; frame-ancestors 'none'; base-uri 'none'"
+
+    def serve_viewer(route):
+        path = route.request.url.split('camera.test', 1)[1]
+        if path == '/':
+            route.fulfill(body=(workspace / 'projects/webrtc/main/viewer.html').read_text(), content_type='text/html; charset=utf-8', headers={'Content-Security-Policy': viewer_csp})
+        elif path in ('/camera-settings.js', '/camera-motion.js'):
+            route.fulfill(body=(camera_ui / ('settings.js' if 'settings' in path else 'motion.js')).read_text(), content_type='application/javascript')
+        else:
+            route.fulfill(status=404, body='{}')
+
+    def check_motion(page, width):
+        page.add_script_tag(content=harness)
+        page.evaluate('motionHarness.install()')
+        page.get_by_role('tab', name='Motion detection', exact=True).click()
+        expect(page.get_by_role('tab', name='Motion detection', exact=True)).to_have_attribute('aria-selected', 'true')
+        panel = page.locator('sensorfan-motion-settings')
+        expect(panel.get_by_role('heading', name='Motion detection', exact=True)).to_be_visible()
+        flow = panel.get_by_label('Minimum speed', exact=True)
+        expect(flow).to_have_value('2.5')
+        expect(panel.get_by_label('Detect motion', exact=True)).to_be_checked()
+        if width <= 600:
+            assert flow.evaluate('(input)=>parseFloat(getComputedStyle(input).fontSize)>=16')
+        assert panel.locator('label.toggle').first.bounding_box()['height'] >= 44
+        for button in panel.get_by_role('button').all():
+            assert button.bounding_box()['height'] >= 44
+        flow.fill('3.75')
+        panel.get_by_label('Cell size', exact=True).select_option(label='10 px')
+        panel.get_by_role('button', name='Save', exact=True).click()
+        expect(panel.get_by_text('Motion settings saved on camera.', exact=True)).to_be_visible()
+        applied = page.evaluate("motionHarness.state.commands.filter(c=>c.op==='motion_apply').at(-1).settings")
+        assert applied['min_speed'] == 3.75 and applied['cell'] == 10 and applied['method'] == 'optical_flow' and applied['enabled'] is True, applied
+        page.evaluate('motionHarness.status()')
+        expect(panel.get_by_text('Motion detected', exact=True)).to_be_visible()
+        expect(panel.get_by_text('Recording 0:12', exact=True)).to_be_visible()
+        overlay = page.locator('sensorfan-motion-overlay')
+        expect(overlay.get_by_text('MOTION', exact=True)).to_be_visible()
+        preview = page.locator('[data-testid=remote-image], #preview').first.bounding_box()
+        box = overlay.bounding_box()
+        assert all(abs(box[key] - preview[key]) <= 1 for key in ('x', 'y', 'width', 'height')), (box, preview)
+        assert overlay.evaluate("(el)=>{const c=el.shadowRoot.querySelector('canvas');return c.getContext('2d').getImageData(0,0,c.width,c.height).data.some((v,i)=>i%4===3&&v>0)}")
+        page.get_by_role('tab', name='SD card recording', exact=True).click()
+        expect(panel).not_to_be_visible()
+        recordings = page.locator('sensorfan-recordings')
+        expect(recordings.get_by_text(re.compile(r'SD card · 28\.32 GB free of 29\.72 GB'))).to_be_visible()
+        expect(recordings.locator('li')).to_have_count(2)
+        expect(recordings.locator('li').first).to_contain_text('0:30 · 1280 × 720 · 17.6 MB')
+        recordings.locator('li').nth(1).get_by_role('button', name=re.compile('^Play ')).click()
+        player = recordings.locator('.player img')
+        expect(player).to_be_visible()
+        # Playback starts with the first frames, while the rest is still loading.
+        page.wait_for_function("()=>{const r=document.querySelector('sensorfan-recordings');const i=r.shadowRoot.querySelector('.player img');return i&&i.complete&&i.naturalWidth===320}")
+        expect(recordings.locator('.transfer')).to_be_visible()
+        expect(recordings.locator('.transfer-text')).to_contain_text('Loading clip')
+        expect(recordings.locator('.transfer')).to_be_hidden(timeout=15000)
+        expect(recordings.locator('.player .time')).to_contain_text('/ 0:03')
+        with page.expect_download() as download:
+            recordings.get_by_role('button', name='Download', exact=True).click()
+        assert re.fullmatch(r'camera-2026-11-1\d_\d\d-\d\d-00\.avi', download.value.suggested_filename), download.value.suggested_filename
+        assert page.evaluate("motionHarness.state.commands.filter(c=>c.op==='recording_download').length") == 1  # Download reused the played clip.
+        page.once('dialog', lambda dialog: dialog.accept())
+        recordings.locator('li').first.get_by_role('button', name=re.compile('^Delete ')).click()
+        expect(recordings.locator('li')).to_have_count(1)
+        # Formatting asks again in a modal dialog; Cancel sends nothing.
+        format_button = recordings.get_by_role('button', name='Format SD card', exact=True)
+        assert format_button.bounding_box()['height'] >= 44
+        format_button.click()
+        dialog = recordings.get_by_role('dialog', name='Format the SD card?')
+        expect(dialog).to_be_visible()
+        expect(dialog.get_by_role('button', name='Cancel', exact=True)).to_be_focused()
+        box = dialog.bounding_box()
+        assert box['x'] >= 0 and box['x'] + box['width'] <= width, box
+        dialog.get_by_role('button', name='Cancel', exact=True).click()
+        expect(dialog).to_be_hidden()
+        assert page.evaluate("motionHarness.state.commands.filter(c=>c.op==='sd_format').length") == 0
+        format_button = recordings.get_by_role('button', name='Format SD card', exact=True)
+        format_button.click()
+        recordings.get_by_role('dialog', name='Format the SD card?').get_by_role('button', name='Erase and format', exact=True).click()
+        expect(recordings.get_by_role('button', name='Format SD card', exact=True)).to_be_disabled()
+        expect(recordings.get_by_text('SD card formatted', exact=True)).to_be_visible()
+        assert page.evaluate("motionHarness.state.commands.filter(c=>c.op==='sd_format').length") == 1
+        expect(recordings.locator('li')).to_have_count(1)
+        expect(recordings.locator('li')).to_contain_text('No recordings yet')
+        expect(recordings.get_by_role('button', name='Format SD card', exact=True)).to_be_enabled()
+        assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+
+    for width in (320, 390, 768, 1440):
+        context = browser.new_context(viewport={'width': width, 'height': 900}, accept_downloads=True)
+        page = context.new_page()
+        page.on('pageerror', lambda error: errors.append(str(error)))
+        page.goto(args.url.split('#')[0] + '#/projects/webrtc')
+        expect(page.get_by_role('heading', name='Remote camera', exact=True)).to_be_visible()
+        check_motion(page, width)
+        page.route('https://camera.test/**', serve_viewer)
+        page.goto('https://camera.test/')
+        expect(page).to_have_title('Local WebRTC camera')
+        expect(page.get_by_role('button', name='Connect', exact=True)).to_be_enabled()
+        check_motion(page, width)
+        context.close()
     assert not errors, errors
-    print('Passed: SensorFun ESP32 branding, logo, project list, breadcrumbs, flasher, remote-only camera interface, and desktop/mobile layouts.')
+    print('Passed: SensorFun ESP32 branding, logo, project list, breadcrumbs, flasher, remote-only camera interface, motion detection and recordings, and desktop/mobile layouts.')
     browser.close()

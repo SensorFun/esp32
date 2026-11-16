@@ -4,6 +4,7 @@ import { Signaling } from './signaling.mjs';
 import { stunOnlyServers } from './ice.mjs';
 import { Icon } from '../../components/Icon';
 import '../../../../projects/common/camera_ui/settings.js';
+import '../../../../projects/common/camera_ui/motion.js';
 
 const cameraCookie = 'esp32_camera_mac';
 const formatMac = value => normalizeMac(value).match(/../g).join(':').toUpperCase();
@@ -33,15 +34,19 @@ export function RemoteCamera({ onSessionState }) {
   const image = useRef(null);
   const connection = useRef(null);
   const settingsPanel = useRef(null);
+  const root = useRef(null);
+  const motionPanel = useRef(null);
+  const recordings = useRef(null);
+  const overlay = useRef(null);
+  const motionViews = () => [motionPanel.current, recordings.current, overlay.current].filter(Boolean);
   useEffect(() => { if (settings && settingsPanel.current) settingsPanel.current.settings = settings; }, [settings]);
-  const hasSettings = settings !== null;
   useEffect(() => {
-    const panel = settingsPanel.current;
-    if (!panel) return;
+    // Camera, motion, and recording panels all request commands with this event.
+    const element = root.current;
     const send = event => command(event.detail);
-    panel.addEventListener('camera-command', send);
-    return () => panel.removeEventListener('camera-command', send);
-  }, [hasSettings]);
+    element.addEventListener('camera-command', send);
+    return () => element.removeEventListener('camera-command', send);
+  }, []);
   useEffect(() => {
     if (state !== 'connected') return;
     const session = connection.current;
@@ -68,6 +73,7 @@ export function RemoteCamera({ onSessionState }) {
       if (session.url) URL.revokeObjectURL(session.url);
     }
     setState('idle'); setSettings(null); setTransport('—'); setFps(0); setStatus(message);
+    for (const view of motionViews()) view.reset();
     if (image.current) image.current.removeAttribute('src');
   }
   useEffect(() => () => { generation.current++; onSessionState('idle'); const session = connection.current; if (session) { clearInterval(session.heartbeat); clearTimeout(session.timeout); session.socket?.close(); session.peer?.close(); if (session.url) URL.revokeObjectURL(session.url); } }, []);
@@ -108,10 +114,12 @@ export function RemoteCamera({ onSessionState }) {
           } else if (message.type === 'auth_error') throw Error(message.error || 'Camera authentication failed');
           else if (session.authenticated && message.type === 'settings') setSettings(message);
           else if (session.authenticated && message.type === 'error') { setStatus(message.error); if (settingsPanel.current) settingsPanel.current.error = message.error; }
+          else if (session.authenticated) for (const view of motionViews()) view.handle(message);
         } catch (error) { if (alive()) stop(error.message); }
         return;
       }
       if (!session.authenticated || !(event.data instanceof ArrayBuffer) || event.data.byteLength < 16) return;
+      if (recordings.current?.binary(event.data)) return;
       const view = new DataView(event.data);
       if (view.getUint32(0, true) !== 0x4745504a) return;
       const id = view.getUint32(4, true), total = view.getUint32(8, true), offset = view.getUint32(12, true), bytes = new Uint8Array(event.data, 16);
@@ -130,7 +138,10 @@ export function RemoteCamera({ onSessionState }) {
     function startAuthenticated() {
       if (!alive()) return;
             clearTimeout(session.timeout); setState('connected'); setStatus('Connected · password verified · encrypted WebRTC');
+            command({ op: 'time', now: Date.now() });
             command({ op: 'get' });
+            command({ op: 'motion_get' });
+            command({ op: 'recordings' });
             session.heartbeat = setInterval(async () => {
               command({ op: 'ping' });
               command({ op: 'get' });
@@ -194,13 +205,17 @@ export function RemoteCamera({ onSessionState }) {
     session.socket.onerror = error => { if (alive()) stop(error.message || 'Cannot reach the signaling server.'); };
     session.socket.onclose = () => { if (alive() && connection.current) stop('Signaling connection disconnected'); };
   }
-  return <section className="remote-camera" data-state={state}>
+  return <section className="remote-camera" data-state={state} ref={root}>
     <div className="rtc-panel remote-connection"><div className="panel-title"><Icon name="signal" /><h2>Remote camera</h2></div>
       <form className="remote-credentials" onSubmit={event => { event.preventDefault(); if (camera && password && state === 'idle') connect(); }}>
         <label htmlFor="camera-mac">Camera MAC address</label><input id="camera-mac" value={camera} placeholder="AA:BB:CC:DD:EE:FF" autoComplete="off" disabled={state !== 'idle'} onChange={e => setCamera(e.target.value)} /><label htmlFor="camera-access-password">Camera password</label><input id="camera-access-password" type="password" autoComplete="current-password" value={password} disabled={state !== 'idle'} onChange={e => setPassword(e.target.value)} /><div className="remote-actions"><button type="submit" className="button rtc-primary" disabled={!password || !camera || state !== 'idle'}>Connect camera</button><button type="button" className="button rtc-secondary" disabled={state === 'idle'} onClick={() => stop()}>Disconnect</button></div></form>
       <p className="muted">Direct WebRTC</p><p role="status" data-testid="remote-status">{status}</p>
     </div>
-    <div className="monitor"><div className="monitor-top"><span>CAMERA PREVIEW</span><span data-testid="remote-fps" title="Displayed frames per second · 1-second average">{fps.toFixed(1)} FPS</span><span>{transport}</span></div><div className="remote-preview"><img ref={image} alt="Remote camera stream" data-testid="remote-image" onLoad={() => { const session = connection.current; if (session?.authenticated && image.current?.getAttribute('src') === session.url) session.displayedFrames++; }} />{state !== 'connected' && <span>Awaiting encrypted camera stream</span>}</div></div>
-    {settings && <sensorfan-camera-settings className="remote-settings" ref={settingsPanel} />}
+    <div className="monitor"><div className="monitor-top"><span>CAMERA PREVIEW</span><span data-testid="remote-fps" title="Displayed frames per second · 1-second average">{fps.toFixed(1)} FPS</span><span>{transport}</span></div><div className="remote-preview"><div className="preview-frame"><img ref={image} alt="Remote camera stream" data-testid="remote-image" onLoad={() => { const session = connection.current; if (session?.authenticated && image.current?.getAttribute('src') === session.url) session.displayedFrames++; }} /><sensorfan-motion-overlay ref={overlay} /></div>{state !== 'connected' && <span>Awaiting encrypted camera stream</span>}</div></div>
+    <sensorfan-camera-tabs>
+      <div data-label="Camera settings">{settings ? <sensorfan-camera-settings className="remote-settings" ref={settingsPanel} /> : <p className="muted">Connect a camera to adjust its settings.</p>}</div>
+      <div data-label="Motion detection" hidden><sensorfan-motion-settings ref={motionPanel} hidden data-testid="motion-settings" /></div>
+      <div data-label="SD card recording" hidden><sensorfan-recordings ref={recordings} hidden data-testid="recordings" /></div>
+    </sensorfan-camera-tabs>
   </section>;
 }

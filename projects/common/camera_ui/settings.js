@@ -71,3 +71,49 @@ class CameraSettings extends HTMLElement {
   }
 }
 customElements.define('sensorfan-camera-settings', CameraSettings);
+
+// Shared tab navigation for the site and the board's local camera viewer.
+let cameraTabsId = 0;
+class CameraTabs extends HTMLElement {
+  constructor() { super(); this.attachShadow({ mode: 'open' }); }
+  connectedCallback() {
+    queueMicrotask(() => {
+      if (!this.isConnected) return;
+      const panels = [...this.children], prefix = `camera-tabs-${++cameraTabsId}`;
+      this.shadowRoot.innerHTML = `<style>
+        :host{display:block;min-width:0;color:inherit;font:14px system-ui,sans-serif}
+        nav{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:16px;border-bottom:1px solid #415335;padding-bottom:10px}
+        button{flex:1 1 150px;min-width:0;min-height:48px;padding:12px 14px;border:1px solid #415335;border-radius:7px;background:#172418;color:#bdcbb3;font:inherit;font-size:16px;cursor:pointer}
+        button[aria-selected=true]{background:#c5ed9f;color:#203316;border-color:#c5ed9f}
+        button:focus-visible{outline:3px solid #91cbea;outline-offset:2px}
+        ::slotted([hidden]){display:none!important}
+      </style><nav role="tablist" aria-label="Camera controls"></nav><slot></slot>`;
+      const nav = this.shadowRoot.querySelector('nav');
+      const select = index => panels.forEach((panel, i) => {
+        panel.hidden = i !== index;
+        nav.children[i].setAttribute('aria-selected', String(i === index));
+        nav.children[i].tabIndex = i === index ? 0 : -1;
+      });
+      panels.forEach((panel, index) => {
+        const button = document.createElement('button');
+        button.type = 'button'; button.textContent = panel.dataset.label;
+        button.id = `${prefix}-tab-${index}`; button.setAttribute('role', 'tab');
+        panel.id = `${prefix}-panel-${index}`; panel.setAttribute('role', 'tabpanel');
+        panel.setAttribute('aria-labelledby', button.id); button.setAttribute('aria-controls', panel.id);
+        button.onclick = () => select(index);
+        button.onkeydown = event => {
+          let next;
+          if (event.key === 'ArrowRight') next = (index + 1) % panels.length;
+          else if (event.key === 'ArrowLeft') next = (index + panels.length - 1) % panels.length;
+          else if (event.key === 'Home') next = 0;
+          else if (event.key === 'End') next = panels.length - 1;
+          else return;
+          event.preventDefault(); select(next); nav.children[next].focus();
+        };
+        nav.append(button);
+      });
+      select(0);
+    });
+  }
+}
+customElements.define('sensorfan-camera-tabs', CameraTabs);

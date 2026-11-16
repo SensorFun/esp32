@@ -2,6 +2,8 @@
 #include "provisioning.h"
 #include "tls_identity.h"
 #include "camera_controls.h"
+#include "motion.h"
+#include "recorder.h"
 #include "remote_signaling.h"
 #include "remote_auth.h"
 #include "peer_receive.h"
@@ -13,6 +15,7 @@
 #include "media_lib_adapter.h"
 #include "esp_https_server.h"
 #include "esp_netif.h"
+#include "esp_netif_sntp.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
@@ -20,13 +23,24 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <cstdlib>
+#include <deque>
 #include <string>
+#include <sys/time.h>
+#include <unistd.h>
 
 namespace {
 constexpr char TAG[] = "local_webrtc";
-constexpr size_t CHUNK = 4096;
+constexpr size_t CHUNK = 2048;
+// Bound bulk traffic independently of how fast the peer loop can run. Control
+// replies and pings bypass this pacing so a full video queue cannot starve them.
+#if CONFIG_IDF_TARGET_ESP32
+constexpr int64_t BULK_BYTES_PER_SECOND = 128 * 1024;
+#else
+constexpr int64_t BULK_BYTES_PER_SECOND = 256 * 1024;
+#endif
 esp_peer_default_cfg_t peer_defaults(uint8_t candidates) {
     esp_peer_default_cfg_t cfg{};
     cfg.agent_recv_timeout = CAMERA_ICE_RECEIVE_MS;
@@ -37,16 +51,19 @@ esp_peer_default_cfg_t peer_defaults(uint8_t candidates) {
     // The browser creates a reliable, ordered channel. Retain its packets
     // beyond our inactivity deadline, rather than expiring them after 5 s.
     cfg.data_ch_cfg.cache_timeout = 60000;
-    cfg.data_ch_cfg.send_cache_size = 32768;
+    // Bound queued video so Wi-Fi retains internal heap for control traffic.
+    cfg.data_ch_cfg.send_cache_size = 16384;
     cfg.data_ch_cfg.recv_cache_size = 8192;
     cfg.max_candidates = candidates;
     return cfg;
 }
-std::string pending_resolution;
+std::deque<std::string> commands;
 SemaphoreHandle_t mutex;
 esp_peer_handle_t peer;
 httpd_handle_t server;
-std::string answer, pending_reply, remote_offer;
+std::string answer, remote_offer;
+// Replies and status pushes waiting for the data channel, oldest first.
+std::deque<std::string> replies;
 RemoteAuth remote_auth;
 bool channel_ready = false, failed = false, remote_peer = false;
 uint16_t stream_id;
@@ -55,6 +72,11 @@ extern const unsigned char page_start[] asm("_binary_viewer_html_start");
 extern const unsigned char page_end[] asm("_binary_viewer_html_end");
 extern const unsigned char settings_start[] asm("_binary_settings_js_start");
 extern const unsigned char settings_end[] asm("_binary_settings_js_end");
+extern const unsigned char motion_start_js[] asm("_binary_motion_js_start");
+extern const unsigned char motion_end_js[] asm("_binary_motion_js_end");
+// One recording download at a time; its chunks replace video frames until done.
+struct Transfer { int fd = -1; uint32_t id = 0, size = 0, offset = 0; } transfer;
+uint32_t transfer_ids = 0;
 
 struct Lock {
     Lock() { xSemaphoreTakeRecursive(mutex, portMAX_DELAY); }
@@ -62,12 +84,49 @@ struct Lock {
 };
 int send_text(cJSON *json) {
     if (!json) return -1;
+    const cJSON *type = cJSON_GetObjectItemCaseSensitive(json, "type");
+    // Telemetry can wait; never crowd out a setting acknowledgement while
+    // the reliable channel is waiting for memory or SCTP send capacity.
+    if (cJSON_IsString(type) && !strcmp(type->valuestring, "motion_status") && !replies.empty()) {
+        cJSON_Delete(json);
+        return 0;
+    }
     char *text = cJSON_PrintUnformatted(json);
     cJSON_Delete(json);
     if (!text) return -1;
-    pending_reply.assign(text);
+    // Bound the queue; a stalled channel drops the oldest messages.
+    if (replies.size() >= 16) replies.pop_front();
+    replies.emplace_back(text);
     cJSON_free(text);
     return 0;
+}
+void stop_transfer() {
+    if (transfer.fd >= 0) close(transfer.fd);
+    transfer.fd = -1;
+}
+void start_transfer(const cJSON *request) {
+    stop_transfer();
+    const cJSON *name = cJSON_GetObjectItemCaseSensitive(request, "name");
+    cJSON *reply = cJSON_CreateObject();
+    cJSON_AddStringToObject(reply, "type", "download");
+    int fd = -1;
+    uint32_t size = 0;
+    const char *error = cJSON_IsString(name) ? recorder_open(name->valuestring, fd, size) : "Missing recording name";
+    if (cJSON_IsString(name)) cJSON_AddStringToObject(reply, "name", name->valuestring);
+    if (error) cJSON_AddStringToObject(reply, "error", error);
+    else {
+        transfer = {fd, ++transfer_ids, size, 0};
+        cJSON_AddNumberToObject(reply, "id", transfer.id);
+        cJSON_AddNumberToObject(reply, "size", size);
+    }
+    send_text(reply);
+}
+// Viewers send their clock; it names clips until SNTP synchronizes.
+void set_clock(const cJSON *request) {
+    const cJSON *now = cJSON_GetObjectItemCaseSensitive(request, "now");
+    if (time(nullptr) > 1700000000 || !cJSON_IsNumber(now) || !(now->valuedouble > 1.7e12 && now->valuedouble < 4.1e12)) return;
+    timeval value{time_t(now->valuedouble / 1000), suseconds_t(std::fmod(now->valuedouble, 1000.0) * 1000)};
+    if (settimeofday(&value, nullptr) == 0) ESP_LOGI(TAG, "Clock set from the viewer");
 }
 int on_state(esp_peer_state_t state, void *) {
     ESP_LOGI(TAG, "Peer state %d", int(state));
@@ -109,12 +168,17 @@ int on_data(esp_peer_data_frame_t *frame, void *) {
     }
     activity = esp_timer_get_time();
     const cJSON *op = cJSON_GetObjectItemCaseSensitive(request, "op");
-    const cJSON *name = cJSON_GetObjectItemCaseSensitive(request, "name");
-    if (cJSON_IsString(op) && !strcmp(op->valuestring, "apply")) ESP_LOGI(TAG, "Received settings Save (%d bytes)", frame->size);
-    if (cJSON_IsString(op) && (!strcmp(op->valuestring, "apply") || !strcmp(op->valuestring, "reset_defaults") || (!strcmp(op->valuestring, "set") && cJSON_IsString(name) && !strcmp(name->valuestring, "resolution")))) {
-        // Apply only after the worker releases any in-flight framebuffer.
-        pending_resolution = text;
-    } else if (!(cJSON_IsString(op) && !strcmp(op->valuestring, "ping"))) send_text(camera_command(request));
+    // Keep the receive callback short. Sensor I/O, NVS writes, and SD access
+    // run only after the peer loop returns and releases its transport locks.
+    if (!(cJSON_IsString(op) && !strcmp(op->valuestring, "ping"))) {
+        if (commands.size() < 16) commands.emplace_back(std::move(text));
+        else {
+            cJSON *reply = cJSON_CreateObject();
+            cJSON_AddStringToObject(reply, "type", "error");
+            cJSON_AddStringToObject(reply, "error", "Camera busy; please retry the setting");
+            send_text(reply);
+        }
+    }
     cJSON_Delete(request);
     return 0;
 }
@@ -122,7 +186,8 @@ void close_peer() {
     channel_ready = false;
     camera_peer_transport_ready(false);
     if (peer) { esp_peer_close(peer); peer = nullptr; }
-    answer.clear(); pending_reply.clear(); pending_resolution.clear(); remote_offer.clear(); remote_auth.clear(); failed = false; remote_peer = false;
+    stop_transfer();
+    answer.clear(); replies.clear(); commands.clear(); remote_offer.clear(); remote_auth.clear(); failed = false; remote_peer = false;
 }
 esp_err_t respond(httpd_req_t *r, const char *status, const char *body) {
     httpd_resp_set_status(r, status);
@@ -157,6 +222,12 @@ esp_err_t settings_script(httpd_req_t *r) {
     httpd_resp_set_type(r, "application/javascript");
     httpd_resp_set_hdr(r, "Cache-Control", "no-store");
     return httpd_resp_send(r, reinterpret_cast<const char *>(settings_start), settings_end - settings_start - 1);
+}
+esp_err_t motion_script(httpd_req_t *r) {
+    if (!same_origin(r)) return respond(r, "403 Forbidden", "{}");
+    httpd_resp_set_type(r, "application/javascript");
+    httpd_resp_set_hdr(r, "Cache-Control", "no-store");
+    return httpd_resp_send(r, reinterpret_cast<const char *>(motion_start_js), motion_end_js - motion_start_js - 1);
 }
 esp_err_t session(httpd_req_t *r) {
     if (!same_origin(r)) return respond(r, "403 Forbidden", "{\"error\":\"Use the local device page\"}");
@@ -280,6 +351,7 @@ void start_server() {
     httpd_ssl_config_t cfg = HTTPD_SSL_CONFIG_DEFAULT();
 #pragma GCC diagnostic pop
     cfg.httpd.stack_size = 12288;
+    cfg.httpd.max_uri_handlers = 10;
     // Browsers open speculative TLS sockets alongside the HTML, module and
     // session requests. Two slots evict the module's connection mid-load.
     cfg.httpd.max_open_sockets = 4;
@@ -304,6 +376,8 @@ void start_server() {
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &route));
     route.uri = "/camera-settings.js"; route.handler = settings_script;
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &route));
+    route.uri = "/camera-motion.js"; route.handler = motion_script;
+    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &route));
     route.uri = "/api/session"; route.handler = session;
     for (auto method : {HTTP_GET, HTTP_POST, HTTP_DELETE}) {
         route.method = method; ESP_ERROR_CHECK(httpd_register_uri_handler(server, &route));
@@ -318,59 +392,146 @@ void worker(void *) {
     size_t offset = 0;
     uint32_t sequence = 0;
     int64_t capture_stalled_since = 0;
-    int64_t last_progress = 0;
+    int64_t last_progress = 0, next_status = 0;
+    bool sntp_started = false;
+    int64_t next_bulk_send = 0;
     uint8_t packet[CHUNK + 16];
     for (;;) {
         if (!provisioning_is_ready()) {
             { Lock guard; if (fb) { camera_frame_return(fb); fb = nullptr; } close_peer(); }
             if (server) { ESP_ERROR_CHECK(httpd_ssl_stop(server)); server = nullptr; }
-            vTaskDelay(pdMS_TO_TICKS(100));
+            // Keep detecting and recording while Wi-Fi is down.
+            if (camera_ready && motion_frame_due()) {
+                if (camera_fb_t *frame = camera_frame_get()) { motion_feed(frame); camera_frame_return(frame); }
+            }
+            vTaskDelay(pdMS_TO_TICKS(camera_ready && motion_settings().enabled ? 10 : 100));
             continue;
         }
-        if (!camera_ready) { ESP_ERROR_CHECK(camera_start()); camera_ready = true; }
+        if (!camera_ready) {
+            // Modem sleep delays packets until the AP's DTIM. Continuous video
+            // must not fill the TX queue while the radio is sleeping.
+            const esp_err_t power = esp_wifi_set_ps(WIFI_PS_NONE);
+            if (power != ESP_OK) ESP_LOGW(TAG, "Cannot disable Wi-Fi modem sleep: %s", esp_err_to_name(power));
+            ESP_ERROR_CHECK(camera_start()); camera_ready = true;
+        }
         if (!server) start_server();
+        if (!sntp_started) {
+            // Clip names use wall-clock time; viewers' clocks cover the gap until this syncs.
+            esp_sntp_config_t sntp = ESP_NETIF_SNTP_DEFAULT_CONFIG(CONFIG_CAMERA_SNTP_SERVER);
+            sntp.wait_for_sync = false;
+            sntp_started = esp_netif_sntp_init(&sntp) == ESP_OK;
+        }
         {
             Lock guard;
             remote_events();
             const int64_t now = esp_timer_get_time();
             if (peer && (failed || (remote_peer && remote_auth.expired(now)) || now - activity > 30000000)) {
                 if (fb) { camera_frame_return(fb); fb = nullptr; }
+                ESP_LOGW(TAG, "Closing camera peer: failed=%d idle_ms=%lld", failed, (now - activity) / 1000);
                 close_peer();
             }
             if (peer) esp_peer_main_loop(peer);
-            if (!pending_resolution.empty()) {
+            if (!commands.empty()) {
                 if (fb) { camera_frame_return(fb); fb = nullptr; }
-                cJSON *request = cJSON_Parse(pending_resolution.c_str());
-                pending_resolution.clear();
-                if (request) { send_text(camera_command(request)); cJSON_Delete(request); }
+                cJSON *request = cJSON_Parse(commands.front().c_str());
+                commands.pop_front();
+                if (request) {
+                    const cJSON *op = cJSON_GetObjectItemCaseSensitive(request, "op");
+                    cJSON *reply = nullptr;
+                    if (cJSON_IsString(op) && !strcmp(op->valuestring, "time")) set_clock(request);
+                    else if (cJSON_IsString(op) && !strcmp(op->valuestring, "recording_download")) start_transfer(request);
+                    else if (cJSON_IsString(op) && !strcmp(op->valuestring, "recording_cancel")) stop_transfer();
+                    else if (cJSON_IsString(op) && !strcmp(op->valuestring, "sd_format")) {
+                        stop_transfer();  // Formatting needs every file on the card closed.
+                        send_text(motion_command(request));
+                    }
+                    else if ((reply = motion_command(request))) send_text(reply);
+                    else send_text(camera_command(request));
+                    cJSON_Delete(request);
+                }
+            }
+            const bool viewer = channel_ready && (!remote_peer || remote_auth.allowed());
+            if (viewer && now >= next_status) {
+                send_text(motion_status());
+                next_status = now + (motion_overlay_active() ? 500000 : 1000000);
             }
             bool reply_waiting = false;
-            if (channel_ready && !pending_reply.empty()) {
+            while (channel_ready && !replies.empty()) {
+                std::string &text = replies.front();
                 esp_peer_data_frame_t reply{};
                 reply.type = ESP_PEER_DATA_CHANNEL_STRING; reply.stream_id = stream_id;
-                reply.data = reinterpret_cast<uint8_t *>(&pending_reply[0]); reply.size = pending_reply.size();
+                reply.data = reinterpret_cast<uint8_t *>(&text[0]); reply.size = text.size();
                 int ret = esp_peer_send_data(peer, &reply);
-                if (ret == 0) pending_reply.clear();
-                else if (ret != ESP_PEER_ERR_WOULD_BLOCK) failed = true;
-                reply_waiting = !pending_reply.empty();
-            }
-            if (channel_ready && !reply_waiting && (!remote_peer || remote_auth.allowed())) {
-                if (!fb) {
-                    fb = camera_frame_get(); offset = 0; ++sequence; last_progress = esp_timer_get_time();
-                    if (fb) capture_stalled_since = 0;
-                    else if (!capture_stalled_since) capture_stalled_since = esp_timer_get_time();
-                    else if (esp_timer_get_time() - capture_stalled_since >= 8000000) {
-                        // The OV2640 capture pipeline can stall across control
-                        // changes/reconnects. Recover with no held buffer and
-                        // retain the connection and all current user settings.
-                        ESP_LOGW(TAG, "Restarting stalled camera capture");
-                        ESP_ERROR_CHECK(camera_recover());
-                        capture_stalled_since = 0;
-                        send_text(camera_settings());
-                    }
+                if (ret == 0) { replies.pop_front(); continue; }
+                if (ret != ESP_PEER_ERR_WOULD_BLOCK && ret != ESP_PEER_ERR_NO_MEM) {
+                    ESP_LOGW(TAG, "Control send failed: result=%d bytes=%u", ret, unsigned(text.size()));
+                    failed = true;
                 }
-                // Fill available send capacity without monopolizing the peer loop.
-                for (int chunks = 0; fb && chunks < 8; ++chunks) {
+                break;
+            }
+            reply_waiting = !replies.empty();
+            const bool downloading = viewer && transfer.fd >= 0;
+            // Wi-Fi needs contiguous internal RAM even though images live in PSRAM.
+            // Stop admitting video under pressure; let SCTP acknowledgements
+            // drain its cache while still servicing settings and heartbeats.
+            const bool video_memory = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) >= 12288 &&
+                heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) >= 2048;
+            if (viewer && !video_memory) {
+                static int64_t last_memory_report = 0;
+                if (now - last_memory_report > 10000000) {
+                    last_memory_report = now;
+                    ESP_LOGW(TAG, "Video paused for internal memory: free=%u largest=%u",
+                        unsigned(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+                        unsigned(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)));
+                }
+            }
+            const bool streaming = viewer && !reply_waiting && !downloading && video_memory;
+            if (downloading && !reply_waiting && now >= next_bulk_send) {
+                // Abandon a partly sent frame; the viewer discards incomplete frames.
+                if (fb) { camera_frame_return(fb); fb = nullptr; }
+                for (int chunks = 0; transfer.fd >= 0 && chunks < 1; ++chunks) {
+                    const uint32_t size = std::min<uint32_t>(CHUNK, transfer.size - transfer.offset);
+                    if (lseek(transfer.fd, transfer.offset, SEEK_SET) < 0 || read(transfer.fd, packet + 16, size) != ssize_t(size)) {
+                        cJSON *error = cJSON_CreateObject();
+                        cJSON_AddStringToObject(error, "type", "download");
+                        cJSON_AddNumberToObject(error, "id", transfer.id);
+                        cJSON_AddStringToObject(error, "error", "SD card read failed");
+                        send_text(error); stop_transfer();
+                        break;
+                    }
+                    // Four LE uint32: magic "FILE", transfer id, total bytes, byte offset.
+                    const uint32_t header[] = {0x454c4946, transfer.id, transfer.size, transfer.offset};
+                    memcpy(packet, header, sizeof(header));
+                    esp_peer_data_frame_t chunk{};
+                    chunk.type = ESP_PEER_DATA_CHANNEL_DATA; chunk.stream_id = stream_id;
+                    chunk.data = packet; chunk.size = size + 16;
+                    int ret = esp_peer_send_data(peer, &chunk);
+                    if (ret != 0) { if (ret != ESP_PEER_ERR_WOULD_BLOCK && ret != ESP_PEER_ERR_NO_MEM) failed = true; break; }
+                    next_bulk_send = esp_timer_get_time() + int64_t(size) * 1000000 / BULK_BYTES_PER_SECOND;
+                    transfer.offset += size;
+                    if (transfer.offset == transfer.size) stop_transfer();
+                }
+            }
+            // Motion detection and recording capture frames with or without a viewer.
+            if (!fb && (streaming || motion_frame_due())) {
+                fb = camera_frame_get(); offset = 0; ++sequence; last_progress = esp_timer_get_time();
+                if (fb) { capture_stalled_since = 0; motion_feed(fb); }
+                else if (!capture_stalled_since) capture_stalled_since = esp_timer_get_time();
+                else if (esp_timer_get_time() - capture_stalled_since >= 8000000) {
+                    // The OV2640 capture pipeline can stall across control
+                    // changes/reconnects. Recover with no held buffer and
+                    // retain the connection and all current user settings.
+                    ESP_LOGW(TAG, "Restarting stalled camera capture");
+                    ESP_ERROR_CHECK(camera_recover());
+                    capture_stalled_since = 0;
+                    if (viewer) send_text(camera_settings());
+                }
+                if (fb && !streaming) { camera_frame_return(fb); fb = nullptr; }
+            }
+            if (streaming && now >= next_bulk_send) {
+                // Pace bulk packets; continuous capture must not saturate Wi-Fi
+                // and leave DTLS unable to send acknowledgements or controls.
+                for (int chunks = 0; fb && chunks < 1; ++chunks) {
                     size_t size = std::min(CHUNK, fb->len - offset);
                     // Four LE uint32: magic, sequence, total bytes, byte offset.
                     const uint32_t header[] = {0x4745504a, sequence, uint32_t(fb->len), uint32_t(offset)};
@@ -379,14 +540,17 @@ void worker(void *) {
                     frame.type = ESP_PEER_DATA_CHANNEL_DATA; frame.stream_id = stream_id;
                     frame.data = packet; frame.size = size + 16;
                     int ret = esp_peer_send_data(peer, &frame);
-                    if (ret == 0) { offset += size; last_progress = esp_timer_get_time(); }
-                    if (offset == fb->len || esp_timer_get_time() - last_progress > 2000000 || (ret != 0 && ret != ESP_PEER_ERR_WOULD_BLOCK)) {
+                    if (ret == 0) {
+                        offset += size; last_progress = esp_timer_get_time();
+                        next_bulk_send = last_progress + int64_t(size) * 1000000 / BULK_BYTES_PER_SECOND;
+                    }
+                    if (offset == fb->len || esp_timer_get_time() - last_progress > 2000000 || (ret != 0 && ret != ESP_PEER_ERR_WOULD_BLOCK && ret != ESP_PEER_ERR_NO_MEM)) {
                         camera_frame_return(fb); fb = nullptr;
                     }
                     if (ret != 0) break;
                 }
-            } else if (!channel_ready) {
-                capture_stalled_since = 0;
+            } else if (!viewer) {
+                if (!motion_settings().enabled) capture_stalled_since = 0;
                 if (fb) { camera_frame_return(fb); fb = nullptr; }
             }
         }
@@ -403,6 +567,7 @@ extern "C" void app_main() {
     remote_start();
     mutex = xSemaphoreCreateRecursiveMutex();
     ESP_ERROR_CHECK(mutex ? ESP_OK : ESP_ERR_NO_MEM);
+    motion_start();
     if (xTaskCreate(worker, "local_peer", 24576, nullptr, 5, nullptr) != pdPASS) ESP_ERROR_CHECK(ESP_ERR_NO_MEM);
     for (;;) { app.main(); vTaskDelay(pdMS_TO_TICKS(20)); }
 }

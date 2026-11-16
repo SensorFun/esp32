@@ -18,8 +18,21 @@ import serial
 from playwright.sync_api import sync_playwright
 
 
+class CameraConsole(serial.Serial):
+    def __init__(self, *args, **kwargs):
+        self.drain_stop = threading.Event()
+        self.diagnostic_thread = None
+        super().__init__(*args, **kwargs)
+
+    def close(self):
+        self.drain_stop.set()
+        super().close()
+        if self.diagnostic_thread and self.diagnostic_thread is not threading.current_thread():
+            self.diagnostic_thread.join(timeout=1)
+
+
 def identity(port):
-    console = serial.Serial(port, 115200, timeout=.2)
+    console = CameraConsole(port, 115200, timeout=.2)
     console.dtr = False
     console.rts = True
     time.sleep(.1)
@@ -31,17 +44,21 @@ def identity(port):
         url = re.search(r'Local camera ready: (https://[\d.]+/)', text)
         fingerprint = re.search(r'HTTPS certificate SHA256: ([A-F0-9]{64})', text)
         if url and fingerprint:
+            console.runtime_faults = []
             def drain():
-                while console.is_open:
+                while console.is_open and not console.drain_stop.is_set():
                     try:
                         line = console.readline().decode(errors='replace').strip()
                     except (TypeError, OSError, serial.SerialException):
-                        if not console.is_open:
+                        if console.drain_stop.is_set() or not console.is_open:
                             return
                         raise
-                    if any(term in line.lower() for term in ('peer state', 'dtls', 'e (', 'abort()', 'assert failed', 'sctp', 'ice agent')):
+                    if any(term in line.lower() for term in ('task_wdt', 'guru meditation', 'abort() was called', 'assert failed', 'stack canary', 'corrupt heap', 'rst:')):
+                        console.runtime_faults.append(line)
+                    if any(term in line.lower() for term in ('peer state', 'dtls', 'e (', 'abort()', 'assert failed', 'sctp', 'ice agent', 'guru meditation', 'backtrace:', 'stack canary', 'corrupt heap', 'rst:', 'camera_transport', 'stalled camera', 'task_wdt', 'closing camera peer', 'control send failed', 'video paused')):
                         print('USB:', line)
-            threading.Thread(target=drain, daemon=True).start()
+            console.diagnostic_thread = threading.Thread(target=drain, daemon=True)
+            console.diagnostic_thread.start()
             return url[1], fingerprint[1], console
         if 'abort() was called' in text or 'ESP_ERROR_CHECK failed' in text:
             errors = [line for line in text.splitlines() if 'E (' in line or 'abort()' in line or 'ESP_ERROR_CHECK' in line]
@@ -119,7 +136,7 @@ def main():
         print('Local displayed frame rate:', page.locator('#fps').inner_text())
         assert request_status('POST', b'busy') == 409
         controls = page.locator('#settings-panel').evaluate("panel=>panel.value.controls.map(c=>({name:c.name,value:c.value,disabled:!c.supported}))")
-        page.evaluate("window.lastResponse=null; channel.addEventListener('message', e=>{if(typeof e.data==='string') window.lastResponse=JSON.parse(e.data);})")
+        page.evaluate("window.lastResponse=null; channel.addEventListener('message', e=>{if(typeof e.data==='string'){const message=JSON.parse(e.data);if(['settings','error'].includes(message.type))window.lastResponse=message;}})")
         for control in controls:
             if control['disabled']:
                 continue

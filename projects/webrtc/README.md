@@ -102,7 +102,7 @@ can select `high_light`, `balanced`, or `low_light` as a startup default.
 
 The stream is hardware JPEG, initially 320x240 unless saved settings select
 another resolution. Streaming has no fixed FPS cap. Frames are split into
-4096-byte chunks with a 16-byte little-endian
+2048-byte chunks with a 16-byte little-endian
 header (`JPEG` magic, frame sequence, total size, byte offset). The viewer
 bounds-checks and reassembles frames. Backpressure retries are bounded and
 incomplete frames are discarded. Commands are bounded JSON messages on the
@@ -124,6 +124,85 @@ deadline, to avoid discarding ordered messages during temporary backpressure.
 250 ms retry budget (plus the final transport call), preserving the same
 encrypted datagram. Other results pass through unchanged. Persistent failures
 report packet size and available internal memory without recording payloads.
+
+Setting commands run after the WebRTC receive callback returns and after releasing
+any held camera frame. The command queue is bounded to 16 entries. Temporary
+send-buffer exhaustion (`WOULD_BLOCK` or `NO_MEM`) retains the pending reply for
+retry instead of disconnecting the viewer. Telemetry yields to queued replies.
+Video and file sends use at most one 2 KiB chunk per worker pass and a 16 KiB
+SCTP send cache. Bulk payloads are paced to 128 KiB/s on ESP32 and 256 KiB/s on
+other targets; settings and heartbeat processing bypass that limit. The camera
+disables Wi-Fi modem sleep to prevent a sleeping radio from delaying the live
+stream and filling its TX queue. Video admission pauses below 12 KiB of free internal RAM or a
+2 KiB largest free block, leaving the peer loop active to drain acknowledgements.
+The PSRAM allocation threshold is 512 bytes to keep packet payloads out of scarce
+internal RAM. JPEG analysis reuses its own PSRAM workspace.
+
+Optical-flow and grayscale loops cooperate with FreeRTOS between bounded work
+blocks so the CPU 1 idle task can run; increasing the analysis rate cannot create
+an uninterrupted analysis backlog that trips its watchdog. A requested analysis
+rate is an upper limit, not a guarantee when the CPU is saturated.
+
+Hardware regression (restores starting camera/motion settings):
+
+```sh
+.venv/bin/python tools/test_settings_stability.py --port /dev/ttyUSB1 --browser /path/to/chromium --rounds 2
+```
+
+It changes every supported resolution, all timing profiles, image controls, and
+both Camera/Motion Save paths under maximum configured analysis load, checking
+frame progress, the same live channel, and USB watchdog/reset diagnostics.
+
+Long-running local connection regression (does not request a board reset or change settings):
+
+```sh
+.venv/bin/python tools/test_stream_stability.py --url https://<camera-address>/ --port /dev/ttyUSB1 --browser /path/to/chromium --seconds 180 --reconnects 2
+```
+
+It checks continuous JPEG and settings replies, HTTPS responsiveness during
+streaming, reconnects, and serial reset/watchdog diagnostics. Serial adapters may
+pulse reset when opened, so the reset baseline starts after the stream is ready.
+
+## Motion detection and SD recording
+
+Both the board's local page and the website's remote WebRTC page show the same
+**Motion detection** and **Recordings** panels (`projects/common/camera_ui/motion.js`),
+driven by the same data-channel commands. The firmware describes every setting
+(range, unit, group, help) in its `motion` reply, so both pages render the same form.
+Settings are saved in NVS when you select Save.
+
+- **Detection** runs on the board even with no viewer connected, and while Wi-Fi
+  is down. Frames are decoded at 1/2, 1/4, or 1/8 scale and averaged to 160 x 120
+  grayscale. Then a single-level Lucas-Kanade optical flow runs over a
+  grid of cells (`main/optical_flow.cpp`), with global brightness changes removed.
+  A cell moves when its speed reaches **Minimum speed** (pixels per second at 160 x 120;
+  the detector converts it using the measured time between analysed frames, so
+  changing **Analysis rate** does not change sensitivity). Motion is reported when
+  **Moving area** percent of cells move. Flat cells below **Minimum texture** are
+  ignored. **Method** lists the available detectors; optical flow is the first.
+- **Show motion in preview** draws the moving cells, MOTION, and REC over the live picture.
+- **Recording** starts after motion lasts **Motion duration** seconds. It includes
+  **Pre-record** seconds from before that, continues **Keep recording** seconds after
+  motion stops, and splits at **Maximum clip length**. Clips use the selected camera
+  resolution, at up to **Recording rate** frames per second. A resolution change starts
+  a new clip. With **Replace oldest clips when full**, the oldest clips are deleted
+  to keep 2% of the card (at least 64 MB) free; otherwise recording pauses.
+- **Recordings** lists clips newest first with local start time, length, resolution,
+  and size. Play, Download (`.avi`), and Delete work over the same encrypted channel;
+  the live preview pauses while a clip downloads. Clips are Motion-JPEG AVI files that
+  play in VLC and most desktop players. The browser player also plays clips cut short
+  by a power loss; data is synced to the card every 3 seconds.
+
+The microSD slot uses SDMMC one-bit mode, with pins from the board header's
+`SD_MMC_*` macros: GPIO 14/15/2 on the AI Thinker ESP32-CAM and GPIO 39/38/40 on the
+S3 boards. Boards without these macros report no SD slot. Use a FAT32 card; the
+firmware never formats a card. Clips are stored as `REC/YYYYMMDD/HHMMSS.AVI` in UTC
+(8.3 names). The clock comes from SNTP (`CONFIG_CAMERA_SNTP_SERVER`, default
+`pool.ntp.org`), or from the first connected viewer until SNTP answers.
+
+While you are watching, recordings use the frames being streamed, so they record at
+no more than the live frame rate. Motion and SD activity add CPU and memory load.
+On the original ESP32, large resolutions record fewer frames per second.
 
 ## Security scope
 

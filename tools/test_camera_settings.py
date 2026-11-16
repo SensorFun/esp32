@@ -40,7 +40,7 @@ with sync_playwright() as p, ExitStack() as serial_handles:
         wait_js(page, "!!customElements.get('sensorfan-camera-settings')")
         page.locator('#connect').click()
         wait_js(page, "channel?.readyState==='open'", timeout=40000)
-        page.evaluate("window.snapshot=null;channel.addEventListener('message',e=>{if(typeof e.data==='string')window.snapshot=JSON.parse(e.data)});command({op:'get'})")
+        page.evaluate("window.snapshot=null;channel.addEventListener('message',e=>{if(typeof e.data==='string'){const message=JSON.parse(e.data);if(['settings','error'].includes(message.type))window.snapshot=message;}});command({op:'get'})")
         wait_js(page, "window.snapshot?.type==='settings'")
         page.evaluate("()=>{window.commands=[];const send=channel.send.bind(channel);channel.send=text=>{const c=JSON.parse(text);if(c.op!=='ping')window.commands.push(c);send(text)}}")
         return page

@@ -19,6 +19,13 @@
 #define PCLK_GPIO_NUM  22
 #define LED_GPIO_NUM   4
 
+// On-board microSD slot, SDMMC one-bit mode. The original ESP32 routes slot 1
+// through fixed IO_MUX pins, so these document the wiring rather than select it.
+#define SD_MMC_CMD_GPIO_NUM 15
+#define SD_MMC_CLK_GPIO_NUM 14
+#define SD_MMC_D0_GPIO_NUM  2
+#define SD_MMC_SLOT 1
+
 // GPIO12-to-GND setup jumper; reserve this pin instead of using SD D2.
 // GPIO12 is a voltage strapping pin: restore its low pull before restart.
 inline constexpr common::BoardConfig common_board_config = {
