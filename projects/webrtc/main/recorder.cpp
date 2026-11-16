@@ -266,8 +266,16 @@ void record(void *) {
         if (!clip.is_open()) {
             // Keep the pre-roll window plus the confirmation time, so a clip
             // starts before the motion that triggered it.
-            const int64_t keep = int64_t((s.pre_seconds + s.trigger_seconds + 0.5f) * kSecond);
-            while (!pending.empty() && now - pending.front().time > keep) { release(pending.front()); pending.pop_front(); }
+            // The pre-record length never exceeds what PSRAM holds at the
+            // current resolution, even if it changed since it was saved.
+            const int pre = std::min(s.pre_seconds, motion_pre_seconds_limit(s));
+            const int64_t keep = int64_t((pre + s.trigger_seconds + 0.5f) * kSecond);
+            size_t held = 0;
+            for (const auto &item : pending) held += item.length;
+            while (!pending.empty() && (now - pending.front().time > keep || held > budget * 4 / 5)) {
+                held -= pending.front().length;
+                release(pending.front()); pending.pop_front();
+            }
             if (!moving || now - since < int64_t(s.trigger_seconds * kSecond) || pending.empty() || now < retry_open) continue;
             if (!clip.open(pending.front(), s.overwrite_oldest)) {
                 retry_open = now + 10 * kSecond;  // A full card is checked again later, not per frame.
@@ -330,6 +338,8 @@ void recorder_start() {
     }
     if (xTaskCreatePinnedToCore(record, "recorder", 6144, nullptr, 4, nullptr, 1) != pdPASS) ESP_ERROR_CHECK(ESP_ERR_NO_MEM);
 }
+
+size_t recorder_budget() { return budget; }
 
 bool recorder_frame_due(const MotionSettings &s, int64_t now) {
     return s.record && sd_card::state() == sd_card::State::mounted && buffered < budget &&

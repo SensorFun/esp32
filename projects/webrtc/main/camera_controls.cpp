@@ -40,7 +40,6 @@ static bool supported(const Control &c) {
 }
 static int control_low(const Control &c) { return is_gc() && !strcmp(c.name, "sharpness") ? -2 : c.low; }
 static int control_high(const Control &c) { return is_gc() && !strcmp(c.name, "sharpness") ? 2 : c.high; }
-static bool reset_timing() { return is_gc() || timing.apply(0) == 0; }
 static bool restore_timing(int profile) { return is_gc() || (timing.initialize(sensor) == 0 && timing.apply(profile) == 0); }
 
 static void settle() {
@@ -139,6 +138,20 @@ static bool set_resolution(framesize_t size) {
                 sensor->set_res_raw(sensor, 1, 0, 0, 0, 100, 0, 600, 600, 320, 320, true, true)) return false;
             sensor->status.framesize = requested;
         } else if (sensor->set_framesize(sensor, requested)) return false;
+        if (sensor->id.PID == OV2640_PID) {
+            // As in Espressif's CameraWebServer, change resolution with
+            // set_framesize alone, without disturbing the running stream.
+            // Driver 2.1.6 rewrites the mode table, window, pixel clock and
+            // CLKRC; image controls keep their registers, except COM7's
+            // colour-bar bit, which the mode table overwrites.
+            if (sensor->status.colorbar && sensor->set_colorbar(sensor, 1)) return false;
+            // CLKRC is native again: record that baseline, and change the clock
+            // divider only for a non-native light timing.
+            if (timing.initialize(sensor)) return false;
+            return profile == 0 || timing.apply(profile) == 0;
+        }
+        // GC0308 is reconfigured from scratch; the OV3660 driver's reset scope
+        // is not verified, so both receive every control again.
         for (size_t i = 0; i < count; ++i) {
             if (supported(controls[i]) && controls[i].set(sensor, values[i])) return false;
         }
@@ -173,14 +186,23 @@ static bool validate_values(const cJSON *values) {
     }
     return true;
 }
+// Writes only what differs from the running sensor, so Save and Reset do not
+// disturb the stream with redundant register or clock changes. The timing
+// baseline stays valid: it is re-read after every driver reset of CLKRC.
 static bool apply_values(const cJSON *values) {
-    if (!reset_timing()) return false;
     const int size = cJSON_GetObjectItemCaseSensitive(values, "resolution")->valueint;
     if (sensor->status.framesize != size && !set_resolution(static_cast<framesize_t>(size))) return false;
-    for (const auto &c : controls) if (supported(c) && c.set(sensor, cJSON_GetObjectItemCaseSensitive(values, c.name)->valueint)) return false;
+    for (const auto &c : controls) {
+        if (!supported(c)) continue;
+        const int value = cJSON_GetObjectItemCaseSensitive(values, c.name)->valueint;
+        if (c.get(sensor) != value && c.set(sensor, value)) return false;
+    }
     if (is_gc()) return true;
     const char *profile = cJSON_GetObjectItemCaseSensitive(values, "timing_profile")->valuestring;
-    for (int i = 0; i < 3; ++i) if (!strcmp(profile, timing_names[i])) return timing.apply(i) == 0;
+    for (int i = 0; i < 3; ++i) {
+        if (strcmp(profile, timing_names[i])) continue;
+        return timing.selected() == i || timing.apply(i) == 0;
+    }
     return false;
 }
 static esp_err_t store_values(const cJSON *values) {
@@ -282,7 +304,9 @@ esp_err_t camera_recover() {
     for (size_t i = 0; i < count; ++i) {
         if (enabled[i] && controls[i].set(sensor, values[i]) != 0) return ESP_FAIL;
     }
-    if (!restore_timing(profile)) return ESP_FAIL;
+    // set_resolution re-read the native baseline after its driver reset;
+    // re-reading it now would capture the default profile's scaled value.
+    if (!is_gc() && timing.selected() != profile && timing.apply(profile)) return ESP_FAIL;
     settle();
     return ESP_OK;
 }

@@ -70,6 +70,8 @@ uint8_t *job = nullptr;
 size_t job_capacity = 0, job_length = 0;
 int64_t job_time = 0;  // Capture time of the frame in job.
 int64_t next_analysis = 0;
+// Average JPEG size at the current stream resolution, measured by the worker.
+std::atomic<uint32_t> frame_bytes{0}, frame_dimensions{0};  // dimensions: width << 16 | height
 // Results, guarded by lock.
 bool moving = false;
 int64_t moving_since = 0, last_motion = 0;
@@ -167,6 +169,22 @@ void load() {
     nvs_close(handle);
 }
 
+int pre_seconds_limit(const MotionSettings &s, int &width, int &height) {
+    width = 320; height = 240;
+    if (sensor_t *sensor = esp_camera_sensor_get()) {
+        const int size = sensor->status.framesize;
+        if (size >= 0 && size < FRAMESIZE_INVALID) { width = resolution[size].width; height = resolution[size].height; }
+    }
+    uint32_t bytes = frame_dimensions == (uint32_t(width) << 16 | uint32_t(height)) ? frame_bytes.load() : 0;
+    // Until a frame is measured, assume about 1 byte per 8 pixels (quality 12).
+    if (!bytes) bytes = uint32_t(width) * height / 8;
+    bytes += bytes / 4;  // Busier scenes produce larger JPEGs.
+    // The trigger window and a 0.5 s margin share the buffer with pre-roll;
+    // keep a fifth of it for frames waiting to be written.
+    const double seconds = 0.8 * double(recorder_budget()) / (double(bytes) * s.record_fps) - s.trigger_seconds - 0.5;
+    return std::clamp(int(std::floor(seconds)), 0, 10);
+}
+
 cJSON *describe(const char *error = nullptr, bool saved = false) {
     cJSON *reply = cJSON_CreateObject();
     cJSON_AddStringToObject(reply, "type", "motion");
@@ -181,7 +199,11 @@ cJSON *describe(const char *error = nullptr, bool saved = false) {
         cJSON_AddStringToObject(item, "help", field.help);
         if (field.kind == Kind::number) {
             cJSON_AddNumberToObject(item, "min", field.min);
-            cJSON_AddNumberToObject(item, "max", field.max);
+            if (!strcmp(field.name, "pre_seconds")) {
+                MotionSettings s = motion_settings();
+                cJSON_AddNumberToObject(item, "max", motion_pre_seconds_limit(s));
+                cJSON_AddStringToObject(item, "max_reason", "free PSRAM, the camera resolution, and the recording rate");
+            } else cJSON_AddNumberToObject(item, "max", field.max);
             cJSON_AddNumberToObject(item, "step", field.step);
         }
         if (field.kind == Kind::select) {
@@ -198,6 +220,8 @@ cJSON *describe(const char *error = nullptr, bool saved = false) {
     }
     MotionSettings current, defaults;
     { Lock guard; current = settings; }
+    current.pre_seconds = std::min(current.pre_seconds, motion_pre_seconds_limit(current));
+    defaults.pre_seconds = std::min(defaults.pre_seconds, motion_pre_seconds_limit(defaults));
     cJSON_AddItemToObject(reply, "values", values_json(current));
     cJSON_AddItemToObject(reply, "defaults", values_json(defaults));
     if (saved) cJSON_AddBoolToObject(reply, "saved", true);
@@ -324,6 +348,11 @@ void motion_start() {
 
 MotionSettings motion_settings() { Lock guard; return settings; }
 
+int motion_pre_seconds_limit(const MotionSettings &s) {
+    int width, height;
+    return pre_seconds_limit(s, width, height);
+}
+
 bool motion_frame_due() {
     const int64_t now = esp_timer_get_time();
     MotionSettings s = motion_settings();
@@ -333,6 +362,9 @@ bool motion_frame_due() {
 
 void motion_feed(const camera_fb_t *frame) {
     if (!frame || frame->format != PIXFORMAT_JPEG) return;
+    const uint32_t dimensions = uint32_t(frame->width) << 16 | uint32_t(frame->height);
+    if (frame_dimensions != dimensions) { frame_dimensions = dimensions; frame_bytes = uint32_t(frame->len); }
+    else frame_bytes = (frame_bytes * 7 + uint32_t(frame->len)) / 8;
     MotionSettings s = motion_settings();
     if (!s.enabled) return;
     const int64_t now = esp_timer_get_time();
@@ -385,6 +417,9 @@ cJSON *motion_status() {
             cJSON_AddStringToObject(status, "grid", hex.c_str());
         }
     }
+    const MotionSettings s = motion_settings();
+    cJSON *limits = cJSON_AddObjectToObject(status, "limits");
+    cJSON_AddNumberToObject(limits, "pre_seconds", motion_pre_seconds_limit(s));
     recorder_status(status);
     return status;
 }
@@ -393,13 +428,25 @@ cJSON *motion_command(const cJSON *request) {
     const cJSON *op = cJSON_GetObjectItemCaseSensitive(request, "op");
     if (!cJSON_IsString(op)) return nullptr;
     if (!strcmp(op->valuestring, "motion_get")) return describe();
-    if (!strcmp(op->valuestring, "motion_reset")) return save(MotionSettings{});
+    if (!strcmp(op->valuestring, "motion_reset")) {
+        MotionSettings defaults;
+        defaults.pre_seconds = std::min(defaults.pre_seconds, motion_pre_seconds_limit(defaults));
+        return save(defaults);
+    }
     if (!strcmp(op->valuestring, "motion_apply")) {
         MotionSettings next = motion_settings();
         const char *error = nullptr;
         if (!parse(cJSON_GetObjectItemCaseSensitive(request, "settings"), next, error)) {
             std::string message = std::string("Invalid value: ") + error;
             return describe(message.c_str());
+        }
+        int width, height;
+        const int limit = pre_seconds_limit(next, width, height);
+        if (next.pre_seconds > limit) {
+            char message[160];
+            snprintf(message, sizeof(message), "Pre-record can be at most %d s at %d x %d and %d fps; free PSRAM limits the buffer. Lower the recording rate or resolution for more.",
+                     limit, width, height, next.record_fps);
+            return describe(message);
         }
         return save(next);
     }

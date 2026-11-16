@@ -140,10 +140,22 @@ function defineElements() {
         if (busy) { control.dataset.wasDisabled = String(control.disabled); control.disabled = true; } else control.disabled = control.dataset.wasDisabled === 'true';
       });
     }
+    showLimit(control, max) {
+      control.max = max;
+      const note = control.closest('label')?.querySelector('.limit');
+      const unit = this.description?.fields.find(field => field.name === control.name)?.unit || '';
+      if (note) note.textContent = max > 0 ? `Up to ${max} ${unit} now, limited by ${note.dataset.reason}.` : `Not available now: ${note.dataset.reason} leave no room. Lower the recording rate or resolution.`;
+      // Keep an untouched field valid when the limit drops, e.g. after a resolution change.
+      if (!this.dirty && Number(control.value) > max) control.value = max;
+    }
     renderStatus() {
       const box = this.shadowRoot.querySelector('.live');
       if (!box || !this.status) return;
       const s = this.status;
+      for (const [name, max] of Object.entries(s.limits || {})) {
+        const control = this.shadowRoot.querySelector(`form [name="${CSS.escape(name)}"]`);
+        if (control && Number(control.max) !== max) this.showLimit(control, max);
+      }
       const pills = [];
       if (!s.enabled) pills.push(['Detection off', '']);
       else pills.push([s.motion ? 'Motion detected' : 'No motion', s.motion ? 'on' : ''], [`Moving area ${(s.area ?? 0).toFixed(1)}%`, ''], [`Speed ${(s.speed ?? 0).toFixed(1)} px/s`, ''], [`${(s.fps ?? 0).toFixed(1)} analyses/s`, '']);
@@ -161,7 +173,7 @@ function defineElements() {
       this.shadowRoot.innerHTML = `<style>${STYLE}
         fieldset{border:1px solid #2a352c;border-radius:8px;padding:18px;margin:0 0 18px;min-width:0}legend{padding:0 6px;color:#c5ed9f;font-weight:600}
         .fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,250px),1fr));gap:16px}
-        label{display:flex;flex-direction:column;gap:6px;min-width:0}label small{color:#8fa585;font-size:12px;line-height:1.4}
+        label{display:flex;flex-direction:column;gap:6px;min-width:0}label small{color:#8fa585;font-size:12px;line-height:1.4}label small.limit{color:#c9b47c}
         .with-unit{display:flex;align-items:center;gap:8px}.with-unit span{color:#9fb293;white-space:nowrap}
         label.toggle{flex-direction:row;flex-wrap:wrap;align-items:center;gap:10px;min-height:44px}label.toggle input{width:24px;height:24px;min-height:0;margin:0;accent-color:#00d4cb;flex:none}
         label.toggle small{flex-basis:100%;padding-left:34px}.live{margin-bottom:6px}.card{margin:0 0 18px}
@@ -199,6 +211,12 @@ function defineElements() {
         control.name = field.name;
         control.setAttribute('aria-label', field.label);
         if (field.help) { const help = document.createElement('small'); help.textContent = field.help; label.append(help); }
+        if (field.max_reason) {
+          // The camera computes this maximum; it follows resolution and memory.
+          const limit = document.createElement('small'); limit.className = 'limit'; limit.dataset.reason = field.max_reason;
+          label.append(limit);
+          this.showLimit(control, field.max);
+        }
         control.addEventListener('input', () => { this.dirty = true; this.say('Unsaved changes. Select Save to apply them on the camera.'); });
         sets[field.group].append(label);
       }

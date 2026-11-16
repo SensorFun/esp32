@@ -36,5 +36,8 @@ cJSON *motion_status();
 // True when viewers draw the moving-cell overlay, so status is sent more often.
 bool motion_overlay_active();
 MotionSettings motion_settings();
+// Longest pre-record the PSRAM buffer can hold at the current resolution and
+// these settings' recording rate and motion duration (0-10 s).
+int motion_pre_seconds_limit(const MotionSettings &settings);
 // Motion continuously present since `since`; last seen at `last` (esp_timer us).
 void motion_activity(bool &moving, int64_t &since, int64_t &last);
