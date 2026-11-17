@@ -2,6 +2,7 @@
 #include "camera_timing.h"
 #include "esp_camera.h"
 #include "esp_log.h"
+#include "driver/gpio.h"
 #include "nvs.h"
 #include <string>
 #include <cstring>
@@ -87,6 +88,11 @@ esp_err_t camera_start(bool restore_saved) {
         sensor_name = "gc0308";
     } else return ESP_ERR_NOT_SUPPORTED;
     if (sensor->set_framesize(sensor, FRAMESIZE_QVGA) || !restore_timing(0)) return ESP_FAIL;
+    // The camera clock and the sensor's pixel bus run beside the PCB antenna.
+    // At full drive strength their edges cut ESP32-CAM Wi-Fi throughput by
+    // more than ten times; the weakest drive still captures cleanly.
+    gpio_set_drive_capability(gpio_num_t(XCLK_GPIO_NUM), GPIO_DRIVE_CAP_0);
+    if (sensor->id.PID == OV2640_PID && sensor->set_reg(sensor, 0x109, 0x03, 0x00)) return ESP_FAIL;  // COM2: 1x output drive
     const Default *defaults = is_gc() ? defaults_gc : defaults_ov;
     const size_t default_count = is_gc() ? sizeof(defaults_gc) / sizeof(Default) : sizeof(defaults_ov) / sizeof(Default);
     for (size_t i = 0; i < default_count; ++i) {

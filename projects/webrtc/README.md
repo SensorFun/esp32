@@ -129,9 +129,10 @@ Setting commands run after the WebRTC receive callback returns and after releasi
 any held camera frame. The command queue is bounded to 16 entries. Temporary
 send-buffer exhaustion (`WOULD_BLOCK` or `NO_MEM`) retains the pending reply for
 retry instead of disconnecting the viewer. Telemetry yields to queued replies.
-Video and file sends use at most one 2 KiB chunk per worker pass and a 16 KiB
-SCTP send cache. Bulk payloads are paced to 128 KiB/s on ESP32 and 256 KiB/s on
-other targets; settings and heartbeat processing bypass that limit. The camera
+Video and file sends use 2 KiB chunks and a 16 KiB SCTP send cache. Bulk payloads
+are paced to 256 KiB/s; video may send up to three chunks of unused pacing credit
+in one worker pass, and file downloads one chunk per pass. Settings and heartbeat
+processing bypass that limit. The camera
 disables Wi-Fi modem sleep to prevent a sleeping radio from delaying the live
 stream and filling its TX queue. Video admission pauses below 12 KiB of free internal RAM or a
 2 KiB largest free block, leaving the peer loop active to drain acknowledgements.
@@ -143,7 +144,14 @@ feeds blocks straight into the 160x120 average, so no full decoded image is held
 On the ESP32 the decoder's 11 KiB of row sums and workspace go to PSRAM, and the
 motion and recorder task stacks are in PSRAM (neither task writes flash). The peer
 worker runs in the main task, sharing one stack. The worker, the camera task and
-the camera interrupt run on CPU1, leaving CPU0 to Wi-Fi.
+the camera interrupt run on CPU1, leaving CPU0 to Wi-Fi. Motion analysis may run
+on either CPU at low priority, so it uses time Wi-Fi leaves idle while streaming
+keeps CPU1 busy; it then analyses fewer frames than its configured rate.
+
+On the ESP32-CAM the camera clock and the sensor's pixel bus run beside the PCB
+antenna. At the default drive strengths they cut Wi-Fi throughput by more than ten
+times, even with a strong signal and no capture running. The firmware sets the clock
+pin and the OV2640 outputs to their weakest drive, which restores full Wi-Fi speed.
 
 Optical-flow and grayscale loops cooperate with FreeRTOS between bounded work
 blocks so the CPU 1 idle task can run; increasing the analysis rate cannot create

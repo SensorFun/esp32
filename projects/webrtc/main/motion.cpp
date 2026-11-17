@@ -354,7 +354,9 @@ void motion_start() {
     recorder_start();
     // The stack lives in PSRAM so internal RAM can hold the detection buffers;
     // this task never writes flash, which a PSRAM stack would not survive.
-    if (xTaskCreatePinnedToCoreWithCaps(detect, "motion", 6144, nullptr, 3, &task, 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS)
+    // Either core: streaming keeps CPU1 busy, and at this priority analysis
+    // only uses time Wi-Fi leaves idle on CPU0.
+    if (xTaskCreatePinnedToCoreWithCaps(detect, "motion", 6144, nullptr, 3, &task, tskNO_AFFINITY, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS)
         ESP_ERROR_CHECK(ESP_ERR_NO_MEM);
 }
 

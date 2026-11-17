@@ -36,11 +36,10 @@ constexpr char TAG[] = "local_webrtc";
 constexpr size_t CHUNK = 2048;
 // Bound bulk traffic independently of how fast the peer loop can run. Control
 // replies and pings bypass this pacing so a full video queue cannot starve them.
-#if CONFIG_IDF_TARGET_ESP32
-constexpr int64_t BULK_BYTES_PER_SECOND = 128 * 1024;
-#else
 constexpr int64_t BULK_BYTES_PER_SECOND = 256 * 1024;
-#endif
+// Video may send up to this much unused pacing credit back to back, so one
+// loop pass (which waits for incoming packets) can carry several chunks.
+constexpr int64_t BULK_BURST_US = 3 * int64_t(CHUNK) * 1000000 / BULK_BYTES_PER_SECOND;
 esp_peer_default_cfg_t peer_defaults(uint8_t candidates) {
     esp_peer_default_cfg_t cfg{};
     cfg.agent_recv_timeout = CAMERA_ICE_RECEIVE_MS;
@@ -541,7 +540,7 @@ void worker(common::Application &app) {
             if (streaming && now >= next_bulk_send) {
                 // Pace bulk packets; continuous capture must not saturate Wi-Fi
                 // and leave DTLS unable to send acknowledgements or controls.
-                for (int chunks = 0; fb && chunks < 1; ++chunks) {
+                for (int chunks = 0; fb && chunks < 4; ++chunks) {
                     size_t size = std::min(CHUNK, fb->len - offset);
                     // Four LE uint32: magic, sequence, total bytes, byte offset.
                     const uint32_t header[] = {0x4745504a, sequence, uint32_t(fb->len), uint32_t(offset)};
@@ -552,12 +551,13 @@ void worker(common::Application &app) {
                     int ret = esp_peer_send_data(peer, &frame);
                     if (ret == 0) {
                         offset += size; last_progress = esp_timer_get_time();
-                        next_bulk_send = last_progress + int64_t(size) * 1000000 / BULK_BYTES_PER_SECOND;
+                        next_bulk_send = std::max(next_bulk_send, last_progress - BULK_BURST_US) +
+                            int64_t(size) * 1000000 / BULK_BYTES_PER_SECOND;
                     }
                     if (offset == fb->len || esp_timer_get_time() - last_progress > 2000000 || (ret != 0 && ret != ESP_PEER_ERR_WOULD_BLOCK && ret != ESP_PEER_ERR_NO_MEM)) {
                         camera_frame_return(fb); fb = nullptr;
                     }
-                    if (ret != 0) break;
+                    if (ret != 0 || next_bulk_send > esp_timer_get_time()) break;
                 }
             } else if (!viewer) {
                 if (!motion_settings().enabled) capture_stalled_since = 0;
