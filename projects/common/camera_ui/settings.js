@@ -19,7 +19,7 @@ class CameraSettings extends HTMLElement {
       :host{display:block;color:#e4eadd;font:14px system-ui,sans-serif}:host([hidden]){display:none}*{box-sizing:border-box}
       section{background:#17201a;border:1px solid #2a352c;border-radius:8px;padding:24px;min-width:0}
       h2{font-size:20px;font-weight:500;margin:0 0 20px}.fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));gap:16px}
-      label{display:flex;flex-direction:column;gap:7px;min-width:0}input,select,button{font:inherit;min-height:44px;border-radius:6px;padding:10px;border:1px solid #415335}
+      label{display:flex;flex-direction:column;gap:7px;min-width:0}label.counter{flex-direction:row;align-items:center;justify-content:space-between;gap:12px;align-self:end}label.counter span{min-width:0;overflow-wrap:anywhere}label.counter input{width:88px;flex:none;text-align:right;font-variant-numeric:tabular-nums}input,select,button{font:inherit;min-height:44px;border-radius:6px;padding:10px;border:1px solid #415335}
       input,select{background:#0d180e;color:#d8e8cb;width:100%;min-width:0}input:disabled{opacity:.45}
       .actions{display:flex;flex-wrap:wrap;gap:12px;margin-top:24px}.actions:first-child{margin:0 0 24px}button{cursor:pointer;background:#00d4cb;color:#07302c;font-weight:600}button:last-child{background:transparent;color:#d8e8cb}button:disabled{opacity:.5;cursor:wait}
       [role=status]{margin:16px 0 0;line-height:1.6;color:#b7c9ab}input:focus-visible,select:focus-visible,button:focus-visible{outline:2px solid #00d4cb;outline-offset:3px}
@@ -28,9 +28,12 @@ class CameraSettings extends HTMLElement {
     this.shadowRoot.querySelector('h2').textContent = `Camera settings · ${this.value.sensor}`;
     const fields = this.shadowRoot.querySelector('.fields');
     const add = (name, title, control) => {
-      const label = document.createElement('label'); label.textContent = title;
+      const label = document.createElement('label');
+      const text = document.createElement('span'); text.textContent = title;
+      // Number fields hold one to four digits: keep them on the label's line.
+      if (control.type === 'number') label.className = 'counter';
       control.name = name; control.setAttribute('aria-label', title);
-      label.append(control); fields.append(label);
+      label.append(text, control); fields.append(label);
       control.addEventListener('input', () => {
         this.dirty = true;
         if (!control.checkValidity() || control.value === '') return;

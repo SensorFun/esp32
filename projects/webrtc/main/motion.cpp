@@ -2,12 +2,13 @@
 #include "optical_flow.h"
 #include "recorder.h"
 #include "esp_heap_caps.h"
+#include "esp_attr.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
-#include "jpeg_decoder.h"
+#include "rom/tjpgd.h"
 #include "nvs.h"
 #include <algorithm>
 #include <atomic>
@@ -241,30 +242,65 @@ cJSON *save(const MotionSettings &next) {
     return describe(nullptr, true);
 }
 
-// Chooses the largest decoder downscale that still covers 160x120.
-esp_jpeg_image_scale_t choose_scale(int width, int height) {
+// Chooses the largest decoder downscale (0-3) that still covers 160x120.
+int choose_scale(int width, int height) {
     for (int shift = 3; shift > 0; --shift) {
-        if ((width >> shift) >= motion::kWidth && (height >> shift) >= motion::kHeight) return esp_jpeg_image_scale_t(shift);
+        if ((width >> shift) >= motion::kWidth && (height >> shift) >= motion::kHeight) return shift;
     }
-    return JPEG_IMAGE_SCALE_0;
+    return 0;
 }
 
-// Yield to the idle task inside long PSRAM-heavy analysis, even when a
-// high analysis rate or a stream of GUI changes keeps work continuously ready.
+// Yield to the idle task inside long analysis, even when a high analysis rate
+// or a stream of GUI changes keeps work continuously ready.
 void cooperate() { vTaskDelay(1); }
 
-void detect(void *) {
-    motion::OpticalFlow detector;
-    motion::FlowResult result;
-    std::vector<uint8_t> gray(motion::kWidth * motion::kHeight);
-    uint8_t *rgb = nullptr;
-    size_t rgb_capacity = 0;
-#if defined(CONFIG_JD_FASTDECODE) && CONFIG_JD_FASTDECODE == 2
-    constexpr size_t workspace_size = 65472;
+// The detector's two 160x120 luma frames and decoder state live in internal
+// RAM (static .bss). Camera JPEGs for streaming and recording, including the
+// copy analysed here, stay in PSRAM. On the original ESP32, Wi-Fi needs the
+// rest of internal RAM, so the decoder's row sums and workspace go to PSRAM;
+// that costs about 5% of analysis time.
+#if CONFIG_IDF_TARGET_ESP32
+#define MOTION_SCRATCH EXT_RAM_BSS_ATTR
 #else
-    constexpr size_t workspace_size = 3100;
+#define MOTION_SCRATCH
 #endif
-    void *workspace = nullptr;
+uint8_t flow_frames[2][motion::kPixels];
+MOTION_SCRATCH motion::GrayScaler scaler;
+MOTION_SCRATCH alignas(4) uint8_t decoder_workspace[3100];
+
+struct DecodeSource { const uint8_t *data; size_t length, read; };
+
+UINT jpeg_input(JDEC *decoder, BYTE *buffer, UINT bytes) {
+    auto *source = static_cast<DecodeSource *>(decoder->device);
+    bytes = UINT(std::min<size_t>(bytes, source->length - source->read));
+    if (buffer) memcpy(buffer, source->data + source->read, bytes);
+    source->read += bytes;
+    return bytes;
+}
+
+// Receives each decoded RGB888 block; edges past the scaled size are clipped.
+int decoded_width, decoded_height;
+UINT jpeg_output(JDEC *, void *bitmap, JRECT *rect) {
+    const int right = std::min<int>(rect->right, decoded_width - 1), bottom = std::min<int>(rect->bottom, decoded_height - 1);
+    if (rect->left > right || rect->top > bottom) return 1;
+    return scaler.add(static_cast<const uint8_t *>(bitmap), rect->left, rect->top, right, bottom, rect->right - rect->left + 1) ? 1 : 0;
+}
+
+// Decodes a JPEG straight into a 160x120 luma frame. Reports its full size.
+bool decode_gray(const uint8_t *jpeg, size_t length, uint8_t *gray, int &width, int &height) {
+    static DecodeSource source;
+    static JDEC decoder;  // Decoder state is hot; keep it in internal RAM, not the PSRAM stack.
+    source = {jpeg, length, 0};
+    if (jd_prepare(&decoder, jpeg_input, decoder_workspace, sizeof(decoder_workspace), &source) != JDR_OK) return false;
+    width = decoder.width; height = decoder.height;
+    const int scale = choose_scale(width, height);
+    decoded_width = width >> scale; decoded_height = height >> scale;
+    return scaler.begin(decoded_width, decoded_height, gray) && jd_decomp(&decoder, jpeg_output, BYTE(scale)) == JDR_OK && scaler.finish();
+}
+
+void detect(void *) {
+    motion::OpticalFlow detector(flow_frames[0], flow_frames[1]);
+    motion::FlowResult result;
     uint32_t seen_generation = UINT32_MAX;
     int last_width = 0, last_height = 0;
     int64_t previous = 0, previous_frame = 0;
@@ -273,37 +309,12 @@ void detect(void *) {
         struct FinishJob {
             ~FinishJob() { busy = false; cooperate(); }
         } finish_job;
-        if (!workspace) workspace = heap_caps_malloc(workspace_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        if (!workspace) continue;
         MotionSettings s;
         uint32_t current_generation;
         { Lock guard; s = settings; current_generation = generation; }
         const int64_t frame_time = job_time;
-        esp_jpeg_image_cfg_t cfg{};
-        cfg.indata = job; cfg.indata_size = job_length;
-        // Reuse PSRAM scratch instead of allocating 3 KB of internal RAM per JPEG.
-        cfg.advanced.working_buffer = workspace;
-        cfg.advanced.working_buffer_size = workspace_size;
-        cfg.out_format = JPEG_IMAGE_FORMAT_RGB888;
-        esp_jpeg_image_output_t info{};
-        bool ok = esp_jpeg_get_image_info(&cfg, &info) == ESP_OK && info.width && info.height;
-        const int width = info.width, height = info.height;
-        if (ok) {
-            cfg.out_scale = choose_scale(width, height);
-            ok = esp_jpeg_get_image_info(&cfg, &info) == ESP_OK;
-        }
-        if (ok && info.output_len > rgb_capacity) {
-            heap_caps_free(rgb);
-            rgb = static_cast<uint8_t *>(heap_caps_malloc(info.output_len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-            rgb_capacity = rgb ? info.output_len : 0;
-            ok = rgb != nullptr;
-        }
-        if (ok) {
-            cfg.outbuf = rgb; cfg.outbuf_size = rgb_capacity;
-            ok = esp_jpeg_decode(&cfg, &info) == ESP_OK;
-        }
-        if (!ok || !s.enabled) continue;
-        motion::rgb888_to_gray(rgb, info.width, info.height, gray.data(), cooperate);
+        int width = 0, height = 0;
+        if (!s.enabled || !decode_gray(job, job_length, detector.frame(), width, height)) continue;
         if (current_generation != seen_generation || width != last_width || height != last_height) {
             detector.reset();
             seen_generation = current_generation; last_width = width; last_height = height;
@@ -317,7 +328,7 @@ void detect(void *) {
         motion::FlowParams params;
         params.cell = s.cell; params.min_flow = s.min_speed * interval; params.min_texture = s.min_texture;
         params.blur = s.blur; params.min_area = s.min_area;
-        if (!detector.process(gray.data(), params, result, cooperate)) continue;
+        if (!detector.process(params, result, cooperate)) continue;
         const int64_t now = esp_timer_get_time();
         // Brief gaps between detections still count as one continuous motion.
         const int64_t gap = std::max<int64_t>(1000000, 2500000 / s.analysis_fps);
@@ -341,9 +352,10 @@ void motion_start() {
     ESP_ERROR_CHECK(lock ? ESP_OK : ESP_ERR_NO_MEM);
     load();
     recorder_start();
-    // Internal stack: PSRAM stacks need CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY.
-    // Frame and flow buffers are heap allocations in PSRAM.
-    if (xTaskCreatePinnedToCore(detect, "motion", 6144, nullptr, 3, &task, 1) != pdPASS) ESP_ERROR_CHECK(ESP_ERR_NO_MEM);
+    // The stack lives in PSRAM so internal RAM can hold the detection buffers;
+    // this task never writes flash, which a PSRAM stack would not survive.
+    if (xTaskCreatePinnedToCoreWithCaps(detect, "motion", 6144, nullptr, 3, &task, 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS)
+        ESP_ERROR_CHECK(ESP_ERR_NO_MEM);
 }
 
 MotionSettings motion_settings() { Lock guard; return settings; }

@@ -79,6 +79,36 @@ int main(int argc, char **argv) {
     rgb888_to_gray(rgb.data(), 320, 240, gray.data(), cooperate);
     assert(cooperative_calls > 0);
     printf("{\"check\":\"gray\",\"value\":%d,\"last\":%d}\n", gray[0], gray.back());
+    // Decoded sizes the camera produces after JPEG downscaling, fed as MCU
+    // blocks (width x height) in decoder order, must match the reference.
+    const int sizes[][2] = {{160, 120}, {200, 150}, {320, 180}, {256, 192}, {240, 240}, {160, 160}, {96, 96}, {128, 128}, {200, 148}};
+    const int mcus[][2] = {{16, 16}, {16, 8}, {8, 8}, {4, 4}, {2, 2}, {2, 1}, {1, 1}};
+    int compared = 0, mismatched = 0;
+    for (const auto &size : sizes) {
+        const int w = size[0], h = size[1];
+        std::vector<uint8_t> image(size_t(w) * h * 3), expected(kWidth * kHeight), actual(kWidth * kHeight, 0);
+        uint32_t seed = uint32_t(w * 7919 + h);
+        for (auto &value : image) { seed = seed * 1103515245u + 12345u; value = uint8_t(seed >> 16); }
+        rgb888_to_gray(image.data(), w, h, expected.data());
+        for (const auto &mcu : mcus) {
+            static GrayScaler scaler;
+            bool ok = scaler.begin(w, h, actual.data());
+            std::vector<uint8_t> block;
+            for (int top = 0; ok && top < h; top += mcu[1])
+                for (int left = 0; ok && left < w; left += mcu[0]) {
+                    const int right = std::min(left + mcu[0], w) - 1, bottom = std::min(top + mcu[1], h) - 1;
+                    block.clear();
+                    for (int y = top; y <= bottom; ++y)
+                        block.insert(block.end(), image.begin() + (size_t(y) * w + left) * 3, image.begin() + (size_t(y) * w + right + 1) * 3);
+                    ok = scaler.add(block.data(), left, top, right, bottom);
+                }
+            ++compared;
+            if (!ok || !scaler.finish() || actual != expected) ++mismatched;
+        }
+    }
+    GrayScaler oversized;
+    printf("{\"check\":\"scaler\",\"compared\":%d,\"mismatched\":%d,\"oversized\":%s}\n", compared, mismatched,
+           oversized.begin(GrayScaler::kMaxSource + 1, 240, gray.data()) ? "true" : "false");
 
     if (argc > 1) {
         alignas(4) static uint8_t staging[1024];

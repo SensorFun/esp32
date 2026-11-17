@@ -94,7 +94,7 @@ void remote_start() {
     incoming = xQueueCreate(12, sizeof(RemoteEvent *)); outgoing = xQueueCreate(8, sizeof(RemoteEvent *));
     ice_mutex = xSemaphoreCreateMutex();
     ESP_ERROR_CHECK(incoming && outgoing && ice_mutex ? ESP_OK : ESP_ERR_NO_MEM);
-    if (xTaskCreate(task, "remote_signal", 12288, nullptr, 4, nullptr) != pdPASS) ESP_ERROR_CHECK(ESP_ERR_NO_MEM);
+    if (xTaskCreate(task, "remote_signal", 8192, nullptr, 4, nullptr) != pdPASS) ESP_ERROR_CHECK(ESP_ERR_NO_MEM);
 }
 bool remote_receive(RemoteEvent &event) {
     RemoteEvent *item = nullptr;

@@ -350,7 +350,7 @@ void start_server() {
 #pragma GCC diagnostic ignored "-Wmissing-field-initializers"
     httpd_ssl_config_t cfg = HTTPD_SSL_CONFIG_DEFAULT();
 #pragma GCC diagnostic pop
-    cfg.httpd.stack_size = 12288;
+    cfg.httpd.stack_size = 8192;  // Peak use is about 4.5 KB during TLS handshakes.
     cfg.httpd.max_uri_handlers = 10;
     // Browsers open speculative TLS sockets alongside the HTML, module and
     // session requests. Two slots evict the module's connection mid-load.
@@ -386,7 +386,7 @@ void start_server() {
     ESP_ERROR_CHECK(esp_netif_get_ip_info(esp_netif_get_handle_from_ifkey("WIFI_STA_DEF"), &ip));
     ESP_LOGI(TAG, "Local camera ready: https://" IPSTR "/", IP2STR(&ip.ip));
 }
-void worker(void *) {
+void worker(common::Application &app) {
     bool camera_ready = false;
     camera_fb_t *fb = nullptr;
     size_t offset = 0;
@@ -396,6 +396,7 @@ void worker(void *) {
     bool sntp_started = false;
     int64_t next_bulk_send = 0;
     uint8_t packet[CHUNK + 16];
+    int64_t next_app = 0;
     for (;;) {
         if (!provisioning_is_ready()) {
             { Lock guard; if (fb) { camera_frame_return(fb); fb = nullptr; } close_peer(); }
@@ -425,6 +426,15 @@ void worker(void *) {
             Lock guard;
             remote_events();
             const int64_t now = esp_timer_get_time();
+            static int64_t last_heap_report = 0;
+            if (now - last_heap_report >= 60000000) {
+                // Wi-Fi, DMA and TLS sessions compete for internal RAM.
+                last_heap_report = now;
+                ESP_LOGI(TAG, "Internal RAM: free %u, largest %u, lowest %u",
+                         unsigned(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+                         unsigned(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+                         unsigned(heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)));
+            }
             if (peer && (failed || (remote_peer && remote_auth.expired(now)) || now - activity > 30000000)) {
                 if (fb) { camera_frame_return(fb); fb = nullptr; }
                 ESP_LOGW(TAG, "Closing camera peer: failed=%d idle_ms=%lld", failed, (now - activity) / 1000);
@@ -554,6 +564,7 @@ void worker(void *) {
                 if (fb) { camera_frame_return(fb); fb = nullptr; }
             }
         }
+        if (esp_timer_get_time() >= next_app) { app.main(); next_app = esp_timer_get_time() + 20000; }
         vTaskDelay(pdMS_TO_TICKS(2));
     }
 }
@@ -568,6 +579,8 @@ extern "C" void app_main() {
     mutex = xSemaphoreCreateRecursiveMutex();
     ESP_ERROR_CHECK(mutex ? ESP_OK : ESP_ERR_NO_MEM);
     motion_start();
-    if (xTaskCreate(worker, "local_peer", 24576, nullptr, 5, nullptr) != pdPASS) ESP_ERROR_CHECK(ESP_ERR_NO_MEM);
-    for (;;) { app.main(); vTaskDelay(pdMS_TO_TICKS(20)); }
+    // The peer worker runs in the main task, which also polls the setup
+    // button: one stack instead of two leaves internal RAM for motion analysis.
+    vTaskPrioritySet(nullptr, 5);
+    worker(app);
 }

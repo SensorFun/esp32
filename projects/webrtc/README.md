@@ -136,7 +136,14 @@ disables Wi-Fi modem sleep to prevent a sleeping radio from delaying the live
 stream and filling its TX queue. Video admission pauses below 12 KiB of free internal RAM or a
 2 KiB largest free block, leaving the peer loop active to drain acknowledgements.
 The PSRAM allocation threshold is 512 bytes to keep packet payloads out of scarce
-internal RAM. JPEG analysis reuses its own PSRAM workspace.
+internal RAM. Wi-Fi and lwIP buffers stay in internal RAM: copying them from
+PSRAM slowed the ESP32's transmit queue enough to drop viewers. Camera JPEGs for streaming and recording stay in PSRAM. Motion
+analysis keeps its two 8-bit 160x120 frames in internal RAM; the ROM JPEG decoder
+feeds blocks straight into the 160x120 average, so no full decoded image is held.
+On the ESP32 the decoder's 11 KiB of row sums and workspace go to PSRAM, and the
+motion and recorder task stacks are in PSRAM (neither task writes flash). The peer
+worker runs in the main task, sharing one stack. The worker, the camera task and
+the camera interrupt run on CPU1, leaving CPU0 to Wi-Fi.
 
 Optical-flow and grayscale loops cooperate with FreeRTOS between bounded work
 blocks so the CPU 1 idle task can run; increasing the analysis rate cannot create

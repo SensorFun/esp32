@@ -57,6 +57,12 @@ class MotionNativeTests(unittest.TestCase):
         self.assertEqual(self.checks['gray']['value'], 200)
         self.assertEqual(self.checks['gray']['last'], 200)
 
+    def test_block_scaler_matches_full_image_conversion(self):
+        scaler = self.checks['scaler']
+        self.assertEqual(scaler['compared'], 63)
+        self.assertEqual(scaler['mismatched'], 0)
+        self.assertFalse(scaler['oversized'])
+
     def test_avi_is_a_valid_indexed_mjpeg_file(self):
         info = self.checks['avi']
         self.assertTrue(info['ok'] and info['read'] and info['finalized'])

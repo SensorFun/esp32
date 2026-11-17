@@ -336,7 +336,11 @@ void recorder_start() {
         Guard sd(sd_lock);
         sd_card::mount();  // Optional: without a card, motion is signalled but not recorded.
     }
-    if (xTaskCreatePinnedToCore(record, "recorder", 6144, nullptr, 4, nullptr, 1) != pdPASS) ESP_ERROR_CHECK(ESP_ERR_NO_MEM);
+    // PSRAM stack: internal RAM is kept for Wi-Fi, DMA and motion analysis.
+    // The task only touches the SD card, never flash; the SD driver bounces
+    // non-DMA buffers through internal RAM.
+    if (xTaskCreatePinnedToCoreWithCaps(record, "recorder", 6144, nullptr, 4, nullptr, 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS)
+        ESP_ERROR_CHECK(ESP_ERR_NO_MEM);
 }
 
 size_t recorder_budget() { return budget; }

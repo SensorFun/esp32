@@ -175,6 +175,8 @@ function defineElements() {
         .fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,250px),1fr));gap:16px}
         label{display:flex;flex-direction:column;gap:6px;min-width:0}label small{color:#8fa585;font-size:12px;line-height:1.4}label small.limit{color:#c9b47c}
         .with-unit{display:flex;align-items:center;gap:8px}.with-unit span{color:#9fb293;white-space:nowrap}
+        label.counter{display:grid;grid-template-columns:minmax(0,1fr) auto;column-gap:12px;row-gap:4px;align-items:center}label.counter>small{grid-column:1/-1}label.counter .title{overflow-wrap:anywhere}
+        label.counter input{width:88px;flex:none;text-align:right;font-variant-numeric:tabular-nums}label.counter .with-unit span{min-width:4.5ch}
         label.toggle{flex-direction:row;flex-wrap:wrap;align-items:center;gap:10px;min-height:44px}label.toggle input{width:24px;height:24px;min-height:0;margin:0;accent-color:#00d4cb;flex:none}
         label.toggle small{flex-basis:100%;padding-left:34px}.live{margin-bottom:6px}.card{margin:0 0 18px}
       </style><section><header><h2>Motion detection</h2></header><div class="live pills" aria-live="polite"></div><p class="card muted"></p>
@@ -197,12 +199,15 @@ function defineElements() {
           control = document.createElement('input'); control.type = 'checkbox'; control.checked = Boolean(value);
           label.append(control, document.createTextNode(field.label));
         } else {
-          label.append(document.createTextNode(field.label));
+          const text = document.createElement('span'); text.className = 'title'; text.textContent = field.label;
+          label.append(text);
           if (field.type === 'select') {
             control = document.createElement('select');
             field.options.forEach((option, index) => { const item = document.createElement('option'); item.value = String(index); item.textContent = option.label; control.append(item); });
             control.value = String(Math.max(0, field.options.findIndex(option => option.value === value)));
           } else {
+            // Values are one to four characters: keep them on the label's line.
+            label.className = 'counter';
             control = document.createElement('input'); control.type = 'number'; control.inputMode = 'decimal';
             control.min = field.min; control.max = field.max; control.step = field.step; control.value = value; control.required = true;
           }

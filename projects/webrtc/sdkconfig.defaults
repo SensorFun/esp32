@@ -3,6 +3,10 @@ CONFIG_SPIRAM=y
 CONFIG_SPIRAM_USE_MALLOC=y
 # Keep SCTP packets and settings payloads in PSRAM; reserve internal RAM for Wi-Fi and DMA.
 CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=512
+# Motion and recorder task stacks live in PSRAM; neither task writes flash.
+CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY=y
+# Lets EXT_RAM_BSS_ATTR place motion decoder scratch in PSRAM on the ESP32.
+CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
 CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
 CONFIG_MBEDTLS_SSL_PROTO_DTLS=y
 CONFIG_MBEDTLS_SSL_DTLS_SRTP=y
@@ -12,7 +16,12 @@ CONFIG_MBEDTLS_CHACHA20_C=y
 CONFIG_MBEDTLS_CHACHAPOLY_C=y
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
-CONFIG_ESP_MAIN_TASK_STACK_SIZE=12288
+# The main task also runs the peer worker (peak use about 10 KB). It and the
+# camera task run on CPU1, so camera DMA copies and the camera interrupt never
+# compete with Wi-Fi on CPU0; sharing CPU0 stalled Wi-Fi TX at large frame sizes.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
+CONFIG_ESP_MAIN_TASK_AFFINITY_CPU1=y
+CONFIG_CAMERA_CORE1=y
 CONFIG_HTTPD_MAX_REQ_HDR_LEN=2048
 CONFIG_HTTPD_MAX_URI_LEN=256
 CONFIG_FREERTOS_HZ=1000
