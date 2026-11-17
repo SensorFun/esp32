@@ -159,6 +159,7 @@ function defineElements() {
       const pills = [];
       if (!s.enabled) pills.push(['Detection off', '']);
       else pills.push([s.motion ? 'Motion detected' : 'No motion', s.motion ? 'on' : ''], [`Moving area ${(s.area ?? 0).toFixed(1)}%`, ''], [`Speed ${(s.speed ?? 0).toFixed(1)} px/s`, ''], [`${(s.fps ?? 0).toFixed(1)} analyses/s`, '']);
+      if (s.analysis_width && s.analysis_height) pills.push([`Analysis ${s.analysis_width} × ${s.analysis_height} px`, '']);
       if (s.recording) pills.push([`Recording ${formatDuration(s.clip_seconds)}`, 'rec']);
       box.replaceChildren(...pills.map(([text, kind]) => { const pill = document.createElement('span'); pill.className = `pill ${kind}`; pill.textContent = text; return pill; }));
       const notes = [cardText(s.sd)];

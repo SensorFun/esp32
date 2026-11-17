@@ -59,9 +59,30 @@ class MotionNativeTests(unittest.TestCase):
 
     def test_block_scaler_matches_full_image_conversion(self):
         scaler = self.checks['scaler']
-        self.assertEqual(scaler['compared'], 63)
+        self.assertEqual(scaler['compared'], 84)
         self.assertEqual(scaler['mismatched'], 0)
         self.assertFalse(scaler['oversized'])
+
+    def test_analysis_size_is_one_eighth_fitted_to_the_buffer(self):
+        sizes = {(w, h): (aw, ah) for w, h, aw, ah in self.checks['analysis_size']['sizes']}
+        self.assertEqual(sizes[(160, 120)], (20, 15))
+        self.assertEqual(sizes[(320, 240)], (40, 30))
+        self.assertEqual(sizes[(640, 480)], (80, 60))
+        self.assertEqual(sizes[(800, 600)], (100, 75))
+        self.assertEqual(sizes[(1280, 720)], (160, 90))
+        self.assertEqual(sizes[(1600, 1200)], (160, 120))  # 200x150 averaged to fit the buffer
+        for (w, h), (aw, ah) in sizes.items():
+            with self.subTest(camera=(w, h)):
+                self.assertLessEqual(aw * ah, 160 * 120)
+                self.assertAlmostEqual(aw / ah, w / h, delta=0.05 * w / h)
+
+    def test_small_frames_detect_motion_and_cells_tile_any_size(self):
+        self.assertTrue(self.checks['small_shift_1px']['motion'])
+        self.assertAlmostEqual(self.checks['small_shift_1px']['flow'], 1.0, delta=0.3)
+        self.assertEqual((self.checks['small_shift_1px']['cols'], self.checks['small_shift_1px']['rows']), (5, 3))
+        self.assertFalse(self.checks['small_still']['motion'])
+        self.assertEqual((self.checks['uneven_cells']['cols'], self.checks['uneven_cells']['rows']), (6, 4))
+        self.assertTrue(self.checks['uneven_cells']['motion'])
 
     def test_avi_is_a_valid_indexed_mjpeg_file(self):
         info = self.checks['avi']

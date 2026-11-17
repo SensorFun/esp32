@@ -42,11 +42,11 @@ constexpr Option kCells[] = {{nullptr, 5, "5 px"}, {nullptr, 8, "8 px"}, {nullpt
 const Field kFields[] = {
     {"enabled", "Detect motion", "detection", "", "Analyse the camera continuously, even with no viewer connected.", Kind::boolean, 0, 1, 1, nullptr, 0, FIELD_BOOL(enabled)},
     {"method", "Method", "detection", "", "Detection algorithm.", Kind::select, 0, 0, 1, kMethods, std::size(kMethods), FIELD_INT(method)},
-    {"analysis_fps", "Analysis rate", "detection", "fps", "Frames analysed per second, at 160 x 120.", Kind::number, 1, 15, 1, nullptr, 0, FIELD_INT(analysis_fps)},
+    {"analysis_fps", "Analysis rate", "detection", "fps", "Frames analysed per second. Each is the camera image at 1/8 size, shown in the motion status.", Kind::number, 1, 15, 1, nullptr, 0, FIELD_INT(analysis_fps)},
     // Stored as min_speed: an older min_flow value (pixels per frame) is not reinterpreted.
-    {"min_speed", "Minimum speed", "detection", "px/s", "Speed at 160 x 120 that marks a cell as moving. Independent of the analysis rate.", Kind::number, 0.25, 40, 0.25, nullptr, 0, FIELD_FLOAT(min_speed)},
+    {"min_speed", "Minimum speed", "detection", "px/s", "Speed in analysis-image pixels that marks a cell as moving. Independent of the analysis rate.", Kind::number, 0.25, 40, 0.25, nullptr, 0, FIELD_FLOAT(min_speed)},
     {"min_area", "Moving area", "detection", "%", "Share of cells that must move to report motion.", Kind::number, 0.5, 100, 0.5, nullptr, 0, FIELD_FLOAT(min_area)},
-    {"cell", "Cell size", "detection", "px", "Analysis grid at 160 x 120. Smaller cells notice smaller objects.", Kind::select, 0, 0, 1, kCells, std::size(kCells), FIELD_INT(cell)},
+    {"cell", "Cell size", "detection", "px", "Analysis grid in analysis-image pixels. Smaller cells notice smaller objects.", Kind::select, 0, 0, 1, kCells, std::size(kCells), FIELD_INT(cell)},
     {"min_texture", "Minimum texture", "detection", "", "Skips flat cells where flow is unreliable. Higher values ignore more of the scene.", Kind::number, 0, 50, 0.5, nullptr, 0, FIELD_FLOAT(min_texture)},
     {"blur", "Smoothing", "detection", "px", "Blur radius before measuring flow; reduces sensor noise.", Kind::number, 0, 2, 1, nullptr, 0, FIELD_INT(blur)},
     {"trigger_seconds", "Motion duration", "detection", "s", "Motion must last this long before recording starts.", Kind::number, 0, 30, 0.5, nullptr, 0, FIELD_FLOAT(trigger_seconds)},
@@ -242,19 +242,11 @@ cJSON *save(const MotionSettings &next) {
     return describe(nullptr, true);
 }
 
-// Chooses the largest decoder downscale (0-3) that still covers 160x120.
-int choose_scale(int width, int height) {
-    for (int shift = 3; shift > 0; --shift) {
-        if ((width >> shift) >= motion::kWidth && (height >> shift) >= motion::kHeight) return shift;
-    }
-    return 0;
-}
-
 // Yield to the idle task inside long analysis, even when a high analysis rate
 // or a stream of GUI changes keeps work continuously ready.
 void cooperate() { vTaskDelay(1); }
 
-// The detector's two 160x120 luma frames and decoder state live in internal
+// The detector's two luma frames and decoder state live in internal
 // RAM (static .bss). Camera JPEGs for streaming and recording, including the
 // copy analysed here, stay in PSRAM. On the original ESP32, Wi-Fi needs the
 // rest of internal RAM, so the decoder's row sums and workspace go to PSRAM;
@@ -264,7 +256,7 @@ void cooperate() { vTaskDelay(1); }
 #else
 #define MOTION_SCRATCH
 #endif
-uint8_t flow_frames[2][motion::kPixels];
+uint8_t flow_frames[2][motion::kMaxPixels];
 MOTION_SCRATCH motion::GrayScaler scaler;
 MOTION_SCRATCH alignas(4) uint8_t decoder_workspace[3100];
 
@@ -286,16 +278,18 @@ UINT jpeg_output(JDEC *, void *bitmap, JRECT *rect) {
     return scaler.add(static_cast<const uint8_t *>(bitmap), rect->left, rect->top, right, bottom, rect->right - rect->left + 1) ? 1 : 0;
 }
 
-// Decodes a JPEG straight into a 160x120 luma frame. Reports its full size.
-bool decode_gray(const uint8_t *jpeg, size_t length, uint8_t *gray, int &width, int &height) {
+// Decodes a JPEG at 1/8 scale straight into an analysis-size luma frame.
+// Reports the JPEG's size and the analysis size.
+bool decode_gray(const uint8_t *jpeg, size_t length, uint8_t *gray, int &width, int &height, int &out_width, int &out_height) {
     static DecodeSource source;
     static JDEC decoder;  // Decoder state is hot; keep it in internal RAM, not the PSRAM stack.
     source = {jpeg, length, 0};
     if (jd_prepare(&decoder, jpeg_input, decoder_workspace, sizeof(decoder_workspace), &source) != JDR_OK) return false;
     width = decoder.width; height = decoder.height;
-    const int scale = choose_scale(width, height);
-    decoded_width = width >> scale; decoded_height = height >> scale;
-    return scaler.begin(decoded_width, decoded_height, gray) && jd_decomp(&decoder, jpeg_output, BYTE(scale)) == JDR_OK && scaler.finish();
+    decoded_width = std::max(1, width >> motion::kJpegScale); decoded_height = std::max(1, height >> motion::kJpegScale);
+    motion::analysis_size(width, height, out_width, out_height);
+    return scaler.begin(decoded_width, decoded_height, out_width, out_height, gray) &&
+           jd_decomp(&decoder, jpeg_output, BYTE(motion::kJpegScale)) == JDR_OK && scaler.finish();
 }
 
 void detect(void *) {
@@ -313,8 +307,8 @@ void detect(void *) {
         uint32_t current_generation;
         { Lock guard; s = settings; current_generation = generation; }
         const int64_t frame_time = job_time;
-        int width = 0, height = 0;
-        if (!s.enabled || !decode_gray(job, job_length, detector.frame(), width, height)) continue;
+        int width = 0, height = 0, analysis_width = 0, analysis_height = 0;
+        if (!s.enabled || !decode_gray(job, job_length, detector.frame(), width, height, analysis_width, analysis_height)) continue;
         if (current_generation != seen_generation || width != last_width || height != last_height) {
             detector.reset();
             seen_generation = current_generation; last_width = width; last_height = height;
@@ -328,7 +322,7 @@ void detect(void *) {
         motion::FlowParams params;
         params.cell = s.cell; params.min_flow = s.min_speed * interval; params.min_texture = s.min_texture;
         params.blur = s.blur; params.min_area = s.min_area;
-        if (!detector.process(params, result, cooperate)) continue;
+        if (!detector.process(analysis_width, analysis_height, params, result, cooperate)) continue;
         const int64_t now = esp_timer_get_time();
         // Brief gaps between detections still count as one continuous motion.
         const int64_t gap = std::max<int64_t>(1000000, 2500000 / s.analysis_fps);
@@ -421,6 +415,12 @@ cJSON *motion_status() {
         cJSON_AddNumberToObject(status, "area", std::round(double(area) * 10) / 10);
         cJSON_AddNumberToObject(status, "speed", std::round(double(speed) * 10) / 10);
         cJSON_AddNumberToObject(status, "fps", std::round(double(rate) * 10) / 10);
+        if (const uint32_t dimensions = frame_dimensions) {
+            int width, height;
+            motion::analysis_size(int(dimensions >> 16), int(dimensions & 0xffff), width, height);
+            cJSON_AddNumberToObject(status, "analysis_width", width);
+            cJSON_AddNumberToObject(status, "analysis_height", height);
+        }
         if (settings.enabled && settings.overlay && cols && grid.size() == size_t(cols) * rows) {
             // Row-major moving-cell bits, packed into hex nibbles, MSB first.
             std::string hex((grid.size() + 3) / 4, '0');

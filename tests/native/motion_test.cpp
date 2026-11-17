@@ -13,6 +13,9 @@
 
 using namespace motion;
 
+// Most checks run at 160x120, the largest analysis size.
+static int kWidth = 160, kHeight = 120;
+
 static float scene(float x, float y) {
     return 128 + 35 * std::sin(0.31f * x + 0.17f * y) + 30 * std::sin(0.23f * y - 0.11f * x) + 20 * std::sin(0.53f * x * 0.7f + 0.41f * y);
 }
@@ -34,13 +37,13 @@ static void cooperate() { ++cooperative_calls; }
 static FlowResult run(const std::vector<uint8_t> &a, const std::vector<uint8_t> &b, FlowParams params = {}) {
     OpticalFlow flow;
     FlowResult result;
-    flow.process(a.data(), params, result);
-    flow.process(b.data(), params, result);
+    flow.process(a.data(), kWidth, kHeight, params, result);
+    flow.process(b.data(), kWidth, kHeight, params, result);
     OpticalFlow scheduled;
     FlowResult actual;
     cooperative_calls = 0;
-    scheduled.process(a.data(), params, actual, cooperate);
-    scheduled.process(b.data(), params, actual, cooperate);
+    scheduled.process(a.data(), kWidth, kHeight, params, actual, cooperate);
+    scheduled.process(b.data(), kWidth, kHeight, params, actual, cooperate);
     assert(cooperative_calls > 0);
     assert(actual.motion == result.motion && actual.area == result.area && actual.mean_flow == result.mean_flow);
     assert(actual.moving == result.moving);
@@ -76,23 +79,25 @@ int main(int argc, char **argv) {
     // A uniform RGB image stays uniform at the analysis size.
     std::vector<uint8_t> rgb(320 * 240 * 3, 200), gray(kWidth * kHeight);
     cooperative_calls = 0;
-    rgb888_to_gray(rgb.data(), 320, 240, gray.data(), cooperate);
+    rgb888_to_gray(rgb.data(), 320, 240, gray.data(), kWidth, kHeight, cooperate);
     assert(cooperative_calls > 0);
     printf("{\"check\":\"gray\",\"value\":%d,\"last\":%d}\n", gray[0], gray.back());
-    // Decoded sizes the camera produces after JPEG downscaling, fed as MCU
-    // blocks (width x height) in decoder order, must match the reference.
-    const int sizes[][2] = {{160, 120}, {200, 150}, {320, 180}, {256, 192}, {240, 240}, {160, 160}, {96, 96}, {128, 128}, {200, 148}};
+    // Decoded images, fed as MCU blocks (width x height) in decoder order,
+    // must match the reference at each output size.
+    const int sizes[][4] = {{160, 120, 160, 120}, {200, 150, 160, 120}, {320, 180, 160, 120}, {256, 192, 160, 120},
+                            {240, 240, 160, 120}, {96, 96, 160, 120}, {200, 148, 160, 120}, {40, 30, 40, 30},
+                            {100, 75, 100, 75}, {160, 90, 160, 90}, {256, 192, 160, 120}, {50, 37, 50, 37}};
     const int mcus[][2] = {{16, 16}, {16, 8}, {8, 8}, {4, 4}, {2, 2}, {2, 1}, {1, 1}};
     int compared = 0, mismatched = 0;
     for (const auto &size : sizes) {
-        const int w = size[0], h = size[1];
-        std::vector<uint8_t> image(size_t(w) * h * 3), expected(kWidth * kHeight), actual(kWidth * kHeight, 0);
+        const int w = size[0], h = size[1], ow = size[2], oh = size[3];
+        std::vector<uint8_t> image(size_t(w) * h * 3), expected(ow * oh), actual(ow * oh, 0);
         uint32_t seed = uint32_t(w * 7919 + h);
         for (auto &value : image) { seed = seed * 1103515245u + 12345u; value = uint8_t(seed >> 16); }
-        rgb888_to_gray(image.data(), w, h, expected.data());
+        rgb888_to_gray(image.data(), w, h, expected.data(), ow, oh);
         for (const auto &mcu : mcus) {
             static GrayScaler scaler;
-            bool ok = scaler.begin(w, h, actual.data());
+            bool ok = scaler.begin(w, h, ow, oh, actual.data());
             std::vector<uint8_t> block;
             for (int top = 0; ok && top < h; top += mcu[1])
                 for (int left = 0; ok && left < w; left += mcu[0]) {
@@ -108,7 +113,26 @@ int main(int argc, char **argv) {
     }
     GrayScaler oversized;
     printf("{\"check\":\"scaler\",\"compared\":%d,\"mismatched\":%d,\"oversized\":%s}\n", compared, mismatched,
-           oversized.begin(GrayScaler::kMaxSource + 1, 240, gray.data()) ? "true" : "false");
+           oversized.begin(GrayScaler::kMaxSource + 1, 240, 160, 120, gray.data()) || oversized.begin(320, 240, 200, 150, gray.data()) ? "true" : "false");
+
+    // Analysis size for each camera resolution: 1/8, fitted to the frame buffer.
+    const int cameras[][2] = {{160, 120}, {320, 240}, {640, 480}, {800, 600}, {1280, 720}, {1280, 1024}, {1600, 1200}, {2048, 1536}};
+    printf("{\"check\":\"analysis_size\",\"sizes\":[");
+    for (size_t i = 0; i < sizeof(cameras) / sizeof(cameras[0]); ++i) {
+        int w, h;
+        analysis_size(cameras[i][0], cameras[i][1], w, h);
+        printf("%s[%d,%d,%d,%d]", i ? "," : "", cameras[i][0], cameras[i][1], w, h);
+    }
+    printf("]}\n");
+
+    // Small analysis frames (320x240 camera: 40x30) still detect a 1 px shift,
+    // and cells tile sizes that the cell side does not divide.
+    kWidth = 40; kHeight = 30;
+    report("small_shift_1px", run(frame(0, 0), frame(1, 0)));
+    report("small_still", run(frame(0, 0, 0, 2, 1), frame(0, 0, 0, 2, 2)));
+    kWidth = 50; kHeight = 37;
+    report("uneven_cells", run(frame(0, 0), frame(1, 0)));
+    kWidth = 160; kHeight = 120;
 
     if (argc > 1) {
         alignas(4) static uint8_t staging[1024];

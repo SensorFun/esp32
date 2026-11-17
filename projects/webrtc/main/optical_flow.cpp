@@ -17,36 +17,38 @@ inline int span_end(int i, int source, int output) {
 inline uint8_t luma(const uint8_t *p) { return uint8_t((77u * p[0] + 150u * p[1] + 29u * p[2]) >> 8); }
 
 // Separable box blur in place; one line of scratch per pass.
-void box_blur(uint8_t *image, int radius, Cooperate cooperate) {
+void box_blur(uint8_t *image, int width, int height, int radius, Cooperate cooperate) {
     if (radius <= 0) return;
     const int taps = 2 * radius + 1;
-    uint8_t line[kWidth > kHeight ? kWidth : kHeight];
-    for (int y = 0; y < kHeight; ++y) {
+    uint8_t line[GrayScaler::kMaxSource];
+    for (int y = 0; y < height; ++y) {
         if (cooperate && y % 16 == 0) cooperate();
-        uint8_t *row = image + y * kWidth;
-        std::memcpy(line, row, kWidth);
-        for (int x = 0; x < kWidth; ++x) {
+        uint8_t *row = image + y * width;
+        std::memcpy(line, row, width);
+        for (int x = 0; x < width; ++x) {
             int sum = 0;
-            for (int k = -radius; k <= radius; ++k) sum += line[std::clamp(x + k, 0, kWidth - 1)];
+            for (int k = -radius; k <= radius; ++k) sum += line[std::clamp(x + k, 0, width - 1)];
             row[x] = uint8_t((sum + taps / 2) / taps);
         }
     }
-    for (int x = 0; x < kWidth; ++x) {
+    for (int x = 0; x < width; ++x) {
         if (cooperate && x % 32 == 0) cooperate();
-        for (int y = 0; y < kHeight; ++y) line[y] = image[y * kWidth + x];
-        for (int y = 0; y < kHeight; ++y) {
+        for (int y = 0; y < height; ++y) line[y] = image[y * width + x];
+        for (int y = 0; y < height; ++y) {
             int sum = 0;
-            for (int k = -radius; k <= radius; ++k) sum += line[std::clamp(y + k, 0, kHeight - 1)];
-            image[y * kWidth + x] = uint8_t((sum + taps / 2) / taps);
+            for (int k = -radius; k <= radius; ++k) sum += line[std::clamp(y + k, 0, height - 1)];
+            image[y * width + x] = uint8_t((sum + taps / 2) / taps);
         }
     }
 }
 
-inline float at(const uint8_t *image, int x, int y) {
-    return image[std::clamp(y, 0, kHeight - 1) * kWidth + std::clamp(x, 0, kWidth - 1)];
+struct Image { const uint8_t *p; int w, h; };
+
+inline float at(const Image &image, int x, int y) {
+    return image.p[std::clamp(y, 0, image.h - 1) * image.w + std::clamp(x, 0, image.w - 1)];
 }
 
-float bilinear(const uint8_t *image, float x, float y) {
+float bilinear(const Image &image, float x, float y) {
     const int x0 = int(std::floor(x)), y0 = int(std::floor(y));
     const float fx = x - x0, fy = y - y0;
     const float top = at(image, x0, y0) * (1 - fx) + at(image, x0 + 1, y0) * fx;
@@ -54,10 +56,11 @@ float bilinear(const uint8_t *image, float x, float y) {
     return top * (1 - fy) + bottom * fy;
 }
 
-float mean(const uint8_t *image) {
+float mean(const Image &image) {
+    const int pixels = image.w * image.h;
     uint32_t sum = 0;
-    for (int i = 0; i < kPixels; ++i) sum += image[i];
-    return float(sum) / kPixels;
+    for (int i = 0; i < pixels; ++i) sum += image.p[i];
+    return float(sum) / pixels;
 }
 
 struct Track { float u, v; bool textured; };
@@ -65,7 +68,7 @@ struct Track { float u, v; bool textured; };
 // Symmetric Lucas-Kanade for one window: gradients average both frames, so an
 // object entering a flat background is still trackable. dmean removes global
 // brightness changes such as auto exposure steps.
-Track track(const uint8_t *prev, const uint8_t *cur, int x0, int y0, int x1, int y1,
+Track track(const Image &prev, const Image &cur, int x0, int y0, int x1, int y1,
             float u, float v, float dmean, float min_texture) {
     float gxx = 0, gxy = 0, gyy = 0;
     int n = 0;
@@ -101,31 +104,44 @@ Track track(const uint8_t *prev, const uint8_t *cur, int x0, int y0, int x1, int
 
 }  // namespace
 
-void rgb888_to_gray(const uint8_t *rgb, int width, int height, uint8_t *gray, Cooperate cooperate) {
-    for (int y = 0; y < kHeight; ++y) {
+void analysis_size(int width, int height, int &out_width, int &out_height) {
+    out_width = std::max(1, width >> kJpegScale);
+    out_height = std::max(1, height >> kJpegScale);
+    if (out_width * out_height <= kMaxPixels && out_width <= GrayScaler::kMaxSource) return;
+    // Largest width (keeping the aspect ratio) that fits the frame buffer.
+    int fitted = std::min(out_width, GrayScaler::kMaxSource);
+    while (fitted > 1 && fitted * std::max(1, fitted * out_height / out_width) > kMaxPixels) --fitted;
+    out_height = std::max(1, fitted * out_height / out_width);
+    out_width = fitted;
+}
+
+void rgb888_to_gray(const uint8_t *rgb, int width, int height, uint8_t *gray, int out_width, int out_height,
+                    Cooperate cooperate) {
+    for (int y = 0; y < out_height; ++y) {
         if (cooperate && y % 8 == 0) cooperate();
-        const int sy0 = span_first(y, height, kHeight), sy1 = span_end(y, height, kHeight);
-        for (int x = 0; x < kWidth; ++x) {
-            const int sx0 = span_first(x, width, kWidth), sx1 = span_end(x, width, kWidth);
+        const int sy0 = span_first(y, height, out_height), sy1 = span_end(y, height, out_height);
+        for (int x = 0; x < out_width; ++x) {
+            const int sx0 = span_first(x, width, out_width), sx1 = span_end(x, width, out_width);
             uint32_t sum = 0;
             for (int sy = sy0; sy < sy1; ++sy)
                 for (int sx = sx0; sx < sx1; ++sx) sum += luma(rgb + (size_t(sy) * width + sx) * 3);
-            gray[y * kWidth + x] = uint8_t(sum / uint32_t((sx1 - sx0) * (sy1 - sy0)));
+            gray[y * out_width + x] = uint8_t(sum / uint32_t((sx1 - sx0) * (sy1 - sy0)));
         }
     }
 }
 
-bool GrayScaler::begin(int width, int height, uint8_t *gray) {
-    ok_ = width > 0 && height > 0 && width <= kMaxSource && height <= kMaxSource && gray;
+bool GrayScaler::begin(int width, int height, int out_width, int out_height, uint8_t *gray) {
+    ok_ = width > 0 && height > 0 && width <= kMaxSource && height <= kMaxSource && gray &&
+          out_width > 0 && out_height > 0 && out_width <= kMaxSource && out_width * out_height <= kMaxPixels;
     if (!ok_) return false;
-    width_ = width; height_ = height; gray_ = gray; next_row_ = 0;
+    width_ = width; height_ = height; out_width_ = out_width; out_height_ = out_height; gray_ = gray; next_row_ = 0;
     std::memset(sums_, 0, sizeof(sums_));
     // Output columns that each source column contributes to (one, or two when upscaling).
-    for (int sx = 0; sx < width; ++sx) { first_x_[sx] = UINT8_MAX; last_x_[sx] = 0; }
-    for (int x = 0; x < kWidth; ++x)
-        for (int sx = span_first(x, width, kWidth); sx < span_end(x, width, kWidth); ++sx) {
-            first_x_[sx] = uint8_t(std::min<int>(first_x_[sx], x));
-            last_x_[sx] = uint8_t(std::max<int>(last_x_[sx], x));
+    for (int sx = 0; sx < width; ++sx) { first_x_[sx] = UINT16_MAX; last_x_[sx] = 0; }
+    for (int x = 0; x < out_width; ++x)
+        for (int sx = span_first(x, width, out_width); sx < span_end(x, width, out_width); ++sx) {
+            first_x_[sx] = uint16_t(std::min<int>(first_x_[sx], x));
+            last_x_[sx] = uint16_t(std::max<int>(last_x_[sx], x));
         }
     return true;
 }
@@ -136,9 +152,9 @@ bool GrayScaler::add(const uint8_t *rgb, int left, int top, int right, int botto
     if (columns < right - left + 1) return ok_ = false;
     for (int sy = top; sy <= bottom; ++sy) {
         // Output rows whose span contains source row sy.
-        int y = std::max(next_row_, span_first(sy, kHeight, height_) - 1);
-        while (y < kHeight && span_first(y, height_, kHeight) <= sy) {
-            if (sy < span_end(y, height_, kHeight)) {
+        int y = std::max(next_row_, span_first(sy, out_height_, height_) - 1);
+        while (y < out_height_ && span_first(y, height_, out_height_) <= sy) {
+            if (sy < span_end(y, height_, out_height_)) {
                 if (y >= next_row_ + kRing) return ok_ = false;
                 uint16_t *sums = sums_[y % kRing];
                 const uint8_t *p = rgb + size_t(sy - top) * columns * 3;
@@ -156,49 +172,59 @@ bool GrayScaler::add(const uint8_t *rgb, int left, int top, int right, int botto
 }
 
 void GrayScaler::close_rows(int last_source_row) {
-    while (next_row_ < kHeight && span_end(next_row_, height_, kHeight) - 1 <= last_source_row) {
+    while (next_row_ < out_height_ && span_end(next_row_, height_, out_height_) - 1 <= last_source_row) {
         const int y = next_row_;
-        const int rows = span_end(y, height_, kHeight) - span_first(y, height_, kHeight);
+        const int rows = span_end(y, height_, out_height_) - span_first(y, height_, out_height_);
         uint16_t *sums = sums_[y % kRing];
-        for (int x = 0; x < kWidth; ++x) {
-            const int count = rows * (span_end(x, width_, kWidth) - span_first(x, width_, kWidth));
-            gray_[y * kWidth + x] = uint8_t(sums[x] / count);
+        for (int x = 0; x < out_width_; ++x) {
+            const int count = rows * (span_end(x, width_, out_width_) - span_first(x, width_, out_width_));
+            gray_[y * out_width_ + x] = uint8_t(sums[x] / count);
             sums[x] = 0;
         }
         ++next_row_;
     }
 }
 
-bool valid_cell(int cell) { return cell >= 4 && kWidth % cell == 0 && kHeight % cell == 0; }
+bool valid_cell(int cell) { return cell >= 4 && cell <= 64; }
 
-OpticalFlow::OpticalFlow() : own_(size_t(kPixels) * 2), prev_(own_.data()), cur_(own_.data() + kPixels) {}
+OpticalFlow::OpticalFlow() : own_(size_t(kMaxPixels) * 2), prev_(own_.data()), cur_(own_.data() + kMaxPixels) {}
 
-bool OpticalFlow::process(const uint8_t *gray, const FlowParams &params, FlowResult &result, Cooperate cooperate) {
-    std::memcpy(cur_, gray, kPixels);
-    return process(params, result, cooperate);
+bool OpticalFlow::process(const uint8_t *gray, int width, int height, const FlowParams &params, FlowResult &result,
+                          Cooperate cooperate) {
+    if (width > 0 && height > 0 && width * height <= kMaxPixels) std::memcpy(cur_, gray, size_t(width) * height);
+    return process(width, height, params, result, cooperate);
 }
 
-bool OpticalFlow::process(const FlowParams &params, FlowResult &result, Cooperate cooperate) {
-    const int cell = valid_cell(params.cell) ? params.cell : 8;
-    box_blur(cur_, std::clamp(params.blur, 0, 2), cooperate);
-    result.cols = kWidth / cell; result.rows = kHeight / cell;
-    result.moving.assign(size_t(result.cols) * result.rows, 0);
+bool OpticalFlow::process(int width, int height, const FlowParams &params, FlowResult &result, Cooperate cooperate) {
     result.motion = false; result.area = 0; result.mean_flow = 0;
-    if (!primed_) {
+    if (width <= 0 || height <= 0 || width > GrayScaler::kMaxSource || height > GrayScaler::kMaxSource ||
+        width * height > kMaxPixels) {
+        result.cols = result.rows = 0; result.moving.clear(); primed_ = false;
+        return false;
+    }
+    const int cell = valid_cell(params.cell) ? params.cell : 8;
+    box_blur(cur_, width, height, std::clamp(params.blur, 0, 2), cooperate);
+    // Cells of about `cell` pixels tile the whole frame, whatever its size.
+    result.cols = std::max(1, width / cell); result.rows = std::max(1, height / cell);
+    result.moving.assign(size_t(result.cols) * result.rows, 0);
+    if (!primed_ || width != width_ || height != height_) {
+        width_ = width; height_ = height;
         std::swap(prev_, cur_);
         primed_ = true;
         return false;
     }
-    const float dmean = mean(cur_) - mean(prev_);
+    const Image prev{prev_, width, height}, cur{cur_, width, height};
+    const float dmean = mean(cur) - mean(prev);
     int moving = 0;
     float flow_sum = 0;
     for (int row = 0; row < result.rows; ++row) {
         if (cooperate) cooperate();
+        const int y0 = row * height / result.rows, y1 = (row + 1) * height / result.rows;
         for (int col = 0; col < result.cols; ++col) {
-            const int x0 = col * cell, y0 = row * cell;
-            // One level is enough at 160x120: detection only needs flow above
-            // min_flow, and large motions still exceed it when underestimated.
-            Track fine = track(prev_, cur_, x0, y0, x0 + cell, y0 + cell, 0, 0, dmean, params.min_texture);
+            const int x0 = col * width / result.cols, x1 = (col + 1) * width / result.cols;
+            // One level is enough: detection only needs flow above min_flow,
+            // and large motions still exceed it when underestimated.
+            Track fine = track(prev, cur, x0, y0, x1, y1, 0, 0, dmean, params.min_texture);
             if (!fine.textured) continue;
             const float magnitude = std::sqrt(fine.u * fine.u + fine.v * fine.v);
             if (magnitude >= params.min_flow) {

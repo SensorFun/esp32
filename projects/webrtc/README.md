@@ -139,9 +139,9 @@ stream and filling its TX queue. Video admission pauses below 12 KiB of free int
 The PSRAM allocation threshold is 512 bytes to keep packet payloads out of scarce
 internal RAM. Wi-Fi and lwIP buffers stay in internal RAM: copying them from
 PSRAM slowed the ESP32's transmit queue enough to drop viewers. Camera JPEGs for streaming and recording stay in PSRAM. Motion
-analysis keeps its two 8-bit 160x120 frames in internal RAM; the ROM JPEG decoder
-feeds blocks straight into the 160x120 average, so no full decoded image is held.
-On the ESP32 the decoder's 11 KiB of row sums and workspace go to PSRAM, and the
+analysis keeps its two 8-bit frames (at most 160x120 each) in internal RAM; the ROM JPEG
+decoder feeds blocks straight into the average, so no full decoded image is held.
+On the ESP32 the decoder's 19 KiB of row sums and workspace go to PSRAM, and the
 motion and recorder task stacks are in PSRAM (neither task writes flash). The peer
 worker runs in the main task, sharing one stack. The worker, the camera task and
 the camera interrupt run on CPU1, leaving CPU0 to Wi-Fi. Motion analysis may run
@@ -187,10 +187,16 @@ driven by the same data-channel commands. The firmware describes every setting
 Settings are saved in NVS when you select Save.
 
 - **Detection** runs on the board even with no viewer connected, and while Wi-Fi
-  is down. Frames are decoded at 1/2, 1/4, or 1/8 scale and averaged to 160 x 120
-  grayscale. Then a single-level Lucas-Kanade optical flow runs over a
-  grid of cells (`main/optical_flow.cpp`), with global brightness changes removed.
-  A cell moves when its speed reaches **Minimum speed** (pixels per second at 160 x 120;
+  is down. Every analysed frame is decoded at 1/8 scale, the decoder's fastest mode:
+  it keeps only each 8x8 block's average and skips the inverse transform. The grayscale
+  analysis image is therefore 1/8 of the camera resolution (40 x 30 at 320 x 240,
+  80 x 60 at 640 x 480, 160 x 90 at 1280 x 720); larger results are averaged to fit
+  160 x 120 (1600 x 1200 gives 160 x 120). The motion status shows the current size.
+  A single-level Lucas-Kanade optical flow then runs over a grid of cells of about
+  **Cell size** pixels that tiles the whole image (`main/optical_flow.cpp`), with global
+  brightness changes removed. Speeds, cell size and smoothing are in analysis-image
+  pixels, so a resolution change also changes how much of the scene they cover.
+  A cell moves when its speed reaches **Minimum speed** (analysis pixels per second;
   the detector converts it using the measured time between analysed frames, so
   changing **Analysis rate** does not change sensitivity). Motion is reported when
   **Moving area** percent of cells move. Flat cells below **Minimum texture** are
