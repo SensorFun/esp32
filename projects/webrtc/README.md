@@ -67,8 +67,10 @@ stale room slot after reprovisioning.
 OV devices use `config/frame_grabber/ov.yaml`; the S3-WROOM device uses
 `config/frame_grabber/gc.yaml` for GC0308. Each device selects
 `config/lens/general.yaml` (currently without overrides). Sensor PID detection
-selects the defaults and capture path at runtime. GC0308 captures RGB565 and
-encodes JPEG in software, with a maximum resolution of VGA. Unsupported sensor
+selects the defaults and capture path at runtime. GC0308 captures YUV422 and
+encodes JPEG in software (esp_new_jpeg, quality 60, with frame2jpg as fallback), with a
+maximum resolution of VGA. An encoder task on CPU0 keeps one JPEG ready while the worker
+sends the previous one, and two raw buffers let the sensor capture meanwhile. Unsupported sensor
 controls are disabled, and OV light timing is omitted from its settings panel.
 CMake generates initial values from both YAML files and rejects unknown controls
 and invalid ranges. `gc.yaml` rejects controls absent from the GC0308 driver.

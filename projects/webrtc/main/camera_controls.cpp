@@ -1,4 +1,5 @@
 #include "camera_controls.h"
+#include "camera_frames.h"
 #include "camera_timing.h"
 #include "esp_camera.h"
 #include "esp_log.h"
@@ -71,10 +72,13 @@ esp_err_t camera_start(bool restore_saved) {
     if (err == ESP_ERR_NOT_SUPPORTED) {
         // esp_camera_init cleans up a failed JPEG probe. Detect non-JPEG
         // sensors again with raw capture; use raw capture dimensions for the DMA buffer.
-        cfg.pixel_format = PIXFORMAT_RGB565;
+        // YUV422 goes to the JPEG encoder without colour conversion.
+        cfg.pixel_format = PIXFORMAT_YUV422;
         cfg.frame_size = FRAMESIZE_QVGA;
-        cfg.fb_count = 1;
-        cfg.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
+        // Two buffers: the sensor captures the next frame while the encoder
+        // task compresses the latest one.
+        cfg.fb_count = 2;
+        cfg.grab_mode = CAMERA_GRAB_LATEST;
         err = esp_camera_init(&cfg);
     }
     if (err != ESP_OK) return err;
@@ -107,7 +111,7 @@ esp_err_t camera_start(bool restore_saved) {
             }
         }
     }
-    ESP_LOGI("camera", "Detected %s; YAML defaults applied; %s 320x240", sensor_name, is_gc() ? "RGB565 + software JPEG" : "JPEG");
+    ESP_LOGI("camera", "Detected %s; YAML defaults applied; %s 320x240", sensor_name, is_gc() ? "YUV422 + software JPEG" : "JPEG");
     cJSON *defaults_json = settings_values();
     char *defaults_text = cJSON_PrintUnformatted(defaults_json);
     if (!defaults_text) { cJSON_Delete(defaults_json); return ESP_ERR_NO_MEM; }
@@ -133,7 +137,10 @@ static bool set_resolution(framesize_t size) {
             // Reconfigure the capture engine with the new raw dimensions.
             camera_config_t next = active_config;
             next.frame_size = requested;
-            if (esp_camera_reconfigure(&next) != ESP_OK) return false;
+            camera_frames_pause();
+            const esp_err_t reconfigured = esp_camera_reconfigure(&next);
+            camera_frames_resume();
+            if (reconfigured != ESP_OK) return false;
             active_config = next;
             sensor = esp_camera_sensor_get();
         } else if (sensor->id.PID == OV2640_PID && requested == FRAMESIZE_320X320) {
@@ -301,9 +308,10 @@ esp_err_t camera_recover() {
         enabled[i] = supported(controls[i]);
         if (enabled[i]) values[i] = controls[i].get(sensor);
     }
+    camera_frames_pause();
     esp_err_t err = esp_camera_deinit();
-    if (err != ESP_OK) return err;
-    err = camera_start(false);
+    if (err == ESP_OK) err = camera_start(false);
+    camera_frames_resume();
     if (err != ESP_OK) return err;
     if (sensor->id.PID != expected_sensor) return ESP_ERR_INVALID_STATE;
     if (!set_resolution(size)) return ESP_FAIL;

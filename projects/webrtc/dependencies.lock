@@ -50,6 +50,25 @@ dependencies:
       registry_url: https://components.espressif.com/
       type: service
     version: 1.0.0
+  espressif/esp_new_jpeg:
+    component_hash: e1e7e6991193c41ed6c9fc386702aa7821433319e7aa9c3147cd3236310cd69c
+    dependencies: []
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    targets:
+    - esp32
+    - esp32s2
+    - esp32s3
+    - esp32s31
+    - esp32p4
+    - esp32c2
+    - esp32c3
+    - esp32c5
+    - esp32c6
+    - esp32c61
+    - esp32h4
+    version: 1.0.2
   espressif/esp_websocket_client:
     component_hash: dc00233af846f3a744ada283a300e0d586040aadc3ee67361645ecdce4523672
     dependencies:
@@ -78,9 +97,10 @@ direct_dependencies:
 - esp_peer
 - espressif/cjson
 - espressif/esp32-camera
+- espressif/esp_new_jpeg
 - espressif/esp_websocket_client
 - espressif/media_lib_sal
 - idf
-manifest_hash: b51f933367144023aa02244d2799df2dd7ba769ed305dcaf5fd54a524bb6a0ed
+manifest_hash: 089fa1ba3bb2090533cd7e2894fddf239ff411e1bac9543ffad192b0cddeb1de
 target: esp32
 version: 3.0.0

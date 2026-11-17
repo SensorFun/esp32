@@ -7,3 +7,4 @@ dependencies:
     version: dc3ab928137916d7b214a9a8ffe52e0e81794471
   espressif/media_lib_sal: "~0.9"
   espressif/cjson: "^1.7.19"
+  espressif/esp_new_jpeg: "1.0.2"

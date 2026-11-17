@@ -179,14 +179,17 @@ with console, sync_playwright() as p:
         wait_js(page, 'e2e.messages.settings && e2e.messages.motion', timeout=15000)
         metadata = page.evaluate('e2e.messages.settings')
         original_motion = page.evaluate('e2e.messages.motion.values')
-        original_camera = dict(resolution=metadata['resolution'], timing_profile=metadata['timing_profile'],
+        # GC0308 has no light timing; restore only what the sensor offers.
+        original_camera = dict(resolution=metadata['resolution'],
                                **{c['name']: c['value'] for c in metadata['controls'] if c['supported']})
+        if 'timing_profile' in metadata:
+            original_camera['timing_profile'] = metadata['timing_profile']
         step_name[0] = 'streaming after connect'
         stream_check(page)
 
         page.get_by_role('tab', name='Camera settings', exact=True).click()
         sizes = {(s['width'], s['height']): s['value'] for s in metadata['resolutions']}
-        for width, height in [(320, 240), (640, 480), (800, 600), (1280, 720), (1600, 1200), (320, 240)]:
+        for width, height in [(320, 240), (640, 480), (800, 600), (1280, 720), (1600, 1200), (2048, 1536), (320, 240)]:
             if (width, height) not in sizes:
                 continue
             step_name[0] = f'resolution {width}x{height}'
@@ -199,14 +202,17 @@ with console, sync_playwright() as p:
                     fail(f'no {width}x{height} frame within 15 s')
             stream_check(page)
 
-        for profile in metadata['timing_profiles']:
+        for profile in metadata.get('timing_profiles', []):
             step_name[0] = f'light timing {profile}'
             page.evaluate('e2e.messages.settings=null')
             page.get_by_role('combobox', name='Light timing', exact=True).select_option(profile)
             wait_reply(page, 'settings', f"e2e.messages.settings?.timing_profile==='{profile}'")
             stream_check(page, seconds=6)
 
+        supported = {c['name'] for c in metadata['controls'] if c['supported']}
         for name, value in (('brightness', 1), ('contrast', -1), ('jpeg quality', 14)):
+            if name.replace(' ', '_') not in supported:
+                continue
             step_name[0] = f'{name} {value}'
             page.evaluate('e2e.messages.settings=null')
             box = page.get_by_role('spinbutton', name=name, exact=True)
