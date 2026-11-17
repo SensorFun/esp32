@@ -1,1 +1,3 @@
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+# Release build: optimize for performance (-O2). CI refuses anything else.
+CONFIG_COMPILER_OPTIMIZATION_PERF=y

@@ -65,6 +65,21 @@ class FirmwareArtifactTests(unittest.TestCase):
         self.assertTrue(json.loads((out / 'build.json').read_text())['private'])
         self.assertFalse((out / 'sdkconfig').exists())
 
+    def test_release_packaging_refuses_debug_builds(self):
+        (self.build / 'sdkconfig').write_text('CONFIG_COMPILER_OPTIMIZATION_DEBUG=y\n')
+        artifacts.package(self.root, 'webrtc', 'test_board', 'abc')  # Local packaging allows it.
+        with self.assertRaisesRegex(ValueError, 'not a release build'):
+            artifacts.package(self.root, 'webrtc', 'test_board', 'abc', release=True)
+        (self.build / 'sdkconfig').write_text('CONFIG_COMPILER_OPTIMIZATION_PERF=y\n')
+        artifacts.package(self.root, 'webrtc', 'test_board', 'abc', release=True)
+
+    def test_every_project_and_ci_build_in_release_mode(self):
+        for defaults in sorted((ROOT / 'projects').glob('*/sdkconfig.defaults')):
+            with self.subTest(project=defaults.parent.name):
+                self.assertIn(artifacts.RELEASE_SETTING, defaults.read_text().splitlines())
+        workflow = (ROOT / '.github/workflows/site-pages.yml').read_text()
+        self.assertRegex(workflow, r'tools/firmware_artifacts\.py [^\n]*--release')
+
     def test_invalid_builds_are_rejected(self):
         cases = {
             'chip': lambda: (self.build / 'flasher_args.json').write_text(json.dumps({**self.args, 'extra_esptool_args': {**self.args['extra_esptool_args'], 'chip': 'esp32'}})),
@@ -114,8 +129,9 @@ class FirmwareArtifactTests(unittest.TestCase):
             package.mkdir(parents=True)
             (package / 'build.json').write_text('{"private": false}')
             return 0
-        with patch.object(artifacts.subprocess, 'call', side_effect=container):
+        with patch.object(artifacts.subprocess, 'call', side_effect=container) as call:
             artifacts.build_in_docker(root, 'webrtc', 'test_board', 'abc', ci=True)
+        self.assertTrue(any(arg.endswith(' --release') for arg in call.call_args.args[0]))
         self.assertEqual((root / 'build/firmware/webrtc/test_board/build.json').read_text(), '{"private": false}')
 
 

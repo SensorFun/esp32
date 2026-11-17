@@ -45,8 +45,14 @@ def commit_id(root: Path) -> str:
     return head + ('-dirty' if dirty else '')
 
 
-def package(root: Path, project: str, board: str, commit: str) -> Path:
-    """Copy one ESP-IDF build's flashable files into build/firmware."""
+RELEASE_SETTING = 'CONFIG_COMPILER_OPTIMIZATION_PERF=y'
+
+
+def package(root: Path, project: str, board: str, commit: str, release: bool = False) -> Path:
+    """Copy one ESP-IDF build's flashable files into build/firmware.
+
+    With release=True (CI), a build not compiled for performance is refused.
+    """
     from esp32_workspace.boards import load_board
 
     metadata = load_board(root, board)
@@ -67,6 +73,8 @@ def package(root: Path, project: str, board: str, commit: str) -> Path:
     # the dev server only; the site build never publishes it.
     sdkconfig = build / 'sdkconfig'
     private = sdkconfig.is_file() and is_private(sdkconfig.read_text(), firmware['private_settings'])
+    if release and (not sdkconfig.is_file() or RELEASE_SETTING not in sdkconfig.read_text().splitlines()):
+        raise ValueError(f'{project} for {board} is not a release build ({RELEASE_SETTING} is not set)')
 
     out = root / 'build' / 'firmware' / project / board
     if out.exists():
@@ -147,7 +155,8 @@ def build_in_docker(root: Path, project: str, board: str, commit: str, ci: bool 
     for source, target in writable:
         command += ['--mount', f'type=bind,source={source},target=/workspace/{target}']
     command += ['-e', 'ESP32_IN_DOCKER=1', '-w', '/workspace', IDF_IMAGE, 'bash', '-c',
-                f'python -m pip install --quiet {HYDRA} && exec python tools/firmware_artifacts.py --project "$1" --board "$2" --commit "$3"',
+                f'python -m pip install --quiet {HYDRA} && exec python tools/firmware_artifacts.py --project "$1" --board "$2" --commit "$3"'
+                + (' --release' if ci else ''),
                 'bash', project, board, commit]
     print(f'Building {project} for {board} in {IDF_IMAGE}…', flush=True)
     result = subprocess.call(command, cwd=root)
@@ -166,6 +175,7 @@ def main() -> int:
     parser.add_argument('--board', action='append', help='Board ID from config/boards; repeat for several (default: all)')
     parser.add_argument('--package-only', action='store_true', help='Package existing build/<project>/<board> folders without building')
     parser.add_argument('--ci', action='store_true', help='Build each board fresh with default settings, exactly as CI does')
+    parser.add_argument('--release', action='store_true', help='Refuse to package builds not compiled for performance (CI)')
     parser.add_argument('--list', action='store_true', help='Print project/board pairs as JSON (CI matrix)')
     parser.add_argument('--commit', help=argparse.SUPPRESS)
     args = parser.parse_args()
@@ -182,10 +192,10 @@ def main() -> int:
     for pair in pairs:
         project, board = pair['project'], pair['board']
         if args.package_only:
-            package(ROOT, project, board, commit)
+            package(ROOT, project, board, commit, args.release)
         elif in_container:
             build_here(ROOT, project, board)
-            package(ROOT, project, board, commit)
+            package(ROOT, project, board, commit, args.release)
         else:
             build_in_docker(ROOT, project, board, commit, ci=args.ci)
     if not in_container:
