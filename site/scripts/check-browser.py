@@ -270,6 +270,10 @@ with sync_playwright() as p:
         for button in panel.get_by_role('button').all():
             assert button.bounding_box()['height'] >= 44
         flow.fill('3.75')
+        # Changes apply live, like camera settings; Save also keeps them.
+        expect(panel.get_by_text('Live changes. Select Save to keep them after reboot.', exact=True)).to_be_visible()
+        live = page.evaluate("motionHarness.state.commands.filter(c=>c.op==='motion_set').at(-1).settings")
+        assert live['min_speed'] == 3.75 and live['enabled'] is True, live
         panel.get_by_label('Cell size', exact=True).select_option(label='10 px')
         panel.get_by_role('button', name='Save', exact=True).click()
         expect(panel.get_by_text('Motion settings saved on camera.', exact=True)).to_be_visible()

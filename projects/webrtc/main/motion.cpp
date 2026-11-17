@@ -230,14 +230,16 @@ cJSON *describe(const char *error = nullptr, bool saved = false) {
     return reply;
 }
 
+void use(const MotionSettings &next) {
+    Lock guard;
+    settings = next;
+    ++generation;
+    if (!next.enabled) { moving = false; area = speed = rate = 0; grid.clear(); }
+}
+
 cJSON *save(const MotionSettings &next) {
     if (store(next) != ESP_OK) return describe("Could not save motion settings");
-    {
-        Lock guard;
-        settings = next;
-        ++generation;
-        if (!next.enabled) { moving = false; area = speed = rate = 0; grid.clear(); }
-    }
+    use(next);
     ESP_LOGI(TAG, "Settings saved: detection %s, recording %s", next.enabled ? "on" : "off", next.record ? "on" : "off");
     return describe(nullptr, true);
 }
@@ -447,22 +449,28 @@ cJSON *motion_command(const cJSON *request) {
         defaults.pre_seconds = std::min(defaults.pre_seconds, motion_pre_seconds_limit(defaults));
         return save(defaults);
     }
-    if (!strcmp(op->valuestring, "motion_apply")) {
+    // motion_set applies live until reboot, like camera "set"; motion_apply also saves.
+    const bool live = !strcmp(op->valuestring, "motion_set");
+    if (live || !strcmp(op->valuestring, "motion_apply")) {
         MotionSettings next = motion_settings();
         const char *error = nullptr;
+        cJSON *reply = nullptr;
         if (!parse(cJSON_GetObjectItemCaseSensitive(request, "settings"), next, error)) {
             std::string message = std::string("Invalid value: ") + error;
-            return describe(message.c_str());
+            reply = describe(message.c_str());
         }
         int width, height;
-        const int limit = pre_seconds_limit(next, width, height);
-        if (next.pre_seconds > limit) {
+        const int limit = reply ? 0 : pre_seconds_limit(next, width, height);
+        if (!reply && next.pre_seconds > limit) {
             char message[160];
             snprintf(message, sizeof(message), "Pre-record can be at most %d s at %d x %d and %d fps; free PSRAM limits the buffer. Lower the recording rate or resolution for more.",
                      limit, width, height, next.record_fps);
-            return describe(message);
+            reply = describe(message);
         }
-        return save(next);
+        if (!reply && live) { use(next); reply = describe(); }
+        if (!reply) return save(next);
+        if (live) cJSON_AddBoolToObject(reply, "live", true);
+        return reply;
     }
     if (!strcmp(op->valuestring, "recordings")) {
         const cJSON *offset = cJSON_GetObjectItemCaseSensitive(request, "offset");

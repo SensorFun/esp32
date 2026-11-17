@@ -222,6 +222,19 @@ with console, sync_playwright() as p:
 
         page.get_by_role('tab', name='Motion detection', exact=True).click()
         panel = page.locator('sensorfan-motion-settings')
+        # Motion changes take effect before Save, like camera settings.
+        box = panel.get_by_label('Detect motion', exact=True)
+        box.wait_for(state='visible', timeout=10000)
+        initially = box.is_checked()
+        for enabled in (not initially, initially):
+            step_name[0] = f'motion detection live {"on" if enabled else "off"} (not saved)'
+            page.evaluate('e2e.messages.motion=null;e2e.messages.motion_status=null')
+            box.check() if enabled else box.uncheck()
+            wait_reply(page, 'live motion change', 'e2e.messages.motion?.live===true')
+            wait_reply(page, 'motion status', f"e2e.messages.motion_status?.enabled==={'true' if enabled else 'false'}")
+            if enabled and not page.evaluate('e2e.messages.motion_status.analysis_width > 0'):
+                fail('motion status does not report the analysis image size')
+            stream_check(page, seconds=6)
         for enabled in (False, True):
             step_name[0] = f'motion detection {"on" if enabled else "off"}'
             box = panel.get_by_label('Detect motion', exact=True)

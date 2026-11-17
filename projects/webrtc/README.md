@@ -184,7 +184,8 @@ Both the board's local page and the website's remote WebRTC page show the same
 **Motion detection** and **Recordings** panels (`projects/common/camera_ui/motion.js`),
 driven by the same data-channel commands. The firmware describes every setting
 (range, unit, group, help) in its `motion` reply, so both pages render the same form.
-Settings are saved in NVS when you select Save.
+Changes apply on the camera right away, like camera settings; select Save to store
+them in NVS so they survive a reboot.
 
 - **Detection** runs on the board even with no viewer connected, and while Wi-Fi
   is down. Every analysed frame is decoded at 1/8 scale, the decoder's fastest mode:

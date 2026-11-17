@@ -46,6 +46,7 @@
   function answer(detail) {
     state.commands.push(detail);
     if (detail.op === 'motion_get') deliver({ type: 'motion', fields, values: state.values, defaults });
+    else if (detail.op === 'motion_set') { state.values = { ...state.values, ...detail.settings }; deliver({ type: 'motion', fields, values: state.values, defaults, live: true }); }
     else if (detail.op === 'motion_apply') { state.values = { ...state.values, ...detail.settings }; deliver({ type: 'motion', fields, values: state.values, defaults, saved: true }); }
     else if (detail.op === 'motion_reset') { state.values = { ...defaults }; deliver({ type: 'motion', fields, values: state.values, defaults, saved: true }); }
     else if (detail.op === 'recordings') deliver(list());

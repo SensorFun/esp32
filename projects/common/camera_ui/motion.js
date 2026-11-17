@@ -120,15 +120,26 @@ function command(element, detail) {
 function defineElements() {
   class MotionSettings extends HTMLElement {
     constructor() { super(); this.attachShadow({ mode: 'open' }); this.dirty = false; this.pending = false; }
+    // Every valid field's current value; invalid ones keep the camera's value.
+    collect() {
+      const form = this.shadowRoot.querySelector('form'), settings = {};
+      for (const field of this.description.fields) {
+        const control = form.elements[field.name];
+        if (!control || (field.type === 'number' && (!control.checkValidity() || control.value === ''))) continue;
+        settings[field.name] = field.type === 'boolean' ? control.checked : field.type === 'select' ? field.options[Number(control.value)].value : Number(control.value);
+      }
+      return settings;
+    }
     reset() { this.description = null; this.status = null; this.dirty = false; this.pending = false; this.hidden = true; this.shadowRoot.innerHTML = ''; }
     handle(message) {
       if (message.type === 'motion') {
         this.description = message;
         this.hidden = false;
+        if (message.live) { if (message.error) this.say(message.error); else if (this.dirty) this.say('Live changes. Select Save to keep them after reboot.'); return; }
         if (this.dirty && !message.saved && !message.error) return;
         if (message.error && this.pending) { this.pending = false; this.setBusy(false); this.say(message.error); return; }
         this.dirty = false; this.pending = false;
-        this.render(message.error || (message.saved ? 'Motion settings saved on camera.' : 'Changes apply when you select Save.'));
+        this.render(message.error || (message.saved ? 'Motion settings saved on camera.' : 'Changes apply right away. Select Save to keep them after reboot.'));
       } else if (message.type === 'motion_status') {
         this.status = message;
         this.renderStatus();
@@ -223,7 +234,12 @@ function defineElements() {
           label.append(limit);
           this.showLimit(control, field.max);
         }
-        control.addEventListener('input', () => { this.dirty = true; this.say('Unsaved changes. Select Save to apply them on the camera.'); });
+        control.addEventListener('input', () => {
+          this.dirty = true;
+          // Apply live, as camera settings do; Save also stores them.
+          if (this.pending || !control.checkValidity() || control.value === '') return;
+          command(this, { op: 'motion_set', settings: this.collect() });
+        });
         sets[field.group].append(label);
       }
       this.say(message);
@@ -237,12 +253,7 @@ function defineElements() {
       form.onsubmit = event => {
         event.preventDefault();
         if (!form.reportValidity()) return;
-        const settings = {};
-        for (const field of description.fields) {
-          const control = form.elements[field.name];
-          settings[field.name] = field.type === 'boolean' ? control.checked : field.type === 'select' ? field.options[Number(control.value)].value : Number(control.value);
-        }
-        send({ op: 'motion_apply', settings });
+        send({ op: 'motion_apply', settings: this.collect() });
       };
       form.querySelector('button[type=button]').onclick = () => send({ op: 'motion_reset' });
     }
