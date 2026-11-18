@@ -83,6 +83,43 @@ stay awake and connected to the Internet. With the same environment set:
 ./tools/signal_server/run.sh down
 ```
 
+## Activity log
+
+The signaling server writes one line per event to stdout, so Docker keeps it:
+
+```sh
+./tools/signal_server/run.sh logs                      # follow both services
+docker compose -f tools/signal_server/compose.yaml logs -f signaling
+docker compose -f tools/signal_server/compose.yaml logs signaling | grep summary
+```
+
+```text
+2026-11-17T06:37:54Z camera_connected room=6b7883d8 cameras_online=1 viewers_online=0
+2026-11-17T06:37:54Z viewer_connected room=6b7883d8 cameras_online=1 viewers_online=1
+2026-11-17T06:37:54Z viewer_rejected reason=camera_not_found cameras_online=1 viewers_online=1
+2026-11-17T06:37:54Z viewer_disconnected room=6b7883d8 reason=closed duration=4m12s cameras_online=1 viewers_online=0
+2026-11-17T06:47:53Z summary uptime=10m00s cameras_online=1 viewers_online=0 rooms=1 camera_attempts=1 camera_joined=1 viewer_attempts=3 viewer_joined=2 viewer_rejected=1 viewer_rejected:camera_not_found=1
+```
+
+| Event | Meaning |
+|---|---|
+| `camera_connected` / `camera_disconnected` | A camera came online or left (with `reason` and `duration`). |
+| `viewer_connected` / `viewer_disconnected` | A viewer reached a camera's room, or left it. |
+| `viewer_rejected` / `camera_rejected` | An attempt that did not join, with `reason`: `camera_not_found` (wrong MAC/password or camera offline), `already_connected` (room busy), `bad_secret` (camera API secret), `invalid_room`, `bad_join`, `join_timeout`, `left_before_join`, `server_full`, `overloaded`. |
+| `summary` | Every 10 minutes: who is online and counts since start, including `*_attempts` (every approach) and `*_rejected:<reason>`. Plain HTTP requests (scanners, link previews) appear only here, as `not_websocket`. |
+| `started` / `stopping` | Server start, and a final summary at shutdown. |
+
+Disconnect reasons are `closed` (normal close or the other peer's `bye`),
+`connection_lost`, `protocol_violation`, `peer_gone`, `binary_message` and
+`connection_error`. Every line ends with the current `cameras_online` and
+`viewers_online`.
+
+Room IDs are join capabilities derived from a camera's MAC and password, so
+the log shows only an 8-character `room` tag, salted afresh at each server
+start: it links one room's events within a run but cannot be used to join, and
+changes after a restart. The log never contains the API secret, room IDs or
+client addresses. Docker keeps up to five rotated 10 MB files.
+
 ## 3. Configure and flash the camera
 
 The camera firmware needs the new `camera_signaling.cpp` JSON WebSocket client;

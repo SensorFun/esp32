@@ -14,6 +14,10 @@ services:
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     restart: unless-stopped
+    # Activity log (docker logs); rotated so it cannot fill the disk.
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: "5"}
   cloudflared:
     image: cloudflare/cloudflared:2026.11.0
     networks: [signaling]

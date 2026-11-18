@@ -21,7 +21,7 @@ const secretsFolder = mkdtempSync(path.join(tmpdir(), 'signaling-test-'));
 const secretFile = path.join(secretsFolder, 'signaling_api_secret');
 writeFileSync(secretFile, environment.SIGNALING_API_SECRET, { mode: 0o600 });
 try {
-  server = docker(['run', '--rm', '-d', '--user', `${process.getuid()}:${process.getgid()}`, '--read-only', '--cap-drop=ALL',
+  server = docker(['run', '-d', '--user', `${process.getuid()}:${process.getgid()}`, '--read-only', '--cap-drop=ALL',
     ...mount(secretFile, '/run/secrets/signaling_api_secret'),
     ...mount(`${folder}/server.py`, '/opt/signaling/server.py'), 'esp32-signaling:local']);
   for (let attempt = 0; attempt < 50; attempt++) {
@@ -37,8 +37,23 @@ try {
     ...mount(`${root}/site/node_modules/ws`, '/workspace/site/node_modules/ws'),
     'node:22-bookworm-slim', 'node', '--test', '/workspace/tools/signal_server/client-test.mjs'], { env: environment, stdio: 'inherit' });
   process.exitCode = result.status ?? 1;
+  // The activity log records connections, rejections and a final summary,
+  // but never the secret or a full room ID (rooms are join capabilities).
+  docker(['stop', server]);
+  const logs = spawnSync('docker', ['logs', server], { encoding: 'utf8' });
+  const text = logs.stdout + logs.stderr;
+  const problems = [];
+  for (const expected of [/ started /, /camera_rejected reason=bad_secret/, /camera_connected room=[0-9a-f]{8} cameras_online=\d+/,
+    /viewer_connected room=[0-9a-f]{8}/, /viewer_rejected reason=camera_not_found/, /viewer_disconnected room=[0-9a-f]{8} reason=\w+/,
+    / stopping uptime=\S+ cameras_online=0 viewers_online=0 rooms=0 .*viewer_attempts=\d+/]) {
+    if (!expected.test(text)) problems.push(`log lacks ${expected}`);
+  }
+  if (text.includes(environment.SIGNALING_API_SECRET)) problems.push('log contains the API secret');
+  if (/[0-9A-F]{32}/.test(text)) problems.push('log contains a room ID');
+  if (problems.length) { console.error(problems.join('\n') + '\n--- log ---\n' + text); process.exitCode = 1; }
+  else console.log(`activity log ok (${text.trim().split('\n').length} lines)`);
 } finally {
-  if (server) docker(['stop', server]);
+  if (server) spawnSync('docker', ['rm', '-f', server]);
   rmSync(secretFile);
   rmdirSync(secretsFolder);
 }
