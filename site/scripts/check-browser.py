@@ -259,7 +259,7 @@ with sync_playwright() as p:
         page.evaluate('motionHarness.install()')
         page.get_by_role('tab', name='Motion detection', exact=True).click()
         expect(page.get_by_role('tab', name='Motion detection', exact=True)).to_have_attribute('aria-selected', 'true')
-        panel = page.locator('sensorfan-motion-settings')
+        panel = page.locator('sensorfan-motion-settings[group=detection]')
         expect(panel.get_by_role('heading', name='Motion detection', exact=True)).to_be_visible()
         flow = panel.get_by_label('Minimum speed', exact=True)
         expect(flow).to_have_value('2.5')
@@ -279,22 +279,43 @@ with sync_playwright() as p:
         expect(panel.get_by_text('Motion settings saved on camera.', exact=True)).to_be_visible()
         applied = page.evaluate("motionHarness.state.commands.filter(c=>c.op==='motion_apply').at(-1).settings")
         assert applied['min_speed'] == 3.75 and applied['cell'] == 10 and applied['method'] == 'optical_flow' and applied['enabled'] is True, applied
+        # Recording settings live in the SD card tab, not with detection.
+        expect(panel.get_by_label('Pre-record', exact=True)).to_have_count(0)
+        expect(panel.get_by_label('Record to SD card', exact=True)).to_have_count(0)
         page.evaluate('motionHarness.status()')
         expect(panel.get_by_text('Motion detected', exact=True)).to_be_visible()
-        expect(panel.get_by_text('Recording 0:12', exact=True)).to_be_visible()
-        pre = panel.get_by_label('Pre-record', exact=True)
+        expect(panel.get_by_text('Recording 0:12', exact=True)).to_have_count(0)
+        page.get_by_role('tab', name='SD card recording', exact=True).click()
+        recording = page.locator('sensorfan-motion-settings[group=recording]')
+        expect(recording.get_by_role('heading', name='Recording settings', exact=True)).to_be_visible()
+        expect(recording.get_by_label('Minimum speed', exact=True)).to_have_count(0)
+        expect(recording.get_by_label('Record to SD card', exact=True)).to_be_checked()
+        expect(recording.get_by_text('Recording 0:12', exact=True)).to_be_visible()
+        for button in recording.get_by_role('button').all():
+            assert button.bounding_box()['height'] >= 44
+        pre = recording.get_by_label('Pre-record', exact=True)
+        if width <= 600:
+            assert pre.evaluate('(input)=>parseFloat(getComputedStyle(input).fontSize)>=16')
         expect(pre).to_have_attribute('max', '4')
-        expect(panel.get_by_text(re.compile(r'^Up to 4 s now, limited by free PSRAM'))).to_be_visible()
+        expect(recording.get_by_text(re.compile(r'^Up to 4 s now, limited by free PSRAM'))).to_be_visible()
         pre.fill('6')
         assert not pre.evaluate('(input)=>input.checkValidity()')
         pre.fill('2')
-        panel.get_by_role('button', name='Save', exact=True).click()
-        expect(panel.get_by_text('Motion settings saved on camera.', exact=True)).to_be_visible()
+        recording.get_by_role('button', name='Save', exact=True).click()
+        expect(recording.get_by_text('Recording settings saved on camera.', exact=True)).to_be_visible()
+        applied = page.evaluate("motionHarness.state.commands.filter(c=>c.op==='motion_apply').at(-1).settings")
+        assert applied == {'record': True, 'pre_seconds': 2, 'post_seconds': 10}, applied
+        # Reset restores only this panel's fields; detection keeps its saved values.
+        recording.get_by_label('Keep recording', exact=True).fill('30')
+        recording.get_by_role('button', name='Reset to Default', exact=True).click()
+        expect(recording.get_by_label('Keep recording', exact=True)).to_have_value('10')
+        assert page.evaluate("motionHarness.state.values.min_speed") == 3.75
+        assert page.evaluate("motionHarness.state.commands.filter(c=>c.op==='motion_reset').length") == 0
         # A resolution change lowers the camera's limit; the field follows it.
         page.evaluate('motionHarness.status({limits: {pre_seconds: 1}})')
         expect(pre).to_have_attribute('max', '1')
         expect(pre).to_have_value('1')
-        expect(panel.get_by_text(re.compile(r'^Up to 1 s now'))).to_be_visible()
+        expect(recording.get_by_text(re.compile(r'^Up to 1 s now'))).to_be_visible()
         overlay = page.locator('sensorfan-motion-overlay')
         expect(overlay.get_by_text('MOTION', exact=True)).to_be_visible()
         preview = page.locator('[data-testid=remote-image], #preview').first.bounding_box()

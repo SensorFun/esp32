@@ -205,7 +205,10 @@ them in NVS so they survive a reboot.
   **Moving area** percent of cells move. Flat cells below **Minimum texture** are
   ignored. **Method** lists the available detectors; optical flow is the first.
 - **Show motion in preview** draws the moving cells, MOTION, and REC over the live picture.
-- **Recording** starts after motion lasts **Motion duration** seconds. It includes
+- **Recording settings** are in the **SD card recording** tab, above the recordings;
+  their Save and Reset to Default affect only those fields, as the Motion detection
+  tab's do for detection. Recording needs motion detection on.
+  Recording starts after motion lasts **Motion duration** seconds. It includes
   **Pre-record** seconds from before that, continues **Keep recording** seconds after
   motion stops, and splits at **Maximum clip length**. Clips use the selected camera
   resolution, at up to **Recording rate** frames per second. A resolution change starts

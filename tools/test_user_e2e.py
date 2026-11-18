@@ -227,7 +227,7 @@ with console, sync_playwright() as p:
         stream_check(page, seconds=6)
 
         page.get_by_role('tab', name='Motion detection', exact=True).click()
-        panel = page.locator('sensorfan-motion-settings')
+        panel = page.locator('sensorfan-motion-settings[group=detection]')
         # Motion changes take effect before Save, like camera settings.
         box = panel.get_by_label('Detect motion', exact=True)
         box.wait_for(state='visible', timeout=10000)
@@ -258,6 +258,10 @@ with console, sync_playwright() as p:
 
         step_name[0] = 'SD card tab'
         page.get_by_role('tab', name='SD card recording', exact=True).click()
+        # Recording settings sit with the recordings, not with detection.
+        page.locator('sensorfan-motion-settings[group=recording]').get_by_label('Record to SD card', exact=True).wait_for(state='visible', timeout=10000)
+        if panel.get_by_label('Record to SD card', exact=True).count():
+            fail('recording settings still appear in the Motion detection tab')
         try:
             page.locator('sensorfan-recordings').get_by_role('heading').first.wait_for(state='visible', timeout=10000)
         except Exception:

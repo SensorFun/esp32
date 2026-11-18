@@ -9,8 +9,8 @@
 <p><output id="fps" title="Displayed frames per second, averaged over the last sampling interval">0.0 FPS</output> <small>(1-second average)</small></p>
 <div id="frame"><img id="preview" alt="Live camera frames"><sensorfan-motion-overlay id="overlay"></sensorfan-motion-overlay></div><sensorfan-camera-tabs style="margin-top:1rem">
 <div data-label="Camera settings"><sensorfan-camera-settings id="settings-panel" hidden></sensorfan-camera-settings></div>
-<div data-label="Motion detection" hidden><sensorfan-motion-settings id="motion-panel" hidden></sensorfan-motion-settings></div>
-<div data-label="SD card recording" hidden><sensorfan-recordings id="recordings" hidden></sensorfan-recordings></div>
+<div data-label="Motion detection" hidden><sensorfan-motion-settings id="motion-panel" group="detection" hidden></sensorfan-motion-settings></div>
+<div data-label="SD card recording" hidden><sensorfan-motion-settings id="recording-panel" group="recording" hidden></sensorfan-motion-settings><sensorfan-recordings id="recordings" hidden></sensorfan-recordings></div>
 </sensorfan-camera-tabs>
 <p><small>JPEG frames, camera commands, and recordings travel over encrypted WebRTC. Save keeps settings on this camera across reboots. Reset to Default restores the configured defaults.</small></p>
 <script id="settings-module" type="module" src="/camera-settings.js"></script><script id="motion-module" type="module" src="/camera-motion.js"></script>
@@ -26,7 +26,7 @@ function startFps(){
 }
 $('preview').onload=()=>{if(channel?.readyState==='open'&&objectURL&&$('preview').getAttribute('src')===objectURL)displayedFrames++;};
 function status(text){$('status').textContent=text;}
-const motionViews=()=>[$('motion-panel'),$('recordings'),$('overlay')];
+const motionViews=()=>[$('motion-panel'),$('recording-panel'),$('recordings'),$('overlay')];
 Promise.all(['sensorfan-camera-settings','sensorfan-motion-settings','sensorfan-recordings','sensorfan-motion-overlay'].map(name=>customElements.whenDefined(name))).then(()=>{$('connect').disabled=false;});
 for(const id of ['settings-module','motion-module'])$(id).addEventListener('error',()=>status('Camera controls could not load. Reload this page to retry.'));
 async function api(method,body){const response=await fetch('/api/session',{method,headers:{'Content-Type':'application/sdp'},body,cache:'no-store'});if(!response.ok)throw Error(await response.text());return response;}

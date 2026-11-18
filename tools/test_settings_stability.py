@@ -74,7 +74,7 @@ with console, sync_playwright() as p:
             check('responses.settings?.saved===true')
             progress()
             page.get_by_role('tab', name='Motion detection', exact=True).click()
-            panel = page.locator('sensorfan-motion-settings')
+            panel = page.locator('sensorfan-motion-settings[group=detection]')
             panel.get_by_label('Minimum speed', exact=True).fill(str(2.5 + iteration * 0.25))
             page.evaluate('responses.motion=null')
             panel.get_by_role('button', name='Save', exact=True).click()

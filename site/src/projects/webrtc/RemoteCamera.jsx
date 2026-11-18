@@ -36,9 +36,10 @@ export function RemoteCamera({ onSessionState }) {
   const settingsPanel = useRef(null);
   const root = useRef(null);
   const motionPanel = useRef(null);
+  const recordingPanel = useRef(null);
   const recordings = useRef(null);
   const overlay = useRef(null);
-  const motionViews = () => [motionPanel.current, recordings.current, overlay.current].filter(Boolean);
+  const motionViews = () => [motionPanel.current, recordingPanel.current, recordings.current, overlay.current].filter(Boolean);
   useEffect(() => { if (settings && settingsPanel.current) settingsPanel.current.settings = settings; }, [settings]);
   useEffect(() => {
     // Camera, motion, and recording panels all request commands with this event.
@@ -214,8 +215,8 @@ export function RemoteCamera({ onSessionState }) {
     <div className="monitor"><div className="monitor-top"><span>CAMERA PREVIEW</span><span data-testid="remote-fps" title="Displayed frames per second · 1-second average">{fps.toFixed(1)} FPS</span><span>{transport}</span></div><div className="remote-preview"><div className="preview-frame"><img ref={image} alt="Remote camera stream" data-testid="remote-image" onLoad={() => { const session = connection.current; if (session?.authenticated && image.current?.getAttribute('src') === session.url) session.displayedFrames++; }} /><sensorfan-motion-overlay ref={overlay} /></div>{state !== 'connected' && <span>Awaiting encrypted camera stream</span>}</div></div>
     <sensorfan-camera-tabs>
       <div data-label="Camera settings">{settings ? <sensorfan-camera-settings className="remote-settings" ref={settingsPanel} /> : <p className="muted">Connect a camera to adjust its settings.</p>}</div>
-      <div data-label="Motion detection" hidden><sensorfan-motion-settings ref={motionPanel} hidden data-testid="motion-settings" /></div>
-      <div data-label="SD card recording" hidden><sensorfan-recordings ref={recordings} hidden data-testid="recordings" /></div>
+      <div data-label="Motion detection" hidden><sensorfan-motion-settings ref={motionPanel} group="detection" hidden data-testid="motion-settings" /></div>
+      <div data-label="SD card recording" hidden><sensorfan-motion-settings ref={recordingPanel} group="recording" hidden data-testid="recording-settings" /><sensorfan-recordings ref={recordings} hidden data-testid="recordings" /></div>
     </sensorfan-camera-tabs>
   </section>;
 }

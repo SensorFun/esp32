@@ -15,7 +15,7 @@
   const defaults = { enabled: false, method: 'optical_flow', min_speed: 2.5, cell: 8, trigger_seconds: 1, record: true, pre_seconds: 2, post_seconds: 10 };
   const state = { values: { ...defaults, enabled: true }, commands: [], clip: null, files: [], chunkDelay: 120 };
   const sd = { state: 'mounted', total_mb: 30436, free_mb: 29001 };
-  const views = () => ['sensorfan-motion-settings', 'sensorfan-recordings', 'sensorfan-motion-overlay'].map(name => document.querySelector(name));
+  const views = () => [...document.querySelectorAll('sensorfan-motion-settings, sensorfan-recordings, sensorfan-motion-overlay')];
   const deliver = message => setTimeout(() => views().forEach(view => view.handle(message)), 20);
   const list = () => ({ type: 'recordings', files: state.files, total: state.files.length, offset: 0, page: 25, sd });
 

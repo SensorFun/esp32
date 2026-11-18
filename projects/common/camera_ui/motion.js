@@ -118,12 +118,22 @@ function command(element, detail) {
 }
 
 function defineElements() {
+  // group="detection" or group="recording" shows one group of the camera's
+  // motion settings (the SD card tab holds the recording group); without it,
+  // all groups. Each panel saves and resets only its own fields.
+  const PANELS = {
+    detection: { title: 'Motion detection', saved: 'Motion settings saved on camera.' },
+    recording: { title: 'Recording settings', saved: 'Recording settings saved on camera.' },
+  };
   class MotionSettings extends HTMLElement {
     constructor() { super(); this.attachShadow({ mode: 'open' }); this.dirty = false; this.pending = false; }
+    get panel() { return PANELS[this.getAttribute('group')] || PANELS.detection; }
+    fields() { const group = this.getAttribute('group'); return (this.description?.fields || []).filter(field => !group || field.group === group); }
+    shows(group) { const own = this.getAttribute('group'); return !own || own === group; }
     // Every valid field's current value; invalid ones keep the camera's value.
     collect() {
       const form = this.shadowRoot.querySelector('form'), settings = {};
-      for (const field of this.description.fields) {
+      for (const field of this.fields()) {
         const control = form.elements[field.name];
         if (!control || (field.type === 'number' && (!control.checkValidity() || control.value === ''))) continue;
         settings[field.name] = field.type === 'boolean' ? control.checked : field.type === 'select' ? field.options[Number(control.value)].value : Number(control.value);
@@ -135,11 +145,14 @@ function defineElements() {
       if (message.type === 'motion') {
         this.description = message;
         this.hidden = false;
-        if (message.live) { if (message.error) this.say(message.error); else if (this.dirty) this.say('Live changes. Select Save to keep them after reboot.'); return; }
-        if (this.dirty && !message.saved && !message.error) return;
-        if (message.error && this.pending) { this.pending = false; this.setBusy(false); this.say(message.error); return; }
-        this.dirty = false; this.pending = false;
-        this.render(message.error || (message.saved ? 'Motion settings saved on camera.' : 'Changes apply right away. Select Save to keep them after reboot.'));
+        const idle = 'Changes apply right away. Select Save to keep them after reboot.';
+        if (message.live) { if (this.dirty) this.say(message.error || 'Live changes. Select Save to keep them after reboot.'); return; }
+        // Replies to another panel's save: keep unsaved edits, otherwise show the camera's values.
+        if (!this.pending) { if (!this.dirty) this.render(idle); return; }
+        this.pending = false;
+        if (message.error) { this.setBusy(false); this.say(message.error); return; }
+        this.dirty = false;
+        this.render(message.saved ? this.panel.saved : idle);
       } else if (message.type === 'motion_status') {
         this.status = message;
         this.renderStatus();
@@ -167,18 +180,27 @@ function defineElements() {
         const control = this.shadowRoot.querySelector(`form [name="${CSS.escape(name)}"]`);
         if (control && Number(control.max) !== max) this.showLimit(control, max);
       }
-      const pills = [];
-      if (!s.enabled) pills.push(['Detection off', '']);
-      else pills.push([s.motion ? 'Motion detected' : 'No motion', s.motion ? 'on' : ''], [`Moving area ${(s.area ?? 0).toFixed(1)}%`, ''], [`Speed ${(s.speed ?? 0).toFixed(1)} px/s`, ''], [`${(s.fps ?? 0).toFixed(1)} analyses/s`, '']);
-      if (s.analysis_width && s.analysis_height) pills.push([`Analysis ${s.analysis_width} × ${s.analysis_height} px`, '']);
-      if (s.recording) pills.push([`Recording ${formatDuration(s.clip_seconds)}`, 'rec']);
-      box.replaceChildren(...pills.map(([text, kind]) => { const pill = document.createElement('span'); pill.className = `pill ${kind}`; pill.textContent = text; return pill; }));
-      const notes = [cardText(s.sd)];
+      const pills = [], notes = [];
       const recording = this.description?.values?.record;
-      if (s.enabled && recording && s.sd && s.sd.state !== 'mounted') notes.push('Motion is still detected and shown here, but clips are not saved');
-      if (s.recorder_error) notes.push(s.recorder_error);
-      if (s.clock === false) notes.push('Camera clock not set yet; clips are named by uptime until it syncs.');
-      this.shadowRoot.querySelector('.card').textContent = notes.filter(Boolean).join(' · ');
+      if (this.shows('detection')) {
+        if (!s.enabled) pills.push(['Detection off', '']);
+        else pills.push([s.motion ? 'Motion detected' : 'No motion', s.motion ? 'on' : ''], [`Moving area ${(s.area ?? 0).toFixed(1)}%`, ''], [`Speed ${(s.speed ?? 0).toFixed(1)} px/s`, ''], [`${(s.fps ?? 0).toFixed(1)} analyses/s`, '']);
+        if (s.analysis_width && s.analysis_height) pills.push([`Analysis ${s.analysis_width} × ${s.analysis_height} px`, '']);
+      }
+      if (this.shows('recording')) {
+        if (s.recording) pills.push([`Recording ${formatDuration(s.clip_seconds)}`, 'rec']);
+        // The recordings list below shows the card itself; the full panel says it here.
+        if (!this.getAttribute('group')) notes.push(cardText(s.sd));
+        if (!s.enabled && recording && this.getAttribute('group')) notes.push('Clips are recorded only while motion detection is on (Motion detection tab)');
+        if (s.enabled && recording && s.sd && s.sd.state !== 'mounted') notes.push('Motion is still detected, but clips are not saved');
+        if (s.recorder_error) notes.push(s.recorder_error);
+        if (s.clock === false) notes.push('Camera clock not set yet; clips are named by uptime until it syncs.');
+      }
+      box.hidden = !pills.length;
+      box.replaceChildren(...pills.map(([text, kind]) => { const pill = document.createElement('span'); pill.className = `pill ${kind}`; pill.textContent = text; return pill; }));
+      const card = this.shadowRoot.querySelector('.card');
+      card.textContent = notes.filter(Boolean).join(' · ');
+      card.hidden = !card.textContent;
     }
     render(message) {
       const description = this.description;
@@ -191,12 +213,17 @@ function defineElements() {
         label.counter input{width:88px;flex:none;text-align:right;font-variant-numeric:tabular-nums}label.counter .with-unit span{min-width:4.5ch}
         label.toggle{flex-direction:row;flex-wrap:wrap;align-items:center;gap:10px;min-height:44px}label.toggle input{width:24px;height:24px;min-height:0;margin:0;accent-color:#00d4cb;flex:none}
         label.toggle small{flex-basis:100%;padding-left:34px}.live{margin-bottom:6px}.card{margin:0 0 18px}
-      </style><section><header><h2>Motion detection</h2></header><div class="live pills" aria-live="polite"></div><p class="card muted"></p>
+        :host([group=recording]){margin-bottom:18px}.groups.fields{margin-bottom:18px}
+      </style><section><header><h2></h2></header><div class="live pills" aria-live="polite"></div><p class="card muted"></p>
       <form><div class="groups"></div><div class="actions"><button type="submit">Save</button><button type="button" class="secondary">Reset to Default</button></div><p role="status"></p></form></section>`;
+      this.shadowRoot.querySelector('h2').textContent = this.panel.title;
       const groups = this.shadowRoot.querySelector('.groups');
       const titles = { detection: 'Detection', recording: 'SD card recording' };
       const sets = {};
-      for (const field of description.fields) {
+      const single = Boolean(this.getAttribute('group'));
+      if (single) groups.classList.add('fields');
+      for (const field of this.fields()) {
+        if (single && !sets[field.group]) sets[field.group] = groups;
         if (!sets[field.group]) {
           const set = document.createElement('fieldset');
           const legend = document.createElement('legend'); legend.textContent = titles[field.group] || field.group;
@@ -255,7 +282,12 @@ function defineElements() {
         if (!form.reportValidity()) return;
         send({ op: 'motion_apply', settings: this.collect() });
       };
-      form.querySelector('button[type=button]').onclick = () => send({ op: 'motion_reset' });
+      form.querySelector('button[type=button]').onclick = () => {
+        // A one-group panel restores only its own fields from the camera's defaults.
+        const defaults = description.defaults;
+        if (!single || !defaults) { send({ op: 'motion_reset' }); return; }
+        send({ op: 'motion_apply', settings: Object.fromEntries(this.fields().filter(field => field.name in defaults).map(field => [field.name, defaults[field.name]])) });
+      };
     }
   }
 
