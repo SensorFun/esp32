@@ -67,10 +67,10 @@ test('the firmware catalog resolves boards like the Python build list', () => {
   assert.throws(() => readFirmwareCatalog(root), /after_flash.link/);
 });
 
-test('the real firmware catalog offers WebRTC and Hello World for catalog boards', () => {
+test('the real firmware catalog offers WebRTC for catalog boards', () => {
   const boards = readCatalog(workspace).map(board => board.id);
   const firmwares = readFirmwareCatalog(workspace);
-  assert.deepEqual(firmwares.map(item => item.id).sort(), ['hello_world', 'webrtc']);
+  assert.deepEqual(firmwares.map(item => item.id).sort(), ['webrtc']);
   for (const firmware of firmwares) assert.ok(firmware.boards.length && firmware.boards.every(board => boards.includes(board)), firmware.id);
 });
 

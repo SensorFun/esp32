@@ -13,7 +13,6 @@ Python packaging does not compile firmware. Firmware applications under
 shared components.
 
 - `python/esp32_workspace/`: build, flash, and serial-monitor CLI.
-- `projects/hello_world/`: FreeRTOS example with shared Wi-Fi provisioning.
 - `projects/webrtc/`: [local encrypted WebRTC camera, sensor controls, motion detection, and SD recording](projects/webrtc/README.md).
 - `projects/common/application/`: shared setup/main lifecycle and board-specific NVS reset.
 - `projects/common/provisioning/`: reusable Wi-Fi setup page and credential storage.
@@ -31,9 +30,9 @@ Install ESP-IDF v6.1 and source its `export.sh`, then run from this directory:
 ```sh
 python -m pip install -e .
 esp32 list
-esp32 build --project hello_world --board esp32_ai-thinker_cam
-esp32 flash --project hello_world --board esp32_ai-thinker_cam --port /dev/ttyACM0
-esp32 monitor --project hello_world --board esp32_ai-thinker_cam --port /dev/ttyACM0
+esp32 build --project webrtc --board esp32_ai-thinker_cam
+esp32 flash --project webrtc --board esp32_ai-thinker_cam --port /dev/ttyACM0
+esp32 monitor --project webrtc --board esp32_ai-thinker_cam --port /dev/ttyACM0
 ```
 
 Use `--dry-run` to inspect a command without compiling or accessing hardware.
@@ -81,7 +80,7 @@ python tools/flash.py
 ```
 
 `tools/build.py` reads `config/build.yaml`; `tools/flash.py` reads
-`config/flash.yaml`. Both inherit `config/firmware.yaml`, selecting `hello_world`
+`config/flash.yaml`. Both inherit `config/firmware.yaml`, selecting `webrtc`
 and its board/camera device profile. The default is `esp32_cam`.
 Select either connected device:
 
@@ -109,8 +108,7 @@ selection in `firmware_selection.json`; the host flasher rejects mismatched
 frame grabber profiles. USB adapter identities select the connected board without
 storing unique device serial numbers. With multiple identical adapters, set a
 port explicitly. The S3 profile uses the existing N16R8 WROOM camera board header;
-"WROOM" alone does not verify a carrier's camera wiring. Hello World selects and
-logs the frame grabber profile; camera capture/initialization is not implemented yet.
+"WROOM" alone does not verify a carrier's camera wiring.
 
 GC0308 captures RGB565 and uses software JPEG encoding for the existing WebRTC
 viewer. Its resolutions are limited to VGA (640 × 480). `gc.yaml` contains only
@@ -157,7 +155,7 @@ the workspace independently of the current directory.
 
 ## Wi-Fi provisioning
 
-Hello World uses the shared [provisioning component](projects/common/provisioning/README.md).
+WebRTC uses the shared [provisioning component](projects/common/provisioning/README.md).
 Without saved settings, join the board's open `CAM_<MAC>` Wi-Fi (no password
 or serial access needed), then open `http://192.168.4.1`. Refresh to
 scan networks, choose or enter an SSID, and save its password. Credentials persist
@@ -178,8 +176,9 @@ or connect U0T/UART TX to ground. No real credentials belong in this repository.
 
 ## Adding firmware and boards
 
-Copy `projects/hello_world` to a new project folder and change its CMake project
-name. Keep its `main/` component and add more ESP-IDF components as needed.
+Create an ESP-IDF project under `projects/` with its own CMake project name and
+`main/` component. See the [common application component](projects/common/application/README.md)
+for an example of integrating shared Wi-Fi provisioning.
 Add a board entry to `config/boards/<manufacturer>.yaml`, keyed by its
 unique board ID. For example:
 

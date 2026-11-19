@@ -69,7 +69,6 @@ with sync_playwright() as p:
             data[0x30:0x35] = b'1.2.3'
             data[0x50:0x50 + len(project)] = project
         return bytes(data)
-    (uploads / 'hello_world.bin').write_bytes(esp_image(9, True, b'hello_world'))
     (uploads / 'webrtc.bin').write_bytes(esp_image(9, True))
     merged = bytearray(b'\xff' * 0x12000)
     merged[0x1000:0x3000] = esp_image(0, False)
@@ -90,11 +89,10 @@ with sync_playwright() as p:
     for board in ('esp32_ai-thinker_cam', 'esp32s3n16r8_espressif_cam'):
         write_build(hosted / 'webrtc' / board, board, catalog[board]['target'])
     missing = 'esp32s3n16r8_goouuu_cam'
-    write_build(hosted / 'hello_world' / missing, missing, catalog[missing]['target'])
-    manifest = {'webrtc': {board: {'commit': 'abc123def456', 'built': 1763200000, 'frame_grabber': 'ov', 'private': False}
-                           for board in ('esp32_ai-thinker_cam', 'esp32s3n16r8_espressif_cam')},
-                # A non-default app offset proves uploads follow the project's partition table.
-                'hello_world': {missing: {'commit': 'fedcba987654', 'built': 1763200000, 'frame_grabber': 'ov', 'private': False, 'app_offset': '0x20000'}}}
+    manifest = {'webrtc': {
+        'esp32_ai-thinker_cam': {'commit': 'abc123def456', 'built': 1763200000, 'frame_grabber': 'ov', 'private': False},
+        'esp32s3n16r8_espressif_cam': {'commit': 'abc123def456', 'built': 1763200000, 'frame_grabber': 'ov', 'private': False},
+    }}
     firmware_catalog = {path.stem: yaml.safe_load(path.read_text()) for path in sorted((workspace / 'config/firmware').glob('*.yaml'))}
     def serve_firmware(route):
         relative = route.request.url.split('/firmware/', 1)[1].split('?')[0]
@@ -193,26 +191,24 @@ with sync_playwright() as p:
     page = context.new_page()
     page.on('pageerror', lambda error: errors.append(str(error)))
     page.route('**/firmware/**', serve_firmware)
+    # An obsolete bookmark falls back to WebRTC. Preserve coverage of non-default upload offsets.
+    manifest['webrtc']['esp32s3n16r8_espressif_cam']['app_offset'] = '0x20000'
     page.goto(flasher_url + '?project=hello_world')
     source = page.get_by_label('Firmware source', exact=True)
-    expect(source).to_have_value('hello_world')
+    expect(source).to_have_value('webrtc')
     options = source.locator('option').all_inner_texts()
     for entry in firmware_catalog.values():
         assert entry['name'] in options, (entry['name'], options)
-    expect(page.get_by_text(firmware_catalog['hello_world']['description'])).to_be_visible()
-    hello = page.get_by_role('radio', name=re.compile('^' + re.escape(catalog[missing]['name'])))
-    expect(hello).to_be_enabled()
-    expect(page.get_by_role('radio', name=re.compile('^' + re.escape(catalog['esp32_ai-thinker_cam']['name'])))).to_be_disabled()
-    hello.check()
-    expect(page.get_by_test_id('firmware-summary')).to_contain_text('fedcba987654')
-    source.select_option('webrtc')
-    assert page.evaluate('location.hash') == '#/tools/flasher?project=webrtc'
-    expect(page.get_by_test_id('firmware-summary')).to_have_count(0)
-    expect(page.get_by_role('radio', name=re.compile('^' + re.escape(catalog[missing]['name'])))).to_be_disabled()
+    assert 'Hello World' not in options
+    expect(page.get_by_text(firmware_catalog['webrtc']['description'])).to_be_visible()
+    summary = page.get_by_test_id('firmware-summary')
+    board = catalog['esp32s3n16r8_espressif_cam']
+    page.get_by_role('radio', name=re.compile('^' + re.escape(board['name']))).check()
+    expect(summary).to_contain_text('abc123def456')
     source.select_option('upload')
-    page.get_by_label('Firmware file').set_input_files(str(uploads / 'hello_world.bin'))
-    expect(page.get_by_test_id('firmware-summary')).to_contain_text('App image · hello_world 1.2.3')
-    expect(page.get_by_test_id('firmware-summary')).to_contain_text('0x20000')
+    page.get_by_label('Firmware file').set_input_files(str(uploads / 'webrtc.bin'))
+    expect(summary).to_contain_text('App image · webrtc 1.2.3')
+    expect(summary).to_contain_text('0x20000')
     # Selecting another board replaces the port and forgets the previous one.
     page.get_by_role('button', name='Select USB port', exact=True).click()
     expect(page.get_by_test_id('selected-port')).to_contain_text('Silicon Labs CP210x (10c4:ea60)')

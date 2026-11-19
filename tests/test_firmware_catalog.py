@@ -38,7 +38,7 @@ class FirmwareCatalogTests(unittest.TestCase):
         catalog = load_firmware(ROOT)
         boards = load_catalog(ROOT)
         self.assertIn('webrtc', catalog)
-        self.assertIn('hello_world', catalog)
+        self.assertNotIn('hello_world', catalog)
         for project, entry in catalog.items():
             with self.subTest(project=project):
                 self.assertTrue((ROOT / 'projects' / project / 'CMakeLists.txt').is_file())

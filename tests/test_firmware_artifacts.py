@@ -44,7 +44,7 @@ class FirmwareArtifactTests(unittest.TestCase):
     def test_board_ids_match_the_validated_catalog(self):
         pairs = artifacts.build_pairs(ROOT)
         self.assertEqual({pair['board'] for pair in pairs}, set(load_catalog(ROOT)))
-        self.assertTrue(all(pair['project'] in ('webrtc', 'hello_world') for pair in pairs))
+        self.assertTrue(all(pair['project'] == 'webrtc' for pair in pairs))
 
     def test_package_copies_only_flashable_files(self):
         (self.build / 'build.ninja').write_text('not flashed')

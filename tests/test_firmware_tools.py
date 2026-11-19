@@ -45,7 +45,7 @@ class FirmwareToolTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         args = json.loads(self.log.read_text())
         self.assertIn("-DIDF_TARGET=esp32", args)
-        self.assertIn(str(ROOT / "build/hello_world/esp32_ai-thinker_cam"), args)
+        self.assertIn(str(ROOT / "build/webrtc/esp32_ai-thinker_cam"), args)
         self.assertEqual(args[-1], "build")
 
     def test_dry_run_does_not_execute_idf(self):
@@ -114,11 +114,11 @@ class FirmwareToolTests(unittest.TestCase):
         for tool in ("build",):
             with self.subTest(tool=tool):
                 self.log.unlink(missing_ok=True)
-                result = self.run_tool(tool, "project=hello_world", "board=esp32_ai-thinker_cam", "dry_run=true")
+                result = self.run_tool(tool, "project=webrtc", "board=esp32_ai-thinker_cam", "dry_run=true")
                 self.assertEqual(result.returncode, 17, result.stderr)
                 calls = json.loads(self.log.read_text())
                 self.assertEqual(len(calls), 2)
                 self.assertIn("build", calls[0])
                 self.assertIn("run", calls[1])
-                self.assertEqual(calls[1][-5:], ["python", f"/workspace/tools/{tool}.py", "project=hello_world", "board=esp32_ai-thinker_cam", "dry_run=true"])
+                self.assertEqual(calls[1][-5:], ["python", f"/workspace/tools/{tool}.py", "project=webrtc", "board=esp32_ai-thinker_cam", "dry_run=true"])
                 self.assertFalse(any("idf.py" in arg for call in calls for arg in call))

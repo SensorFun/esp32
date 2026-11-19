@@ -16,7 +16,7 @@ from .cli import command
 USB_VENDORS = {0x303A, 0x10C4, 0x1A86, 0x0403, 0x067B}
 
 # ESP-IDF's standard single-app partition table places nvs here; projects
-# without a custom partitions.csv (e.g. hello_world) use that default table.
+# without a custom partitions.csv use that default table.
 DEFAULT_NVS_PARTITION = (0x9000, 0x6000)
 
 

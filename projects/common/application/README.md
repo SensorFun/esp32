@@ -21,7 +21,7 @@ extern "C" void app_main(void) {
 }
 ```
 
-Include FreeRTOS headers for the delay, as Hello World does. Keep the instance
+Include FreeRTOS headers for the delay. Keep the instance
 alive for the application's lifetime. `setup()` runs once before project
 peripherals claim pins. Call `main()` at least every 50 ms. Any project can call
 `common.enter_setup()` to clear persistent settings and restart provisioning.

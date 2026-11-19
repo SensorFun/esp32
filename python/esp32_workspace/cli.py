@@ -40,7 +40,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=["list", "build", "flash", "monitor", "menuconfig", "clean"])
     parser.add_argument("--root", type=Path, default=Path(os.environ.get("ESP32_WORKSPACE", Path.cwd())))
-    parser.add_argument("--project", default="hello_world")
+    parser.add_argument("--project", default="webrtc")
     parser.add_argument("--board", default="esp32_ai-thinker_cam")
     parser.add_argument("--frame-grabber", help="Frame grabber profile from config/frame_grabber")
     parser.add_argument("--port", help="Serial device, e.g. /dev/ttyACM0")

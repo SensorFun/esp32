@@ -157,7 +157,7 @@ the same `espressif/idf:v6.1` image, one container per project and board:
 python3 tools/firmware_artifacts.py --list           # project/board pairs CI builds
 python3 tools/firmware_artifacts.py --ci             # exactly as CI: fresh builds, default settings
 python3 tools/firmware_artifacts.py                  # reuse your build/<project>/<board> folders
-python3 tools/firmware_artifacts.py --project hello_world --board esp32s3n16r8_goouuu_cam
+python3 tools/firmware_artifacts.py --project webrtc --board esp32s3n16r8_goouuu_cam
 python3 tools/firmware_artifacts.py --package-only   # package existing builds without building
 cd site && npm run dev                               # http://127.0.0.1:5173/#/tools/flasher
 npm run build && node scripts/check-bundle.mjs dist --all-boards   # CI's bundle check
