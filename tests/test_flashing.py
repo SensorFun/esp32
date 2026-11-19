@@ -50,7 +50,12 @@ class FlashTests(unittest.TestCase):
     @patch("esp32_workspace.flashing.list_ports.comports")
     def test_board_identity_disambiguates(self, ports):
         ports.return_value = [serial_port("/dev/ttyUSB0", "other"), serial_port("/dev/ttyUSB1", "mine")]
-        (self.root / "boards/programming_ports.tsv").write_text("# USB identities\ntest\t1a86:55d3\tUSB Single Serial\tmine\n")
+        profiles = self.root / "config/device"
+        profiles.mkdir(parents=True)
+        (profiles / "test.yaml").write_text(
+            'board: test\nprogramming_port:\n  usb_id: "1a86:55d3"\n'
+            '  product: USB Single Serial\n  serial: mine\n'
+        )
         self.assertEqual(detect_port(self.root, "test"), "/dev/ttyUSB1")
 
     @patch("esp32_workspace.flashing.list_ports.comports")
@@ -145,14 +150,16 @@ class FlashTests(unittest.TestCase):
         call.assert_called_once()
 
     @patch("esp32_workspace.flashing.list_ports.comports")
-    def test_two_connected_board_profiles_select_distinct_ports(self, ports):
+    def test_connected_board_profiles_select_distinct_ports(self, ports):
         root = Path(__file__).resolve().parents[1]
         ports.return_value = [
             SimpleNamespace(device="/dev/ttyUSB0",vid=0x0403,pid=0x6001,product="FT232R USB UART",serial_number=""),
             SimpleNamespace(device="/dev/ttyUSB1",vid=0x1A86,pid=0x7523,product="USB Serial",serial_number=""),
+            SimpleNamespace(device="/dev/ttyACM0",vid=0x1A86,pid=0x55D3,product="USB Single Serial",serial_number=""),
         ]
         self.assertEqual(detect_port(root, "esp32_ai-thinker_cam"), "/dev/ttyUSB0")
-        self.assertEqual(detect_port(root, "esp32s3n16r8_espressif_cam"), "/dev/ttyUSB1")
+        self.assertEqual(detect_port(root, "esp32s3n16r8_espressif_cam"), "/dev/ttyACM0")
+        self.assertEqual(detect_port(root, "esp32s3n16r8_goouuu_cam"), "/dev/ttyUSB1")
 
     def test_flash_config_can_be_inspected_without_docker(self):
         root = Path(__file__).resolve().parents[1]

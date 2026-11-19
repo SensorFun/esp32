@@ -1,5 +1,4 @@
 """Flash existing ESP-IDF artifacts with host esptool; no build tools required."""
-import csv
 import json
 from pathlib import Path
 import shlex
@@ -48,19 +47,19 @@ def nvs_partition(root: Path, project: str) -> tuple[int, int]:
 def detect_port(root: Path, board: str) -> str:
     ports = sorted(list_ports.comports(), key=lambda port: port.device)
     candidates = [port for port in ports if port.vid in USB_VENDORS]
-    identities = root / "boards" / "programming_ports.tsv"
     matches = []
-    if identities.is_file():
-        rows = csv.reader((line for line in identities.read_text().splitlines() if line and not line.startswith("#")), delimiter="\t")
-        for row in rows:
-            if row[0] != board:
-                continue
-            _, usb_id, product, serial = row
-            vid, pid = (int(value, 16) for value in usb_id.split(":"))
-            matches.extend(port for port in ports if
-                port.vid == vid and port.pid == pid
-                and (not product or port.product == product)
-                and (not serial or port.serial_number == serial))
+    for path in sorted((root / "config/device").glob("*.yaml")):
+        profile = OmegaConf.load(path)
+        identity = profile.get("programming_port")
+        if profile.get("board") != board or identity is None:
+            continue
+        vid, pid = (int(value, 16) for value in identity.usb_id.split(":"))
+        product = identity.get("product")
+        serial = identity.get("serial")
+        matches.extend(port for port in ports if
+            port.vid == vid and port.pid == pid
+            and (not product or port.product == product)
+            and (not serial or port.serial_number == serial))
     matches = {port.device for port in matches}
     if len(matches) == 1:
         return matches.pop()

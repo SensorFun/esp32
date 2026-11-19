@@ -27,8 +27,8 @@ browser and context settings, preventing certificate-warning retries during
 repeated reboots while exercising HTTPS asset loading and encrypted WebRTC.
 
 Edit `tests/config/e2e.yaml` to select devices. Devices must use distinct board
-build directories and USB ports. Board ports are detected automatically. The
-launcher locks each board against another launcher run. Close serial monitors
+build directories and USB ports. Board ports are detected automatically. If several adapters match, pass
+`--port DEVICE=/dev/serial/by-id/...` for each ambiguous device. The launcher locks each board against another launcher run. Close serial monitors
 and other flashing tools before running.
 
 Configure signaling in each `build/webrtc/<board>/sdkconfig` beforehand, matching

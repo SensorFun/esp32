@@ -89,15 +89,18 @@ def provision(port, ssid, wifi_password, camera_password):
         stage='USB provisioning', input=f'{ssid}\n{wifi_password}\n{camera_password}\n', text=True)
 
 
-def discover(port):
+def discover(port, lines):
     console = serial.Serial(port, 115200, timeout=.2)
     console.dtr = False
     console.rts = True
     time.sleep(.1)
     console.rts = False
-    lines = deque(maxlen=50)
-    buffer = wait_for(console, 'Remote camera ID:', 'Local camera ready:', 'Private signaling connected',
-                       timeout=60, on_line=lines.append)
+    try:
+        buffer = wait_for(console, 'Remote camera ID:', 'Local camera ready:', 'Private signaling connected',
+                          timeout=60, on_line=lines.append)
+    except Exception:
+        console.close()
+        raise
     camera = re.search(r'Remote camera ID: ([A-F0-9]{12})', buffer)
     if not camera:
         console.close()
@@ -106,7 +109,7 @@ def discover(port):
     if not local:
         console.close()
         raise RuntimeError('Local viewer URL missing from startup diagnostics')
-    return camera[1], local[1], console, lines
+    return camera[1], local[1], console
 
 
 def test_provision_and_stream(board, wifi_credentials, tmp_path):
@@ -124,14 +127,16 @@ def test_provision_and_stream(board, wifi_credentials, tmp_path):
     print('Provisioning with a fresh random camera password…', flush=True)
     provision(port, wifi_ssid, wifi_password, camera_password)
 
-    print('Waiting for the camera to reach the public signaling server…', flush=True)
-    camera_id, local_url, console, diagnostics = discover(port)
-    print('Provisioned camera ID:', camera_id, flush=True)
-
     http_server = None
+    console = None
+    diagnostics = deque(maxlen=50)
     stop = Event()
     reader = None
     try:
+        print('Waiting for the camera to reach the public signaling server…', flush=True)
+        camera_id, local_url, console = discover(port, diagnostics)
+        print('Provisioned camera ID:', camera_id, flush=True)
+
         def drain():
             while not stop.is_set():
                 try:
@@ -182,7 +187,8 @@ def test_provision_and_stream(board, wifi_credentials, tmp_path):
         stop.set()
         if reader:
             reader.join(timeout=1)
-        console.close()
+        if console:
+            console.close()
         if http_server:
             http_server.shutdown()
             http_server.server_close()

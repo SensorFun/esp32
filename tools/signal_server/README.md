@@ -241,7 +241,7 @@ The boards under test come from the Hydra fixture config `tests/config/e2e.yaml`
 (`devices`, `server`, `browser`), composed by `tests/e2e/conftest.py`. Edit
 `devices` to the device profiles (`config/device/*.yaml`) you have physically
 connected — the test runs once per listed device. Each board's USB port is
-auto-detected per run (via the same `boards/programming_ports.tsv` identity
+auto-detected per run (via the same `config/device/*.yaml` identity
 matching `tools/flash.py` uses), since ports can change; a device missing
 from `tests/config/e2e.yaml`'s list, or not actually connected, fails the fixture
 rather than being silently skipped.

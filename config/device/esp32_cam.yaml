@@ -5,3 +5,7 @@ defaults:
   - _self_
 
 board: esp32_ai-thinker_cam
+
+programming_port:
+  usb_id: "0403:6001"
+  product: "FT232R USB UART"

@@ -5,3 +5,7 @@ defaults:
   - _self_
 
 board: esp32s3n16r8_goouuu_cam
+
+programming_port:
+  usb_id: "1a86:7523"
+  product: "USB Serial"

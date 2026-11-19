@@ -79,19 +79,43 @@ window.RTCPeerConnection=class extends NativePeer{
             width, height = map(int, size['label'].split('×'))
             page.wait_for_function("size=>{const img=document.querySelector('[data-testid=remote-image]');return img.naturalWidth===size[0] && img.naturalHeight===size[1];}", arg=[width, height], timeout=60000)
         page.get_by_role('combobox', name='Resolution', exact=True).select_option(original_resolution)
-        page.wait_for_function("document.querySelector('[data-testid=remote-image]').naturalWidth===320", timeout=30000)
-        print('PASS: remote minimum/maximum resolution changes and return to QVGA')
+        original_size = next(size for size in original_settings['resolutions'] if size['value'] == int(original_resolution))
+        page.wait_for_function(
+            "size=>{const img=document.querySelector('[data-testid=remote-image]');return img.naturalWidth===size.width && img.naturalHeight===size.height;}",
+            arg=original_size, timeout=30000,
+        )
+        print('PASS: remote minimum/maximum resolution changes and return to the original resolution')
         before = page.get_by_role('spinbutton', name='contrast', exact=True).input_value()
         page.get_by_role('spinbutton', name='contrast', exact=True).fill('1')
         expect(page.get_by_role('spinbutton', name='contrast', exact=True)).to_have_value('1')
         page.wait_for_function("document.querySelector('.remote-settings').value.controls.find(c=>c.name==='contrast').value===1")
-        page.get_by_role('combobox', name='Light timing', exact=True).select_option('balanced')
-        page.get_by_role('button', name='Save', exact=True).first.click()
-        expect(page.get_by_role('status').filter(has_text='Settings saved on camera.')).to_be_visible(timeout=20000)
-        expect(page.get_by_role('combobox', name='Light timing', exact=True)).to_have_value('balanced')
-        page.get_by_role('combobox', name='Light timing', exact=True).select_option(original_settings['timing_profile'])
+        timing = page.get_by_role('combobox', name='Light timing', exact=True)
+        profiles = original_settings['timing_profiles']
+
+        def set_timing(profile):
+            timing.select_option(profile)
+            page.wait_for_function(
+                "profile=>document.querySelector('.remote-settings').value.timing_profile===profile",
+                arg=profile,
+            )
+
+        def save():
+            page.get_by_role('button', name='Save', exact=True).first.click()
+            expect(page.get_by_role('status').filter(has_text='Settings saved on camera.')).to_be_visible(timeout=20000)
+
+        if profiles:
+            set_timing(next(profile for profile in profiles if profile != original_settings['timing_profile']))
+        else:
+            expect(timing).to_have_count(0)
+        save()
+        if profiles:
+            set_timing(original_settings['timing_profile'])
         page.get_by_role('spinbutton', name='contrast', exact=True).fill(before)
-        page.get_by_role('button', name='Save', exact=True).first.click()
+        page.wait_for_function(
+            "value=>document.querySelector('.remote-settings').value.controls.find(c=>c.name==='contrast').value===value",
+            arg=int(before),
+        )
+        save()
         frame_count = page.evaluate('window.__frameStats.frameEnds')
         page.wait_for_function('window.__frameStats.frameEnds >= ' + str(frame_count + 3), timeout=20000)
         expect(page.locator('.monitor-top')).to_contain_text('Direct · DTLS', timeout=15000)
@@ -100,16 +124,28 @@ window.RTCPeerConnection=class extends NativePeer{
         stats = page.evaluate("async()=>Array.from((await __testPeer.getStats()).values()).filter(s=>s.type==='local-candidate' || s.type==='remote-candidate').map(s=>s.candidateType)")
         assert 'relay' not in stats, stats
         assert not any('192.168.' in url or '/api/session' in url for url in requests), requests
-        print('PASS: direct public WebSocket signaling, live JPEG, contrast, timing, no board HTTP requests; STUN only, no relay candidates')
+        print('PASS: direct public WebSocket signaling, live JPEG, supported camera controls, no board HTTP requests; STUN only, no relay candidates')
         page.get_by_role('button', name='Reset to Default', exact=True).last.click()
         expect(page.get_by_role('status').filter(has_text='Settings saved on camera.')).to_be_visible(timeout=20000)
-        page.get_by_role('combobox', name='Resolution', exact=True).select_option(str(original_settings['resolution']))
-        page.get_by_role('combobox', name='Light timing', exact=True).select_option(original_settings['timing_profile'])
+        reset_settings = page.locator('.remote-settings').evaluate('(panel)=>panel.value')
+        if reset_settings['resolution'] != original_settings['resolution']:
+            page.get_by_role('combobox', name='Resolution', exact=True).select_option(str(original_settings['resolution']))
+            page.wait_for_function(
+                "value=>document.querySelector('.remote-settings').value.resolution===value",
+                arg=original_settings['resolution'],
+            )
+        if profiles and reset_settings['timing_profile'] != original_settings['timing_profile']:
+            set_timing(original_settings['timing_profile'])
+        reset_controls = {control['name']: control['value'] for control in reset_settings['controls']}
         for control in original_settings['controls']:
-            if control['supported']:
-                page.get_by_role('spinbutton', name=control['name'].replace('_', ' '), exact=True).fill(str(control['value']))
-        page.get_by_role('button', name='Save', exact=True).first.click()
-        expect(page.get_by_role('status').filter(has_text='Settings saved on camera.')).to_be_visible(timeout=20000)
+            name, value = control['name'], control['value']
+            if control['supported'] and reset_controls[name] != value:
+                page.get_by_role('spinbutton', name=name.replace('_', ' '), exact=True).fill(str(value))
+                page.wait_for_function(
+                    "([name,value])=>document.querySelector('.remote-settings').value.controls.find(c=>c.name===name).value===value",
+                    arg=[name, value],
+                )
+        save()
         print('PASS: website live changes, Reset to Default and Save; original settings restored; connected panel fits 320px')
         page.get_by_role('button', name='Disconnect', exact=True).click()
         expect(page.get_by_test_id('remote-status')).to_have_text('Disconnected')

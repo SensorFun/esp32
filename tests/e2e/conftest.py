@@ -1,7 +1,4 @@
-"""Hardware fixtures for tests/e2e: tests/config/e2e.yaml lists the boards
-under test; each board's USB port is auto-detected at fixture time (not
-cached), since the same board can enumerate on a different port between runs.
-"""
+"""Hardware fixtures for the configured ESP32 board tests."""
 import getpass
 import os
 from pathlib import Path
@@ -79,6 +76,7 @@ def _board_name(device):
 
 
 def pytest_addoption(parser):
+    parser.addoption('--board-port', action='append', default=[], help='USB port override as DEVICE=PATH')
     parser.addoption('--board-device', action='append', help='Select a device from tests/config/e2e.yaml')
 
 
@@ -104,9 +102,9 @@ def board(request):
     info = dict(request.param)
     if not info["browser"]:
         raise pytest.UsageError("tests/config/e2e.yaml: set browser to an installed Chromium executable")
-    # Detected fresh for every test, not reused across the session: the same
-    # board can enumerate on a different /dev/ttyUSB* after a replug or reset.
-    info["port"] = detect_port(ROOT, info["board"])
+    overrides = dict(option.split('=', 1) for option in request.config.getoption('--board-port'))
+    device = info["device"]
+    info["port"] = overrides[device] if device in overrides else detect_port(ROOT, info["board"])
     return info
 
 

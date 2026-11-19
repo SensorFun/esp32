@@ -26,8 +26,11 @@ if args.rounds < 1 or (args.capture and args.snapshot is None) or (not args.capt
 
 
 def values(data):
-    return dict(resolution=data['resolution'], timing_profile=data['timing_profile'],
-                **{c['name']: c['value'] for c in data['controls'] if c['supported']})
+    settings = {'resolution': data['resolution']}
+    if data['timing_profiles']:
+        settings['timing_profile'] = data['timing_profile']
+    settings.update({c['name']: c['value'] for c in data['controls'] if c['supported']})
+    return settings
 
 
 with sync_playwright() as p, ExitStack() as serial_handles:
@@ -88,8 +91,9 @@ with sync_playwright() as p, ExitStack() as serial_handles:
             controls = page.evaluate('window.snapshot.controls')
             page.get_by_role('combobox', name='Resolution', exact=True).select_option(str(settings['resolution']))
             wait_js(page, "v=>window.snapshot?.resolution===v", arg=settings['resolution'])
-            page.get_by_role('combobox', name='Light timing', exact=True).select_option(settings['timing_profile'])
-            wait_js(page, "v=>window.snapshot?.timing_profile===v", arg=settings['timing_profile'])
+            if 'timing_profile' in settings:
+                page.get_by_role('combobox', name='Light timing', exact=True).select_option(settings['timing_profile'])
+                wait_js(page, "v=>window.snapshot?.timing_profile===v", arg=settings['timing_profile'])
             for control in controls:
                 if control['supported'] and control['name'] in settings and settings[control['name']] != before[control['name']]:
                     field = page.get_by_role('spinbutton', name=control['name'].replace('_', ' '), exact=True)
@@ -130,7 +134,8 @@ with sync_playwright() as p, ExitStack() as serial_handles:
                     expected[control['name']] = rng.choice(choices)
                 sizes = [s['value'] for s in metadata['resolutions'] if s['width'] <= 640 and s['height'] <= 480 and s['value'] != current['resolution']]
                 expected['resolution'] = rng.choice(sizes)
-                expected['timing_profile'] = rng.choice([v for v in metadata['timing_profiles'] if v != current['timing_profile']])
+                if metadata['timing_profiles']:
+                    expected['timing_profile'] = rng.choice([v for v in metadata['timing_profiles'] if v != current['timing_profile']])
                 edit(expected)
                 if iteration == 0:
                     close(page); reboot(); page = connect()
@@ -145,7 +150,7 @@ with sync_playwright() as p, ExitStack() as serial_handles:
                 assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
                 close(page); reboot(); page = connect()
                 assert values(page.evaluate('window.snapshot')) == expected, 'Saved random settings did not survive reboot'
-                print(f'PASS: randomized round {iteration + 1}/{args.rounds}: multiple controls, resolution and timing survived reboot', flush=True)
+                print(f'PASS: randomized round {iteration + 1}/{args.rounds}: randomized settings survived reboot', flush=True)
             page.evaluate('window.snapshot=null')
             page.get_by_role('button', name='Reset to Default', exact=True).last.click()
             wait_js(page, "window.snapshot?.saved===true", timeout=20000)

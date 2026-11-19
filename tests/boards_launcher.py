@@ -68,6 +68,8 @@ def credentials():
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--device', action='append', help='Limit to a configured device; repeat to select several')
+    parser.add_argument('--port', action='append', default=[], metavar='DEVICE=PATH',
+                        help='Override USB detection for a selected device; repeat for multiple devices')
     parser.add_argument('--collect-only', action='store_true', help='List tests without accessing hardware or credentials')
     parser.add_argument('--build', metavar='DEVICE', help=argparse.SUPPRESS)
     args = parser.parse_args()
@@ -77,6 +79,12 @@ def main():
     devices = args.device if args.device is not None else list(config.devices)
     if not devices or len(set(devices)) != len(devices) or any(d not in config.devices for d in devices):
         parser.error('Choose distinct devices listed in tests/config/e2e.yaml')
+    overrides = {}
+    for override in args.port:
+        device, separator, port = override.partition('=')
+        if not separator or device not in devices or not port or device in overrides:
+            parser.error('--port must be DEVICE=PATH for a selected device, once per device')
+        overrides[device] = port
     boards = [compose_config(ROOT / 'config', 'firmware', [f'device={d}']).board for d in devices]
     if len(set(boards)) != len(boards):
         parser.error('Parallel devices must have distinct board build directories')
@@ -94,11 +102,10 @@ def main():
     subprocess.run(['docker', 'info', '--format', '{{.ServerVersion}}'], check=True, stdout=subprocess.DEVNULL)
     if not Path(config.browser).is_file():
         raise RuntimeError('Set browser in tests/config/e2e.yaml to an installed Chromium executable')
-    credentials()
     locks = []
     try:
         ports = []
-        for board in boards:
+        for device, board in zip(devices, boards):
             folder = ROOT / 'build/webrtc' / board
             if not (folder / 'sdkconfig').is_file():
                 raise RuntimeError(f'Missing build/webrtc/{board}/sdkconfig')
@@ -108,9 +115,18 @@ def main():
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 raise RuntimeError(f'Another board test is using {board}') from None
-            ports.append(str(Path(detect_port(ROOT, board)).resolve()))
+            try:
+                port = overrides[device] if device in overrides else detect_port(ROOT, board)
+            except ValueError as error:
+                raise RuntimeError(f'{device}: {error} Use --port {device}=/dev/<port>.') from None
+            path = Path(port).resolve()
+            if not path.is_char_device():
+                raise RuntimeError(f'{device}: {port} is not a serial device')
+            ports.append(str(path))
+            command += ['--board-port', f'{device}={path}']
         if len(set(ports)) != len(ports):
             raise RuntimeError('Multiple devices resolve to the same USB port')
+        credentials()
         print(f'Running {len(devices)} board pipelines in parallel: {", ".join(devices)}', flush=True)
         print('Each pipeline builds, flashes, provisions, and tests its own board.', flush=True)
         reports = ROOT / 'build/board-tests'
