@@ -145,7 +145,7 @@ with sync_playwright() as p:
         page.get_by_role('button', name='Select USB port', exact=True).click()
         expect(selected).to_contain_text('Silicon Labs CP210x (10c4:ea60)')
         expect(selected).to_contain_text('ESP32 programmer')
-        flash = page.get_by_role('button', name='Flash firmware', exact=True)
+        flash = page.get_by_role('button', name=re.compile(r'^Flash firmware(?: \(keep settings\))?$'))
         expect(flash).to_be_disabled()
         # Hosted firmware: choose a board card.
         s3 = catalog['esp32s3n16r8_espressif_cam']['name']
@@ -156,7 +156,7 @@ with sync_playwright() as p:
         expect(summary).to_contain_text('abc123def456')
         expect(summary.locator('table')).to_have_count(0)
         expect(flash).to_be_enabled()
-        for name in ('Select USB port', 'Flash firmware'):
+        for name in ('Select USB port', 'Flash firmware (keep settings)'):
             assert page.get_by_role('button', name=name, exact=True).bounding_box()['height'] >= 44
         assert cards.first.bounding_box()['height'] >= 44
         if width <= 600:
@@ -176,12 +176,10 @@ with sync_playwright() as p:
         expect(summary).to_contain_text('0x10000')
         expect(summary).to_contain_text('ESP32-S3')
         expect(page.locator('.flasher-board')).to_have_count(0)
-        expect(page.get_by_role('checkbox', name=re.compile('^Erase entire flash first'))).to_be_disabled()
         expect(flash).to_be_enabled()
         page.get_by_label('Firmware file').set_input_files(str(uploads / 'merged.bin'))
         expect(summary).to_contain_text('Full flash image')
         expect(summary).to_contain_text('ESP32')
-        expect(page.get_by_role('checkbox', name=re.compile('^Erase entire flash first'))).to_be_enabled()
         page.get_by_label('Firmware file').set_input_files(str(uploads / 'notes.bin'))
         expect(page.get_by_role('alert')).to_contain_text('notes.bin is not an ESP32 firmware image')
         expect(summary).to_have_count(0)
@@ -235,7 +233,7 @@ with sync_playwright() as p:
     page.goto(flasher_url)
     expect(page.get_by_text('This browser cannot flash boards')).to_be_visible()
     expect(page.get_by_role('button', name='Select USB port', exact=True)).to_be_disabled()
-    expect(page.get_by_role('button', name='Reset NVS settings', exact=True)).to_be_disabled()
+    expect(page.get_by_role('button', name='Flash firmware (keep settings)', exact=True)).to_be_disabled()
     context.close()
 
     # A different ESP-IDF project: NVS has a non-default label and address.
@@ -257,9 +255,11 @@ with sync_playwright() as p:
         page.goto(flasher_url)
         await_patch = '''async config => {
           const {ESPLoader, Transport}=await import(config.url);
-          window.nvsConnections=0;window.nvsErases=[];window.nvsVerifies=[];window.nvsRestarts=0;window.nvsCloses=0;
-          ESPLoader.prototype.main=async function(){
-            window.nvsConnections++;this.IS_STUB=true;
+          window.operations=[];window.nvsConnections=0;window.nvsErases=[];window.nvsVerifies=[];window.nvsRestarts=0;window.nvsCloses=0;
+          ESPLoader.prototype.main=async function(mode){
+            window.lastConnectionMode=mode;
+            if(window.requireManualBoot && mode!=='no_reset')throw Error('Failed to connect with the device');
+            window.nvsConnections++;this.IS_STUB=true;this.chip={CHIP_NAME:'ESP32-S3'};
             await new Promise(resolve=>{window.nvsContinue=resolve;});
           };
           ESPLoader.prototype.detectFlashSize=async()=> '4MB';
@@ -270,18 +270,25 @@ with sync_playwright() as p:
           Transport.prototype.read=async()=>new Uint8Array(config.digest);
           ESPLoader.prototype.checkCommand=async function(description,op,data){
             if(op!==this.ESP_ERASE_REGION)throw Error('Unexpected command');
-            window.nvsErases.push(Array.from(data));return 0;
+            window.nvsErases.push(Array.from(data));window.operations.push('erase');return 0;
           };
           ESPLoader.prototype.flashMd5sum=async(address,size)=>{window.nvsVerifies.push([address,size]);return config.erased;};
           ESPLoader.prototype.after=async()=>{window.nvsRestarts++;};
           Transport.prototype.disconnect=async()=>{window.nvsCloses++;};
-          ESPLoader.prototype.writeFlash=async()=>{throw Error('Firmware must not be written');};
+          ESPLoader.prototype.writeFlash=async options=>{if(options.eraseAll)throw Error('Unexpected full erase');window.operations.push('flash');};
           ESPLoader.prototype.eraseFlash=async()=>{throw Error('Full flash must not be erased');};
         }'''
         page.evaluate(await_patch, {'url': sdk_url, 'table': base64.b64encode(table).decode(),
                                    'digest': list(hashlib.md5(table).digest()),
                                    'erased': hashlib.md5(b'\xff' * 0x5000).hexdigest()})
-        reset = page.get_by_role('button', name='Reset NVS settings', exact=True)
+        write_firmware = page.get_by_role('checkbox', name='Flash firmware', exact=True)
+        clear_settings = page.get_by_role('checkbox', name=re.compile('^Clear settings'))
+        expect(write_firmware).to_be_checked()
+        expect(clear_settings).not_to_be_checked()
+        write_firmware.uncheck()
+        expect(page.get_by_role('button', name='Choose an action', exact=True)).to_be_disabled()
+        clear_settings.check()
+        reset = page.get_by_role('button', name='Clear settings', exact=True)
         expect(reset).to_be_enabled()
         expect(page.get_by_test_id('firmware-summary')).to_have_count(0)
         page.once('dialog', lambda dialog: dialog.dismiss())
@@ -290,14 +297,14 @@ with sync_playwright() as p:
         expect(page.get_by_label('Firmware source', exact=True)).to_be_disabled()
         expect(page.get_by_role('button', name='Select USB port', exact=True)).to_be_disabled()
         page.evaluate('window.nvsContinue()')
-        expect(page.get_by_test_id('reset-status')).to_contain_text('Cancelled. No settings erased.')
+        expect(page.get_by_test_id('flash-status')).to_contain_text('Cancelled. No settings erased.')
         assert page.evaluate('window.nvsErases') == []
         assert page.evaluate('window.nvsCloses') == 1
         page.once('dialog', lambda dialog: dialog.accept())
         reset.click()
         page.wait_for_function('window.nvsConnections===2')
         page.evaluate('window.nvsContinue()')
-        expect(page.get_by_test_id('reset-status')).to_contain_text('erased and verified. Firmware kept.')
+        expect(page.get_by_test_id('flash-status')).to_contain_text('erased and verified. Firmware kept.')
         expect(reset).to_be_enabled()
         expect(page.get_by_role('progressbar')).to_have_count(0)
         assert page.evaluate('window.nvsErases') == [[0, 0, 2, 0, 0, 0x50, 0, 0]]
@@ -309,13 +316,39 @@ with sync_playwright() as p:
         assert reset.bounding_box()['height'] >= 44
         assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
         if width == 1440:
+            page.evaluate('window.requireManualBoot=true')
+            reset.click()
+            expect(page.get_by_test_id('flash-status')).to_contain_text('Select Manual bootloader')
+            assert page.evaluate('window.nvsErases.length') == 1
+            page.get_by_label('Connection', exact=True).select_option('manual')
+            expect(page.get_by_label('Speed', exact=True)).to_be_disabled()
             page.evaluate('window.nvsBadTable=true')
             reset.click()
             page.wait_for_function('window.nvsConnections===3')
+            assert page.evaluate('window.lastConnectionMode') == 'no_reset'
             page.evaluate('window.nvsContinue()')
-            expect(page.get_by_test_id('reset-status')).to_contain_text('checksum failed. Nothing erased.')
+            expect(page.get_by_test_id('flash-status')).to_contain_text('checksum failed. Nothing erased.')
             expect(reset).to_be_enabled()
             assert len(page.evaluate('window.nvsErases')) == 1
+            page.evaluate('window.nvsBadTable=false')
+            write_firmware.check()
+            combined = page.get_by_role('button', name='Clear settings and flash', exact=True)
+            expect(combined).to_be_disabled()
+            page.get_by_label('Firmware source', exact=True).select_option('upload')
+            page.get_by_label('Firmware file').set_input_files(str(uploads / 'webrtc.bin'))
+            expect(combined).to_be_enabled()
+            page.once('dialog', lambda dialog: dialog.accept())
+            combined.click()
+            page.wait_for_function('window.nvsConnections===4')
+            page.evaluate('window.nvsContinue()')
+            expect(page.get_by_test_id('flash-status')).to_contain_text('Settings cleared. Firmware written and verified.')
+            assert page.evaluate('window.operations') == ['erase', 'erase', 'flash']
+            clear_settings.uncheck()
+            page.get_by_role('button', name='Flash firmware (keep settings)', exact=True).click()
+            page.wait_for_function('window.nvsConnections===5')
+            page.evaluate('window.nvsContinue()')
+            expect(page.get_by_test_id('flash-status')).to_have_text('Firmware written and verified. Board restarted.')
+            assert page.evaluate('window.operations') == ['erase', 'erase', 'flash', 'flash']
         context.close()
 
     # Motion detection and recordings: the shared camera_ui elements on the

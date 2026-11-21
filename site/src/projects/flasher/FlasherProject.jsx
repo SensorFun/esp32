@@ -66,7 +66,9 @@ export function FlasherProject() {
   const [firmwareError, setFirmwareError] = useState('');
   const [port, setPort] = useState(null);
   const [baud, setBaud] = useState(115200);
-  const [eraseAll, setEraseAll] = useState(false);
+  const [connectionMode, setConnectionMode] = useState('automatic');
+  const [clearSettings, setClearSettings] = useState(false);
+  const [writeFirmware, setWriteFirmware] = useState(true);
   const [tableAddress, setTableAddress] = useState('0x8000');
   const [partitionName, setPartitionName] = useState('');
   const [state, setState] = useState('idle');
@@ -114,8 +116,6 @@ export function FlasherProject() {
     try {
       const loaded = await loading;
       if (ticket !== load.current) return;
-      // Erasing everything would remove the bootloader that an app image needs.
-      if (loaded.upload?.kind === 'app') setEraseAll(false);
       setFirmware(loaded);
     } catch (error) { if (ticket === load.current) setFirmwareError(error.message); }
   }
@@ -138,83 +138,90 @@ export function FlasherProject() {
     } catch (error) { if (error.name !== 'NotFoundError') setStatus(error.message); }
   }
 
-  async function flash() {
-    if (!firmware || !port || busy) return;
-    setState('flashing'); setProgress(0); setLog([]); setStatus('Connecting to the board…');
+  async function applyFlashActions() {
+    if (!ready) return;
+    setState(writeFirmware ? 'flashing' : 'resetting');
+    setProgress(0); setLog([]); setStatus('Connecting to the board…');
     const lines = [];
     let partial = '';
     const push = text => { lines.push(text); if (lines.length > 500) lines.shift(); setLog([...lines]); };
     const terminal = { clean() { lines.length = 0; setLog([]); }, writeLine(text) { push(partial + text); partial = ''; }, write(text) { partial += text; } };
-    const total = firmware.files.reduce((sum, file) => sum + file.data.length, 0);
-    const before = firmware.files.map((_, index) => firmware.files.slice(0, index).reduce((sum, file) => sum + file.data.length, 0));
-    let transport;
+    let transport, loader, connected = false, cleared = false;
+    let resultState = writeFirmware ? 'error' : 'reset-error';
+    let message;
     try {
       const { ESPLoader, Transport } = await import('esptool-js');
       transport = new Transport(port, false);
-      const loader = new ESPLoader({ transport, baudrate: baud, romBaudrate: 115200, terminal });
-      const description = await loader.main(firmware.before);
-      if (chipId(loader.chip.CHIP_NAME) !== firmware.chip) {
-        throw Error(`This firmware is for ${chipName(firmware.chip)}, but the board is ${description}. Nothing was written.`);
-      }
-      setStatus(eraseAll ? 'Erasing flash and writing firmware…' : 'Writing firmware…');
-      await loader.writeFlash({
-        fileArray: firmware.files.map(file => ({ data: file.data, address: file.address })),
-        flashMode: firmware.flashMode, flashFreq: firmware.flashFreq, flashSize: firmware.flashSize,
-        eraseAll, compress: true, calculateMD5Hash: md5,
-        reportProgress: (index, written, size) => setProgress((before[index] + (size ? written / size : 1) * firmware.files[index].data.length) / total),
-      });
-      setStatus('Restarting the board…');
-      await loader.after(firmware.after);
-      setProgress(1); setState('done');
-      setStatus('Done. Firmware written and verified; the board has restarted.');
-    } catch (error) {
-      setState('error');
-      const message = error?.message || String(error);
-      setStatus(/Failed to open serial port|already open|Access denied|NetworkError/i.test(message)
-        ? `${message} Close other programs using this port (serial monitors, idf.py monitor, Arduino IDE) and try again.`
-        : message);
-    } finally {
-      if (partial) push(partial);
-      try { await transport?.disconnect(); } catch { /* The port may already be closed. */ }
-    }
-  }
-
-  async function resetSettings() {
-    if (!supported || !port || busy) return;
-    setState('resetting'); setStatus('Connecting to the board…'); setProgress(0); setLog([]);
-    let transport, loader, connected = false, resultState = 'reset-error', message;
-    try {
-      const { ESPLoader, Transport } = await import('esptool-js');
-      transport = new Transport(port, false);
-      loader = new ESPLoader({ transport, baudrate: baud, romBaudrate: 115200,
-        terminal: { clean() {}, write() {}, writeLine() {} } });
-      await loader.main('default_reset');
+      const manual = connectionMode === 'manual';
+      loader = new ESPLoader({ transport, baudrate: manual ? 115200 : baud, romBaudrate: 115200, terminal });
+      const description = await loader.main(manual ? 'no_reset' : firmware?.before ?? 'default_reset');
       connected = true;
-      const partition = await resetNvs(loader, { tableAddress, partitionName, status: setStatus,
-        confirm: entry => window.confirm(`Erase NVS partition “${entry.name}” on the selected board? Its saved settings will be permanently cleared. Firmware and other partitions are kept.`) });
-      resultState = partition ? 'reset-done' : 'reset-cancelled';
-      message = partition ? `NVS partition “${partition.name}” erased and verified. Firmware kept.` : 'Cancelled. No settings erased.';
-      setStatus('Restarting the board…');
+      if (writeFirmware && chipId(loader.chip.CHIP_NAME) !== firmware.chip) {
+        throw Error(`This firmware is for ${chipName(firmware.chip)}, but the board is ${description}. Nothing changed.`);
+      }
+      if (clearSettings) {
+        const partition = await resetNvs(loader, { tableAddress, partitionName, status: setStatus,
+          confirm: entry => window.confirm(writeFirmware
+            ? `Clear saved settings in “${entry.name}” and flash the selected firmware?`
+            : `Erase saved settings in “${entry.name}”? The installed firmware will be kept.`) });
+        if (!partition) {
+          resultState = 'reset-cancelled';
+          message = 'Cancelled. No settings erased.';
+          return;
+        }
+        cleared = true;
+        message = `NVS partition “${partition.name}” erased and verified. Firmware kept.`;
+      }
+      if (writeFirmware) {
+        setStatus('Writing firmware…');
+        const total = firmware.files.reduce((sum, file) => sum + file.data.length, 0);
+        const before = firmware.files.map((_, index) => firmware.files.slice(0, index).reduce((sum, file) => sum + file.data.length, 0));
+        await loader.writeFlash({
+          fileArray: firmware.files.map(file => ({ data: file.data, address: file.address })),
+          flashMode: firmware.flashMode, flashFreq: firmware.flashFreq, flashSize: firmware.flashSize,
+          eraseAll: false, compress: true, calculateMD5Hash: md5,
+          reportProgress: (index, written, size) => setProgress((before[index] + (size ? written / size : 1) * firmware.files[index].data.length) / total),
+        });
+        setProgress(1);
+        message = cleared ? 'Settings cleared. Firmware written and verified.' : 'Firmware written and verified.';
+      }
+      resultState = writeFirmware ? 'done' : 'reset-done';
     } catch (error) {
       const detail = error?.message || String(error);
-      message = /Failed to open serial port|already open|Access denied|NetworkError/i.test(detail)
-        ? `${detail} Close other programs using this port and try again.` : detail;
+      message = cleared ? `Settings were already cleared. ${detail}` : detail;
+      if (/Failed to open serial port|already open|Access denied|NetworkError/i.test(detail)) {
+        message += ' Close other programs using this port and try again.';
+      } else if (!connected && detail.includes('Failed to connect with the device')) {
+        const sdTip = boardId === 'esp32_ai-thinker_cam'
+          ? ' If a microSD card is inserted, power off the board and remove it before retrying.'
+          : '';
+        message = `Could not reach the ESP32 bootloader.${sdTip} Hold BOOT, tap RESET, then release BOOT. Select Manual bootloader under Connection and retry.`;
+      }
     } finally {
       if (connected) {
-        try { await loader.after('hard_reset'); if (resultState === 'reset-done') message += ' Board restarted.'; }
-        catch { message += ' Press RESET to restart the board.'; }
+        setStatus('Restarting the board…');
+        try {
+          await loader.after(resultState === 'done' ? firmware.after : 'hard_reset');
+          if (resultState === 'done' || resultState === 'reset-done') message += ' Board restarted.';
+        } catch {
+          message += ' Press RESET to restart the board.';
+        }
       }
+      if (partial) push(partial);
       try { await transport?.disconnect(); } catch { /* The port may already be closed. */ }
       setState(resultState); setStatus(message);
     }
   }
 
   const portInfo = port?.getInfo() ?? {};
-  const ready = supported && firmware && port && !busy;
+  const ready = supported && port && !busy && (writeFirmware ? firmware : clearSettings);
   const selectedBoard = boards.find(board => board.id === boardId);
   const info = boardId && packages?.[project]?.[boardId];
   const upload = firmware?.upload;
   const next = upload ? firmware.firmware : offered;
+  let actionLabel = 'Choose an action';
+  if (writeFirmware) actionLabel = upload?.kind === 'full' ? 'Flash firmware' : 'Flash firmware (keep settings)';
+  if (clearSettings) actionLabel = writeFirmware ? 'Clear settings and flash' : 'Clear settings';
 
   return <div className="rtc-theme sensorfan"><div className="rtc-body"><SiteHeader project={{ id: 'flasher', name: 'Flasher' }} /><main id="main-content" tabIndex="-1" className="rtc-content flasher">
     <div className="sensorfan-intro"><h1>Flash firmware</h1><p>Flash firmware or reset NVS settings over USB, entirely in this browser. To flash, choose a board or upload your own firmware file. Firmware goes only from this page to the board; it is never sent to a server.</p></div>
@@ -254,31 +261,33 @@ export function FlasherProject() {
       <p>Connect one board by USB, then select its port in the browser's list.</p>
       {port && <p className="flasher-selected-port" data-testid="selected-port"><Icon name="chip" size={16} /><span><strong>{portLabel(portInfo)}</strong>{isEsp32Port(portInfo) && <small>ESP32 programmer</small>}</span></p>}
       <button type="button" className="button rtc-secondary" disabled={!supported || busy} onClick={selectPort}><Icon name="plus" size={16} />Select USB port</button>
-      <div className="flasher-reset">
-        <h3>Reset NVS settings</h3>
-        <p>Erase saved settings without reflashing. Works with ESP-IDF partition tables, including other projects. No firmware file is needed.</p>
-        <details className="flasher-reset-options"><summary>Advanced options</summary>
-          <label>Partition table address<input value={tableAddress} disabled={busy} spellCheck={false} autoComplete="off" onChange={event => setTableAddress(event.target.value)} /></label>
-          <label>NVS partition name (optional)<input value={partitionName} disabled={busy} maxLength={16} placeholder="Auto-detect" autoComplete="off" onChange={event => setPartitionName(event.target.value)} /></label>
-        </details>
-        <button type="button" className="button rtc-secondary" disabled={!supported || !port || busy} onClick={resetSettings}>{state === 'resetting' ? 'Resetting NVS…' : 'Reset NVS settings'}</button>
-        {resetMode && <p role="status" className="flasher-status" data-testid="reset-status">{status}</p>}
-      </div>
     </section>
 
     <section className="rtc-panel flasher-step" aria-labelledby="flash-title">
       <div className="panel-title"><span className="flasher-number">3</span><h2 id="flash-title">Flash</h2></div>
       <div className="flasher-options">
         <label htmlFor="flash-baud">Speed</label>
-        <select id="flash-baud" value={baud} disabled={busy} onChange={event => setBaud(Number(event.target.value))}>{bauds.map(value => <option key={value} value={value}>{value.toLocaleString()} baud</option>)}</select>
-        <label className="flasher-check"><input type="checkbox" checked={eraseAll} disabled={busy || upload?.kind === 'app'} onChange={event => setEraseAll(event.target.checked)} /><span>Erase entire flash first <small>{upload?.kind === 'app' ? 'Unavailable for app images, which need the bootloader already on the board' : 'Also clears saved Wi-Fi, camera password, and camera settings'}</small></span></label>
+        <select id="flash-baud" value={connectionMode === 'manual' ? 115200 : baud} disabled={busy || connectionMode === 'manual'} onChange={event => setBaud(Number(event.target.value))}>{bauds.map(value => <option key={value} value={value}>{value.toLocaleString()} baud</option>)}</select>
+        <label htmlFor="flash-connection">Connection</label>
+        <select id="flash-connection" value={connectionMode} disabled={busy} onChange={event => setConnectionMode(event.target.value)}>
+          <option value="automatic">Automatic reset</option>
+          <option value="manual">Manual bootloader</option>
+        </select>
+        <label className="flasher-check"><input type="checkbox" checked={clearSettings} disabled={busy} onChange={event => setClearSettings(event.target.checked)} /><span>Clear settings <small>Erase saved settings in NVS.</small></span></label>
+        <label className="flasher-check"><input type="checkbox" checked={writeFirmware} disabled={busy} onChange={event => setWriteFirmware(event.target.checked)} /><span>Flash firmware</span></label>
       </div>
-      <button type="button" className="button rtc-primary flasher-go" disabled={!ready} onClick={flash}>{state === 'flashing' ? 'Flashing…' : 'Flash firmware'}</button>
+      {clearSettings && (
+        <details className="flasher-reset-options"><summary>Advanced options</summary>
+          <label>Partition table address<input value={tableAddress} disabled={busy} spellCheck={false} autoComplete="off" onChange={event => setTableAddress(event.target.value)} /></label>
+          <label>NVS partition name (optional)<input value={partitionName} disabled={busy} maxLength={16} placeholder="Auto-detect" autoComplete="off" onChange={event => setPartitionName(event.target.value)} /></label>
+        </details>
+      )}
+      <button type="button" className="button rtc-primary flasher-go" disabled={!ready} onClick={applyFlashActions}>{busy ? 'Working…' : actionLabel}</button>
       {state !== 'idle' && !resetMode && <div className="flasher-progress" data-state={state}><progress max="1" value={progress} aria-label="Flashing progress" /><span>{Math.round(progress * 100)}%</span></div>}
-      <p role="status" className="flasher-status" data-testid="flash-status">{resetMode ? '' : status}</p>
+      <p role="status" className="flasher-status" data-testid="flash-status">{status}</p>
       {state === 'done' && next?.afterFlash.text && <p>{next.afterFlash.text} {next.afterFlash.link && <a href={next.afterFlash.link}>Open {next.name}</a>}</p>}
       {log.length > 0 && <details className="flasher-log"><summary>Details</summary><pre>{log.join('\n')}</pre></details>}
-      <p className="flasher-hint">If the board doesn't connect, hold its BOOT button while selecting <strong>Flash firmware</strong>, or try a lower speed.</p>
+      {connectionMode === 'manual' && <p className="flasher-hint">Hold BOOT, tap RESET, then release BOOT before starting. If your ESP32-CAM has no BOOT button, connect GPIO0 to GND before resetting, then remove the connection after the action finishes and reset again.</p>}
     </section>
   </main></div></div>;
 }

@@ -129,18 +129,16 @@ opens one project directly, so a project page can link to its firmware.
    USB, CP210x, CH340, FTDI, Prolific). Selecting another port replaces it and
    forgets the previous one. A single port allowed on an earlier visit is
    selected again automatically while it is connected.
-3. **Flash firmware**: the page stops before writing if the connected chip does
-   not match the build, verifies every file by MD5 after writing, then
-   restarts the board and shows the project's `after_flash` text and link.
-   **Erase entire flash first** also clears saved Wi-Fi and settings.
+3. **Flash**: choose **Clear settings**, **Flash firmware**, or both. The action
+   button updates to match. Clearing settings alone needs only the USB port.
+   Selecting both verifies the chip, clears NVS, then writes and verifies
+   the selected firmware. Flashing alone skips the NVS erase. Full flash
+   images can overwrite settings as part of the image itself.
 
-**Reset NVS settings** is a separate action under **USB port**, available without
-choosing a firmware file. It uses the ESP flash-loader stub in RAM, reads the
-installed ESP-IDF partition table, asks for confirmation, erases only the selected
-NVS data partition, verifies the erased contents by MD5, and restarts the board.
-It works with other projects and does not depend on a command in SensorFun
-firmware. Applications, the bootloader, partition table, NVS encryption keys,
-and other data partitions are kept.
+Clearing settings uses the ESP flash-loader stub in RAM. It reads the installed
+ESP-IDF partition table, asks for confirmation, and erases and verifies the
+selected NVS data partition. This works across projects without a command in
+the running firmware.
 
 The table address defaults to `0x8000`. **Advanced options** supports custom
 table addresses and NVS partition names. The default selection is the partition
