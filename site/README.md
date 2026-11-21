@@ -134,6 +134,20 @@ opens one project directly, so a project page can link to its firmware.
    restarts the board and shows the project's `after_flash` text and link.
    **Erase entire flash first** also clears saved Wi-Fi and settings.
 
+**Reset NVS settings** is a separate action under **USB port**, available without
+choosing a firmware file. It uses the ESP flash-loader stub in RAM, reads the
+installed ESP-IDF partition table, asks for confirmation, erases only the selected
+NVS data partition, verifies the erased contents by MD5, and restarts the board.
+It works with other projects and does not depend on a command in SensorFun
+firmware. Applications, the bootloader, partition table, NVS encryption keys,
+and other data partitions are kept.
+
+The table address defaults to `0x8000`. **Advanced options** supports custom
+table addresses and NVS partition names. The default selection is the partition
+named `nvs`, or the only NVS data partition if it has another name. Ambiguous
+layouts require an explicit name. Invalid layouts and read-only or explicitly
+encrypted partitions are rejected. Flash contents are not saved or displayed.
+
 If the board doesn't connect, close other programs using the port, hold BOOT
 while starting, or lower the speed.
 

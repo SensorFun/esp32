@@ -1,9 +1,13 @@
 """Check the SensorFun ESP32 camera interface on desktop and mobile."""
 import argparse
+import base64
+import hashlib
 import json
 import re
+import struct
 import tempfile
 from pathlib import Path
+from urllib.parse import urljoin
 from playwright.sync_api import sync_playwright, expect
 import yaml
 
@@ -150,7 +154,7 @@ with sync_playwright() as p:
         expect(summary).to_contain_text(s3)
         expect(summary).to_contain_text('ESP32-S3')
         expect(summary).to_contain_text('abc123def456')
-        expect(summary).to_contain_text('0x10000')
+        expect(summary.locator('table')).to_have_count(0)
         expect(flash).to_be_enabled()
         for name in ('Select USB port', 'Flash firmware'):
             assert page.get_by_role('button', name=name, exact=True).bounding_box()['height'] >= 44
@@ -176,7 +180,6 @@ with sync_playwright() as p:
         expect(flash).to_be_enabled()
         page.get_by_label('Firmware file').set_input_files(str(uploads / 'merged.bin'))
         expect(summary).to_contain_text('Full flash image')
-        expect(summary).to_contain_text('0x0')
         expect(summary).to_contain_text('ESP32')
         expect(page.get_by_role('checkbox', name=re.compile('^Erase entire flash first'))).to_be_enabled()
         page.get_by_label('Firmware file').set_input_files(str(uploads / 'notes.bin'))
@@ -232,7 +235,88 @@ with sync_playwright() as p:
     page.goto(flasher_url)
     expect(page.get_by_text('This browser cannot flash boards')).to_be_visible()
     expect(page.get_by_role('button', name='Select USB port', exact=True)).to_be_disabled()
+    expect(page.get_by_role('button', name='Reset NVS settings', exact=True)).to_be_disabled()
     context.close()
+
+    # A different ESP-IDF project: NVS has a non-default label and address.
+    # Patch only the SDK's hardware methods; exercise the real React handler,
+    # partition parser, erase command construction and verification in-browser.
+    table = bytearray(b'\xff' * 4096)
+    table[:32] = struct.pack('<HBBII16sI', 0x50aa, 1, 2, 0x20000, 0x5000, b'preferences', 0)
+    table[32:64] = b'\xeb\xeb' + b'\xff' * 14 + hashlib.md5(table[:32]).digest()
+    sdk = next((workspace / 'site/dist/assets').glob('lib-*.js'))
+    sdk_url = urljoin(args.url.split('#')[0], 'assets/' + sdk.name)
+    for width in (320, 390, 768, 1440):
+        context = browser.new_context(viewport={'width': width, 'height': 1000})
+        context.add_init_script("""Object.defineProperty(navigator,'serial',{value:{
+          getPorts:async()=>[{getInfo:()=>({usbVendorId:0x0403,usbProductId:0x6001})}],
+          addEventListener(){},removeEventListener(){},
+        }});""")
+        page = context.new_page()
+        page.on('pageerror', lambda error: errors.append(str(error)))
+        page.goto(flasher_url)
+        await_patch = '''async config => {
+          const {ESPLoader, Transport}=await import(config.url);
+          window.nvsConnections=0;window.nvsErases=[];window.nvsVerifies=[];window.nvsRestarts=0;window.nvsCloses=0;
+          ESPLoader.prototype.main=async function(){
+            window.nvsConnections++;this.IS_STUB=true;
+            await new Promise(resolve=>{window.nvsContinue=resolve;});
+          };
+          ESPLoader.prototype.detectFlashSize=async()=> '4MB';
+          ESPLoader.prototype.readFlash=async(address,size)=>{
+            if(address!==0x8000||size!==4096)throw Error('Wrong partition table read');
+            return window.nvsBadTable?new Uint8Array(4096):Uint8Array.from(atob(config.table),c=>c.charCodeAt(0));
+          };
+          Transport.prototype.read=async()=>new Uint8Array(config.digest);
+          ESPLoader.prototype.checkCommand=async function(description,op,data){
+            if(op!==this.ESP_ERASE_REGION)throw Error('Unexpected command');
+            window.nvsErases.push(Array.from(data));return 0;
+          };
+          ESPLoader.prototype.flashMd5sum=async(address,size)=>{window.nvsVerifies.push([address,size]);return config.erased;};
+          ESPLoader.prototype.after=async()=>{window.nvsRestarts++;};
+          Transport.prototype.disconnect=async()=>{window.nvsCloses++;};
+          ESPLoader.prototype.writeFlash=async()=>{throw Error('Firmware must not be written');};
+          ESPLoader.prototype.eraseFlash=async()=>{throw Error('Full flash must not be erased');};
+        }'''
+        page.evaluate(await_patch, {'url': sdk_url, 'table': base64.b64encode(table).decode(),
+                                   'digest': list(hashlib.md5(table).digest()),
+                                   'erased': hashlib.md5(b'\xff' * 0x5000).hexdigest()})
+        reset = page.get_by_role('button', name='Reset NVS settings', exact=True)
+        expect(reset).to_be_enabled()
+        expect(page.get_by_test_id('firmware-summary')).to_have_count(0)
+        page.once('dialog', lambda dialog: dialog.dismiss())
+        reset.click()
+        page.wait_for_function('window.nvsConnections===1')
+        expect(page.get_by_label('Firmware source', exact=True)).to_be_disabled()
+        expect(page.get_by_role('button', name='Select USB port', exact=True)).to_be_disabled()
+        page.evaluate('window.nvsContinue()')
+        expect(page.get_by_test_id('reset-status')).to_contain_text('Cancelled. No settings erased.')
+        assert page.evaluate('window.nvsErases') == []
+        assert page.evaluate('window.nvsCloses') == 1
+        page.once('dialog', lambda dialog: dialog.accept())
+        reset.click()
+        page.wait_for_function('window.nvsConnections===2')
+        page.evaluate('window.nvsContinue()')
+        expect(page.get_by_test_id('reset-status')).to_contain_text('erased and verified. Firmware kept.')
+        expect(reset).to_be_enabled()
+        expect(page.get_by_role('progressbar')).to_have_count(0)
+        assert page.evaluate('window.nvsErases') == [[0, 0, 2, 0, 0, 0x50, 0, 0]]
+        assert page.evaluate('window.nvsVerifies') == [[0x20000, 0x5000]]
+        assert page.evaluate('window.nvsRestarts') == 2
+        assert page.evaluate('window.nvsCloses') == 2
+        page.get_by_text('Advanced options', exact=True).click()
+        assert page.get_by_label('Partition table address', exact=True).bounding_box()['height'] >= 44
+        assert reset.bounding_box()['height'] >= 44
+        assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
+        if width == 1440:
+            page.evaluate('window.nvsBadTable=true')
+            reset.click()
+            page.wait_for_function('window.nvsConnections===3')
+            page.evaluate('window.nvsContinue()')
+            expect(page.get_by_test_id('reset-status')).to_contain_text('checksum failed. Nothing erased.')
+            expect(reset).to_be_enabled()
+            assert len(page.evaluate('window.nvsErases')) == 1
+        context.close()
 
     # Motion detection and recordings: the shared camera_ui elements on the
     # React WebRTC page and on the board's own viewer page, answered by a

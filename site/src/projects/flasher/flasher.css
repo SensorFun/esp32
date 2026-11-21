@@ -12,6 +12,13 @@
 .flasher-selected-port{display:flex!important;align-items:center;gap:12px;min-height:44px;border:1px solid #00d4cb;border-radius:8px;padding:8px 14px;margin:4px 0 16px!important;color:#e4eadd}
 .flasher-selected-port span{min-width:0;overflow-wrap:anywhere}
 .flasher-selected-port small{display:block;font-size:12px;color:#00d4cb}
+.flasher-reset{border-top:1px solid var(--rtc-line);margin-top:20px;padding-top:20px}
+.flasher-reset h3{margin:0;font-size:16px;font-weight:600}
+.flasher-reset>p{font-size:14px;line-height:1.7}
+.flasher-reset-options{margin:12px 0;font-size:14px}
+.flasher-reset-options summary{min-height:44px;align-content:center;cursor:pointer}
+.flasher-reset-options label{display:grid;gap:8px;margin:12px 0}
+.flasher-reset-options input{min-height:44px;font-size:16px;width:100%;min-width:0;box-sizing:border-box;padding:10px;border:1px solid #34412e;border-radius:6px;background:#0f1612;color:#e4eadd}
 .flasher-error{color:#f0a08a!important;font-size:14px!important}
 .flasher-firmware{margin-top:18px;border-top:1px solid var(--rtc-line);padding-top:16px;min-width:0}
 .flasher-firmware dl{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,210px),1fr));gap:12px 20px;margin:0 0 16px}
