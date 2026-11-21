@@ -1,5 +1,6 @@
 #include "common/application.h"
 #include "provisioning.h"
+#include "local_http.h"
 #include "tls_identity.h"
 #include "camera_controls.h"
 #include "motion.h"
@@ -59,7 +60,7 @@ esp_peer_default_cfg_t peer_defaults(uint8_t candidates) {
 std::deque<std::string> commands;
 SemaphoreHandle_t mutex;
 esp_peer_handle_t peer;
-httpd_handle_t server;
+httpd_handle_t server, local_http;
 std::string answer, remote_offer;
 // Replies and status pushes waiting for the data channel, oldest first.
 std::deque<std::string> replies;
@@ -199,14 +200,7 @@ bool same_origin(httpd_req_t *r) {
     esp_netif_ip_info_t ip{};
     esp_netif_t *sta = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
     if (!sta || esp_netif_get_ip_info(sta, &ip) != ESP_OK) return false;
-    char address[20], host[48], origin[64];
-    snprintf(address, sizeof(address), IPSTR, IP2STR(&ip.ip));
-    if (httpd_req_get_hdr_value_str(r, "Host", host, sizeof(host)) != ESP_OK) return false;
-    if (host != std::string(address) && host != std::string(address) + ":443") return false;
-    if (httpd_req_get_hdr_value_len(r, "Origin")) {
-        if (httpd_req_get_hdr_value_str(r, "Origin", origin, sizeof(origin)) != ESP_OK || origin != std::string("https://") + host) return false;
-    }
-    return true;
+    return camera_http::allow_request(r, ip, r->handle != local_http);
 }
 esp_err_t page(httpd_req_t *r) {
     if (!same_origin(r)) return respond(r, "403 Forbidden", "{}");
@@ -369,21 +363,31 @@ void start_server() {
     cfg.servercert_len = strlen(tls_identity_cert()) + 1;
     cfg.prvtkey_pem = reinterpret_cast<const uint8_t *>(tls_identity_key());
     cfg.prvtkey_len = strlen(tls_identity_key()) + 1;
+    // Capture the plain configuration before HTTPS installs TLS callbacks.
+    httpd_config_t plain = cfg.httpd;
     ESP_ERROR_CHECK(httpd_ssl_start(&server, &cfg));
-    httpd_uri_t route{};
-    route.uri = "/"; route.method = HTTP_GET; route.handler = page;
-    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &route));
-    route.uri = "/camera-settings.js"; route.handler = settings_script;
-    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &route));
-    route.uri = "/camera-motion.js"; route.handler = motion_script;
-    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &route));
-    route.uri = "/api/session"; route.handler = session;
-    for (auto method : {HTTP_GET, HTTP_POST, HTTP_DELETE}) {
-        route.method = method; ESP_ERROR_CHECK(httpd_register_uri_handler(server, &route));
+    plain.server_port = 80;
+    plain.ctrl_port = cfg.httpd.ctrl_port + 1;
+    plain.max_open_sockets = 3;
+    plain.stack_size = 6144;
+    ESP_ERROR_CHECK(httpd_start(&local_http, &plain));
+    for (httpd_handle_t listener : {server, local_http}) {
+        httpd_uri_t route{};
+        route.uri = "/"; route.method = HTTP_GET; route.handler = page;
+        ESP_ERROR_CHECK(httpd_register_uri_handler(listener, &route));
+        route.uri = "/camera-settings.js"; route.handler = settings_script;
+        ESP_ERROR_CHECK(httpd_register_uri_handler(listener, &route));
+        route.uri = "/camera-motion.js"; route.handler = motion_script;
+        ESP_ERROR_CHECK(httpd_register_uri_handler(listener, &route));
+        route.uri = "/api/session"; route.handler = session;
+        for (auto method : {HTTP_GET, HTTP_POST, HTTP_DELETE}) {
+            route.method = method; ESP_ERROR_CHECK(httpd_register_uri_handler(listener, &route));
+        }
     }
     esp_netif_ip_info_t ip{};
     ESP_ERROR_CHECK(esp_netif_get_ip_info(esp_netif_get_handle_from_ifkey("WIFI_STA_DEF"), &ip));
     ESP_LOGI(TAG, "Local camera ready: https://" IPSTR "/", IP2STR(&ip.ip));
+    ESP_LOGI(TAG, "Local HTTP viewer: http://" IPSTR "/", IP2STR(&ip.ip));
 }
 void worker(common::Application &app) {
     bool camera_ready = false;
@@ -399,6 +403,7 @@ void worker(common::Application &app) {
     for (;;) {
         if (!provisioning_is_ready()) {
             { Lock guard; if (fb) { camera_frame_return(fb); fb = nullptr; } close_peer(); }
+            if (local_http) { ESP_ERROR_CHECK(httpd_stop(local_http)); local_http = nullptr; }
             if (server) { ESP_ERROR_CHECK(httpd_ssl_stop(server)); server = nullptr; }
             // Keep detecting and recording while Wi-Fi is down.
             if (camera_ready && motion_frame_due()) {

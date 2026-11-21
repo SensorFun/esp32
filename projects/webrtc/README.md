@@ -4,11 +4,11 @@ Uses the `esp_peer` component from Espressif's
 [esp-webrtc-solution](https://github.com/espressif/esp-webrtc-solution), pinned in
 `main/idf_component.yml`. JPEG frames and camera commands use a browser WebRTC
 SCTP/DTLS data channel. This is JPEG over WebRTC, rather than an H.264 video track.
-The device hosts its own HTTPS SDP exchange; no external signaling/STUN/TURN
+The device hosts its own local HTTP/HTTPS SDP exchange; no external signaling/STUN/TURN
 service or Internet connection is required. Browser and board must have local
 IP connectivity (guest network/client isolation can prevent this). This local
-mode requires direct IPv4 HTTPS access to the device, without a reverse proxy.
-Browser mDNS host candidates are mapped to the HTTPS socket's
+mode requires direct IPv4 HTTP or HTTPS access to the device, without a reverse proxy.
+Browser mDNS host candidates are mapped to the HTTP/HTTPS socket's
 source address, preserving their UDP ports, ICE credentials, and DTLS
 fingerprint. Normal browser privacy settings can remain enabled.
 
@@ -52,6 +52,8 @@ within 4 MB flash on both boards. S3 uses octal PSRAM; ESP32-CAM uses quad PSRAM
    `Local camera ready: https://<device-ip>/`. Join the same LAN, open that URL,
    click **Connect**. No pairing, access key, or login is required on the LAN.
    Your browser may show a certificate warning for the device’s self-signed HTTPS certificate.
+   Alternatively, use `http://<device-ip>/` on the same private subnet. Both
+   protocols serve the same viewer, settings and WebRTC session endpoints.
 4. Use the displayed controls while watching the live camera. **Disconnect**
    releases the single peer. An abandoned session expires after 30 seconds
    without browser data-channel keepalives.
@@ -239,7 +241,14 @@ HTTPS delivers the DTLS fingerprint, and the browser WebRTC stack
 negotiates DTLS encryption for images and controls. The API checks Host
 and Origin and does not enable CORS. Any device with LAN access can view and
 control the camera; no pairing token or application login is used. The viewer
-loads no remote assets. Plain HTTP is not started by this project.
+loads no remote assets. Plain HTTP is accepted only from private IPv4 clients
+on the camera's own subnet, with matching Host/Origin and no forwarding headers.
+HTTP does not encrypt the setup form or SDP exchange; use HTTPS when those
+need protection. Public website/signaling access continues to use HTTPS/WSS.
+Do not forward port 80 or proxy the local HTTP service onto the internet:
+source NAT can make external clients appear to come from a local router.
+The firmware socket budget is 16 to accommodate the two bounded listeners
+alongside signaling and WebRTC sockets.
 
 This implements encryption in transit, not encryption of flash contents. Saved
 Wi-Fi credentials remain in the existing NVS partition. Secure boot, flash/NVS

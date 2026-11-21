@@ -7,7 +7,7 @@
 #if CONFIG_CAMERA_REMOTE_ACCESS
 #include "camera_access.h"
 #endif
-#include "request_address.h"
+#include "local_http.h"
 
 #include <algorithm>
 #include <atomic>
@@ -44,7 +44,7 @@ std::atomic<bool> submitting{false};
 EventGroupHandle_t events = nullptr;
 QueueHandle_t requests = nullptr;
 esp_netif_t *station_netif = nullptr, *ap_netif = nullptr;
-httpd_handle_t server = nullptr;
+httpd_handle_t server = nullptr, local_http = nullptr;
 char ap_address[16]{};
 std::atomic<bool> ap_active{false};
 
@@ -106,35 +106,19 @@ esp_err_t json_response(httpd_req_t *request, const char *status, const char *bo
     return httpd_resp_sendstr(request, body);
 }
 
+bool secure_request(httpd_req_t *request) {
+#if CONFIG_PROVISIONING_SECURE
+    return request->handle != local_http;
+#else
+    (void)request;
+    return false;
+#endif
+}
+
 bool setup_request(httpd_req_t *request) {
-    sockaddr_storage local{};
-    socklen_t length = sizeof(local);
-    if (getsockname(httpd_req_to_sockfd(request), reinterpret_cast<sockaddr *>(&local), &length) != 0 ||
-        !provisioning::matches_setup_address(local, esp_ip4addr_aton(ap_address))) return false;
-    // Restrict HTTP to the setup address, preventing LAN access and DNS rebinding.
-    char host[32]{};
-    if (httpd_req_get_hdr_value_str(request, "Host", host, sizeof(host)) != ESP_OK) return false;
-    if (std::strcmp(host, ap_address) != 0 && std::string(host) != std::string(ap_address) +
-#if CONFIG_PROVISIONING_SECURE
-        ":443"
-#else
-        ":80"
-#endif
-    ) return false;
-    const size_t origin_length = httpd_req_get_hdr_value_len(request, "Origin");
-    if (origin_length) {
-        char origin[48]{};
-        if (httpd_req_get_hdr_value_str(request, "Origin", origin, sizeof(origin)) != ESP_OK) return false;
-        const std::string expected = std::string(
-#if CONFIG_PROVISIONING_SECURE
-            "https://"
-#else
-            "http://"
-#endif
-        ) + host;
-        if (origin != expected) return false;
-    }
-    return true;
+    esp_netif_ip_info_t ip{};
+    if (esp_netif_get_ip_info(ap_netif, &ip) != ESP_OK) return false;
+    return camera_http::allow_request(request, ip, secure_request(request));
 }
 
 esp_err_t page(httpd_req_t *request) {
@@ -198,7 +182,7 @@ esp_err_t status(httpd_req_t *request) {
         std::snprintf(address, sizeof(address), IPSTR, IP2STR(&ip.ip));
         std::string body = "{\"state\":\"connected\",\"ip\":" + provisioning::json_quote(address);
 #if CONFIG_CAMERA_REMOTE_ACCESS
-        body += ",\"local_url\":" + provisioning::json_quote(std::string("https://") + address + "/");
+        body += ",\"local_url\":" + provisioning::json_quote(std::string(secure_request(request) ? "https://" : "http://") + address + "/");
 #endif
         body += "}";
         return json_response(request, "200 OK", body.c_str());
@@ -267,7 +251,8 @@ void start_setup() {
     wifi_config_t config{};
     std::memcpy(config.ap.ssid, name, std::strlen(name));
     config.ap.ssid_len = std::strlen(name);
-    // Setup is an open access point; HTTPS protects submitted credentials.
+    // Setup is an open access point. HTTPS encrypts credentials; local HTTP
+    // is also available when explicitly chosen by the user.
     // The remote camera password is independent of joining this setup network.
     config.ap.authmode = WIFI_AUTH_OPEN;
     config.ap.max_connection = 2;
@@ -291,11 +276,16 @@ void start_setup() {
 #pragma GCC diagnostic pop
     secure.httpd = http;
     secure.httpd.server_port = 443;
+    secure.httpd.max_open_sockets = 2;
     secure.servercert = (const uint8_t *)tls_identity_cert();
     secure.servercert_len = strlen(tls_identity_cert()) + 1;
     secure.prvtkey_pem = (const uint8_t *)tls_identity_key();
     secure.prvtkey_len = strlen(tls_identity_key()) + 1;
     ESP_ERROR_CHECK(httpd_ssl_start(&server, &secure));
+    http.server_port = 80;
+    http.ctrl_port = secure.httpd.ctrl_port + 1;
+    http.max_open_sockets = 2;
+    ESP_ERROR_CHECK(httpd_start(&local_http, &http));
 #else
     ESP_ERROR_CHECK(httpd_start(&server, &http));
 #endif
@@ -305,11 +295,14 @@ void start_setup() {
         {.uri="/api/status", .method=HTTP_GET, .handler=status, .user_ctx=nullptr},
         {.uri="/api/connect", .method=HTTP_POST, .handler=connect_request, .user_ctx=nullptr},
     };
-    for (const auto &route : routes) ESP_ERROR_CHECK(httpd_register_uri_handler(server, &route));
+    for (const auto &route : routes) {
+        ESP_ERROR_CHECK(httpd_register_uri_handler(server, &route));
+        if (local_http) ESP_ERROR_CHECK(httpd_register_uri_handler(local_http, &route));
+    }
     ap_active = true;
     state = State::provisioning;
 #if CONFIG_PROVISIONING_SECURE
-    ESP_LOGI(TAG, "Setup Wi-Fi: %s (no password) | https://%s", name, ap_address);
+    ESP_LOGI(TAG, "Setup Wi-Fi: %s (no password) | https://%s | http://%s", name, ap_address, ap_address);
 #else
     ESP_LOGI(TAG, "Setup Wi-Fi: %s (no password) | http://%s", name, ap_address);
 #endif
@@ -398,6 +391,7 @@ void supervisor(void *) {
                 ESP_ERROR_CHECK(httpd_stop(server));
 #endif
                 server = nullptr;
+                if (local_http) { ESP_ERROR_CHECK(httpd_stop(local_http)); local_http = nullptr; }
                 ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
                 ap_active = false;
                 ESP_LOGI(TAG, "Setup Wi-Fi closed");

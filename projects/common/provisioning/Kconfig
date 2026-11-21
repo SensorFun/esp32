@@ -1,5 +1,5 @@
 menu "Wi-Fi provisioning"
 config PROVISIONING_SECURE
-    bool "Use HTTPS for provisioning"
+    bool "Also serve HTTPS for provisioning"
     default n
 endmenu

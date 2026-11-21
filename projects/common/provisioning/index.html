@@ -33,7 +33,7 @@ const form=document.querySelector('#setup'),ssid=document.querySelector('#ssid')
 const cameraAccess=document.querySelector('#camera-access'),cameraPassword=document.querySelector('#camera-password');
 const signalServer=document.querySelector('#signal-server'),signalUrl=document.querySelector('#signal-server-url'),customSignalServer=document.querySelector('#custom-signal-server');
 const localViewer=document.querySelector('#local-viewer'),localViewerLink=document.querySelector('#local-viewer-link');
-function showLocalViewer(data){localViewer.hidden=true;if(typeof data.ip!=='string'||!data.local_url)return;const parts=data.ip.split('.');if(parts.length!==4||parts.some(part=>!/^\d{1,3}$/.test(part)||Number(part)>255))return;if(data.local_url!==`https://${data.ip}/`)return;localViewerLink.href=data.local_url;localViewerLink.textContent=data.local_url;localViewer.hidden=false;}
+function showLocalViewer(data){localViewer.hidden=true;if(typeof data.ip!=='string'||!data.local_url)return;const parts=data.ip.split('.');if(parts.length!==4||parts.some(part=>!/^\d{1,3}$/.test(part)||Number(part)>255))return;if(![`http://${data.ip}/`,`https://${data.ip}/`].includes(data.local_url))return;localViewerLink.href=data.local_url;localViewerLink.textContent=data.local_url;localViewer.hidden=false;}
 let polling=false,pollFailures=0,networks=[],serverSettingsLoaded=false;
 function updateSignalServer(){const custom=!signalServer.disabled&&signalServer.value==='custom';customSignalServer.hidden=!custom;signalUrl.disabled=!custom;signalUrl.required=custom;}
 function selectedNetwork(){if(ssid.value==='manual')return manual.value;if(ssid.value==='')return '';return networks[Number(ssid.value)]||'';}

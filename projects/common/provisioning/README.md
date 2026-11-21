@@ -19,7 +19,8 @@ does not erase NVS on initialization errors.
    serial access is not needed. The suffix is the board's station Wi-Fi MAC
    in uppercase, colon-separated form; the SSID stays the same across reboots.
 2. Join that access point and open `http://192.168.4.1` in a browser, or
-   `https://192.168.4.1` for projects with `CONFIG_PROVISIONING_SECURE=y`. This is a
+   `https://192.168.4.1` as an additional encrypted option for projects with
+   `CONFIG_PROVISIONING_SECURE=y`. This is a
    direct setup page; it does not rely on a captive-portal popup or internet.
 3. Refresh to scan visible SSIDs and choose one from the dropdown. Choose
    **Other network…** to enter a hidden network manually. Enter its password, or leave empty for open Wi-Fi.
@@ -31,7 +32,7 @@ does not erase NVS on initialization errors.
 5. Submit to connect. Only a successful connection with an assigned IP address
    commits the new settings. Invalid credentials leave the old settings intact,
    keep setup available, and allow another attempt. The browser polls status;
-   the setup access point closes five seconds after a successful save.
+   the setup access point closes 30 seconds after a successful save.
 
 Networks must be supported by the board's radio. The page accepts personal Wi-Fi
 and open networks, not enterprise authentication. SSIDs are limited to 32 bytes;
@@ -41,8 +42,11 @@ Credentials are stored in the `wifi_setup` NVS namespace as one committed blob
 and survive power loss. Saved passwords are never returned over HTTP; the
 component never logs submitted credentials. This basic firmware uses ordinary
 NVS, without encryption at rest. The temporary setup AP is open. Projects
-with `CONFIG_PROVISIONING_SECURE=y` use HTTPS to encrypt submitted credentials;
-other projects use plaintext HTTP. Only that AP interface serves setup; it
+with `CONFIG_PROVISIONING_SECURE=y` offer HTTPS to encrypt submitted credentials
+alongside local HTTP. HTTP sends setup credentials without TLS, including over
+the open setup Wi-Fi. Only private IPv4 clients on the setup subnet can use HTTP;
+cross-origin, public-source and forwarded requests are rejected. Other projects
+use local HTTP alone. Only that AP interface serves setup; it
 closes after a successful connection.
 
 ## Reset and recovery
