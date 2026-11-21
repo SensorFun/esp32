@@ -8,7 +8,6 @@ import { checkLayout, chipId, chipName, inspectImage, isEsp32Port, md5, parseFla
 
 const decoder = new TextDecoder();
 const bauds = [115200, 230400, 460800, 921600];
-const kib = bytes => `${(bytes / 1024).toLocaleString(undefined, { maximumFractionDigits: 1 })} KiB`;
 
 // Firmware packaged by tools/firmware_artifacts.py and served with the site.
 function hostedRoot(project, board) {
@@ -65,7 +64,7 @@ export function FlasherProject() {
   const [firmware, setFirmware] = useState(null);
   const [firmwareError, setFirmwareError] = useState('');
   const [port, setPort] = useState(null);
-  const [baud, setBaud] = useState(460800);
+  const [baud, setBaud] = useState(115200);
   const [eraseAll, setEraseAll] = useState(false);
   const [state, setState] = useState('idle');
   const [progress, setProgress] = useState(0);
@@ -212,7 +211,6 @@ export function FlasherProject() {
         {upload?.kind === 'app' && <p className="flasher-note">The board must already have a bootloader and partition table with an app at 0x{upload.address.toString(16)}, for example from flashing one of the boards above once.</p>}
         {info && <a className="button rtc-secondary" href={`firmware/${project}/${boardId}/firmware.bin`} download={`${project}-${boardId}.bin`}>Download firmware file</a>}
         {upload?.kind === 'full' && <p className="flasher-note">A complete flash image replaces existing firmware and settings, including saved Wi-Fi credentials.</p>}
-        <table><thead><tr><th>Offset</th><th>File</th><th>Size</th></tr></thead><tbody>{firmware.files.map(file => <tr key={file.address}><td>0x{file.address.toString(16)}</td><td>{file.path}</td><td>{kib(file.data.length)}</td></tr>)}</tbody></table>
       </div>}
     </section>
 

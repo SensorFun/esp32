@@ -17,10 +17,6 @@
 .flasher-firmware dl{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,210px),1fr));gap:12px 20px;margin:0 0 16px}
 .flasher-firmware dt{font-family:monospace;font-size:11px;letter-spacing:1px;text-transform:uppercase;color:#728568}
 .flasher-firmware dd{margin:4px 0 0;font-size:14px;overflow-wrap:anywhere}
-.flasher-firmware table{width:100%;border-collapse:collapse;font-size:13px;table-layout:fixed}
-.flasher-firmware th{text-align:left;font-weight:500;color:#8b998b;padding:6px 8px 6px 0;border-bottom:1px solid var(--rtc-line)}
-.flasher-firmware td{padding:8px 8px 8px 0;border-bottom:1px solid #1f2a22;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;overflow-wrap:anywhere}
-.flasher-firmware th:first-child{width:24%}.flasher-firmware th:last-child{width:24%}
 .flasher-options{display:grid;gap:10px;margin:18px 0}
 .flasher-options>label{font-size:14px;color:#c5d5bd}
 .flasher-options select{min-height:44px;max-width:260px;width:100%;background:#0f1612;color:#e4eadd;border:1px solid #34412e;border-radius:6px;padding:0 12px;font-size:14px}
