@@ -29,7 +29,8 @@ does not erase NVS on initialization errors.
 5. Submit to connect. Only a successful connection with an assigned IP address
    commits the new settings. Invalid credentials leave the old settings intact,
    keep setup available, and allow another attempt. The browser polls status;
-   the setup access point closes 30 seconds after a successful save.
+   tap the camera address to close setup and open the viewer. Setup also closes
+   automatically 30 seconds after a successful save.
 
 Networks must be supported by the board's radio. The page accepts personal Wi-Fi
 and open networks, not enterprise authentication. SSIDs are limited to 32 bytes;
@@ -71,5 +72,6 @@ IP and host name; state-changing requests from other origins are rejected.
 | `GET /api/scan` | Scan SSIDs and indicate whether a camera password is required |
 | `GET /api/status` | Connection state without credentials |
 | `POST /api/connect` | URL-encoded `ssid` and `password`; camera projects also accept `camera_password`; returns 202 while connecting |
+| `POST /api/finish` | Close the setup access point after Wi-Fi is connected and settings are saved |
 
 Do not put real network names or passwords in source, examples, tests, or configs.

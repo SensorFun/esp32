@@ -117,8 +117,9 @@ for(const id of ['setup','ssid','manual-ssid','manual-network','password','camer
         addEventListener(name,fn){this.handlers[name]=fn;},
         replaceChildren(){this.children=[];},append(child){this.children.push(child);}};
 }
-const replies=[],calls=[],timers=[];
-const context=vm.createContext({URLSearchParams,
+const replies=[],calls=[],timers=[],navigations=[];
+const context=vm.createContext({URLSearchParams,AbortSignal,
+    window:{addEventListener(){}},location:{assign:url=>navigations.push(url)},
     document:{querySelector:selector=>elements[selector.slice(1)],createElement:()=>({})},
     setTimeout:fn=>timers.push(fn),
     fetch:async(path,options)=>{calls.push({path,options});assert.ok(replies.length,'unexpected fetch');return replies.shift();}});
@@ -172,6 +173,17 @@ const flush=async()=>{for(let i=0;i<8;i++)await Promise.resolve();};
     assert.equal(elements['local-viewer'].hidden,false);
     assert.equal(elements['local-viewer-link'].href,'https://192.0.2.25/');
     assert.equal(elements['local-viewer-link'].textContent,'https://192.0.2.25/');
+    reply({});
+    const open=elements['local-viewer-link'].handlers.click({preventDefault(){}});
+    await flush();
+    assert.equal(calls.at(-1).path,'/api/finish');
+    assert.equal(calls.at(-1).options.method,'POST');
+    assert.deepEqual(navigations,[]);
+    timers.shift()();await open;
+    assert.deepEqual(navigations,['https://192.0.2.25/']);
+    reply({error:'Setup closed'},409);
+    await elements['local-viewer-link'].handlers.click({preventDefault(){}});
+    assert.deepEqual(navigations,['https://192.0.2.25/','https://192.0.2.25/']);
     vm.runInContext('showLocalViewer({ip:"192.0.2.25",local_url:"http://192.0.2.25/"})',context);
     assert.equal(elements['local-viewer-link'].href,'http://192.0.2.25/');
     assert.equal(elements['local-viewer'].hidden,false);

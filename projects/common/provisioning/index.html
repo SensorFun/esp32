@@ -25,12 +25,31 @@
 <button id="save" type="submit">Save and connect</button>
 </form>
 <p id="status" role="status" aria-live="polite"></p>
-<section id="local-viewer" hidden><h2>Your local camera</h2><p>Setup closes in about 30 seconds. Then reconnect to the same Wi-Fi network as the camera and open:</p><a id="local-viewer-link" target="_blank" rel="noopener noreferrer" style="display:block;min-height:44px;overflow-wrap:anywhere"></a><p><small>Keep this address for local viewing. Your browser may show a device certificate notice.</small></p></section>
+<section id="local-viewer" hidden><h2>Your local camera</h2><p>Tap the address to open your camera. If your device stays on setup Wi-Fi, switch back to the Wi-Fi you just selected and try the link again.</p><a id="local-viewer-link" style="display:block;min-height:44px;overflow-wrap:anywhere"></a><p><small>Keep this address for local viewing. Your browser may show a device certificate notice.</small></p></section>
 <script>
 const form=document.querySelector('#setup'),ssid=document.querySelector('#ssid'),manual=document.querySelector('#manual-ssid'),manualNetwork=document.querySelector('#manual-network'),password=document.querySelector('#password'),refresh=document.querySelector('#refresh'),save=document.querySelector('#save'),status=document.querySelector('#status');
 const cameraAccess=document.querySelector('#camera-access'),cameraPassword=document.querySelector('#camera-password');
 const localViewer=document.querySelector('#local-viewer'),localViewerLink=document.querySelector('#local-viewer-link');
 function showLocalViewer(data){localViewer.hidden=true;if(typeof data.ip!=='string'||!data.local_url)return;const parts=data.ip.split('.');if(parts.length!==4||parts.some(part=>!/^\d{1,3}$/.test(part)||Number(part)>255))return;if(![`http://${data.ip}/`,`https://${data.ip}/`].includes(data.local_url))return;localViewerLink.href=data.local_url;localViewerLink.textContent=data.local_url;localViewer.hidden=false;}
+let openingCamera=false;
+localViewerLink.addEventListener('click',async event=>{
+    if(event.ctrlKey||event.metaKey||event.shiftKey||event.altKey)return;
+    event.preventDefault();
+    if(openingCamera)return;
+    openingCamera=true;
+    const url=localViewerLink.href;
+    status.textContent='Opening camera…';
+    try{
+        await request('/api/finish',{method:'POST',signal:AbortSignal.timeout(2000)});
+        // Give the device time to leave setup and rejoin its Wi-Fi.
+        await new Promise(resolve=>setTimeout(resolve,5000));
+    }catch{
+        // Setup Wi-Fi may have already closed. The saved address still works on the LAN.
+    }
+    openingCamera=false;
+    location.assign(url);
+});
+window.addEventListener('pageshow',()=>{if(!localViewer.hidden)status.textContent='Connected. Your settings are saved.';});
 let polling=false,pollFailures=0,networks=[];
 function selectedNetwork(){if(ssid.value==='manual')return manual.value;if(ssid.value==='')return '';return networks[Number(ssid.value)]||'';}
 function updateManual(){const show=ssid.value==='manual';manualNetwork.hidden=!show;manual.disabled=!show;manual.required=show;}
@@ -47,7 +66,7 @@ async function scan(){
         status.textContent=networks.length?'Choose your network from the list.':'No networks found. Choose Other network to enter a hidden network.';
     }catch(error){status.textContent=error.message;}finally{refresh.disabled=false;}
 }
-async function watch(){try{const data=await request('/api/status');pollFailures=0;if(data.state==='connected'){showLocalViewer(data);status.textContent='Connected. Your settings are saved. Reconnect to your normal Wi-Fi; setup will close shortly.';polling=false;return;}if(data.state==='provisioning'){status.textContent='Could not connect. Check the network name and password, then try again.';polling=false;save.disabled=false;refresh.disabled=false;return;}status.textContent='Connecting…';}catch(error){if(error.status){status.textContent=error.message;polling=false;save.disabled=false;refresh.disabled=false;}else{status.textContent='Setup connection lost. If setup Wi-Fi disappears, reconnect to your normal network. Otherwise reconnect here and try again.';if(++pollFailures>=3){polling=false;save.disabled=false;refresh.disabled=false;}}}if(polling)setTimeout(watch,1500);}
+async function watch(){try{const data=await request('/api/status');pollFailures=0;if(data.state==='connected'){showLocalViewer(data);status.textContent='Connected. Your settings are saved.';polling=false;return;}if(data.state==='provisioning'){status.textContent='Could not connect. Check the network name and password, then try again.';polling=false;save.disabled=false;refresh.disabled=false;return;}status.textContent='Connecting…';}catch(error){if(error.status){status.textContent=error.message;polling=false;save.disabled=false;refresh.disabled=false;}else{status.textContent='Setup connection lost. If setup Wi-Fi disappears, reconnect to your normal network. Otherwise reconnect here and try again.';if(++pollFailures>=3){polling=false;save.disabled=false;refresh.disabled=false;}}}if(polling)setTimeout(watch,1500);}
 ssid.addEventListener('change',updateManual);
 refresh.addEventListener('click',scan);
 form.addEventListener('submit',async event=>{event.preventDefault();const name=selectedNetwork();if(!name){status.textContent='Choose a network or enter its name.';return;}save.disabled=true;refresh.disabled=true;status.textContent='Connecting…';try{await request('/api/connect',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({...{ssid:name,password:password.value},...(!cameraPassword.disabled?{camera_password:cameraPassword.value}:{})})});password.value='';cameraPassword.value='';pollFailures=0;polling=true;setTimeout(watch,1000);}catch(error){status.textContent=error.message;save.disabled=false;refresh.disabled=false;}});

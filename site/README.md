@@ -86,8 +86,9 @@ Camera firmware connects to the fixed `wss://signalserver.sensorfun.net/camera`
 endpoint. Provisioning asks for Wi-Fi credentials and the camera password.
 
 The local viewer link is shown on the board's Wi-Fi provisioning page after it
-receives its network IP address. Setup closes after about 30 seconds; reconnect
-to the camera's Wi-Fi network and open that HTTPS link. The website uses remote
+receives its network IP address. Tap the address to close setup and open the
+viewer. If your device does not rejoin the camera's Wi-Fi network automatically,
+switch networks and retry the link. The website uses remote
 signaling and makes no board HTTP requests: JPEG frames and settings use
 encrypted WebRTC.
 

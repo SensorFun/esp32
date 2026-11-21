@@ -41,6 +41,7 @@ constexpr uint32_t CONNECT_TIMEOUT_MS = 20000;
 enum class State { starting, connecting, provisioning, connected, storage_error };
 std::atomic<State> state{State::starting};
 std::atomic<bool> submitting{false};
+std::atomic<TickType_t> handoff_at{0};
 EventGroupHandle_t events = nullptr;
 QueueHandle_t requests = nullptr;
 esp_netif_t *station_netif = nullptr, *ap_netif = nullptr;
@@ -189,6 +190,16 @@ esp_err_t status(httpd_req_t *request) {
     return json_response(request, "200 OK", body);
 }
 
+esp_err_t finish_setup(httpd_req_t *request) {
+    if (!setup_request(request)) return json_response(request, "403 Forbidden", "{\"error\":\"Use setup Wi-Fi\"}");
+    if (state.load() != State::connected || !(xEventGroupGetBits(events) & CONNECTED)) {
+        return json_response(request, "409 Conflict", "{\"error\":\"Wait for Wi-Fi setup to finish\"}");
+    }
+    const auto result = json_response(request, "200 OK", "{}");
+    if (result == ESP_OK) handoff_at = xTaskGetTickCount();
+    return result;
+}
+
 esp_err_t connect_request(httpd_req_t *request) {
     if (!setup_request(request)) return json_response(request, "403 Forbidden", "{\"error\":\"Use setup Wi-Fi\"}");
     if (state.load() == State::connecting || submitting.exchange(true)) {
@@ -290,6 +301,7 @@ void start_setup() {
         {.uri="/api/scan", .method=HTTP_GET, .handler=scan, .user_ctx=nullptr},
         {.uri="/api/status", .method=HTTP_GET, .handler=status, .user_ctx=nullptr},
         {.uri="/api/connect", .method=HTTP_POST, .handler=connect_request, .user_ctx=nullptr},
+        {.uri="/api/finish", .method=HTTP_POST, .handler=finish_setup, .user_ctx=nullptr},
     };
     for (const auto &route : routes) {
         ESP_ERROR_CHECK(httpd_register_uri_handler(server, &route));
@@ -352,6 +364,7 @@ void supervisor(void *) {
                     ESP_LOGE(TAG, "Could not persist Wi-Fi settings");
                     state = State::storage_error;
                 } else {
+                    handoff_at = 0;
                     state = State::connected;
                     ESP_LOGI(TAG, "Wi-Fi connected; settings ready");
                     close_ap = xTaskGetTickCount();
@@ -372,11 +385,13 @@ void supervisor(void *) {
                 last_attempt = now;
             }
         } else if (current == State::connected) {
+            const auto handoff = handoff_at.load();
             if (!(bits & CONNECTED)) {
                 state = State::connecting;
                 started = last_attempt = now;
                 esp_wifi_connect();
-            } else if (ap_active && now - close_ap >= pdMS_TO_TICKS(30000)) {
+            } else if (ap_active && (now - close_ap >= pdMS_TO_TICKS(30000) ||
+                       (handoff && xTaskGetTickCount() - handoff >= pdMS_TO_TICKS(750)))) {
 #if CONFIG_PROVISIONING_SECURE
                 ESP_ERROR_CHECK(httpd_ssl_stop(server));
 #else
