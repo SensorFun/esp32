@@ -45,7 +45,7 @@ void task(void *) {
     uint32_t active_revision = 0;
     ESP_ERROR_CHECK(camera_access::mac_room(camera, sizeof(camera)));
     ESP_LOGI("remote", "Remote camera ID: %s", camera);
-    char url[257]{};
+    char url[] = "wss://signalserver.sensorfun.net/camera";
     for (;;) {
         if (!provisioning_is_ready()) { vTaskDelay(pdMS_TO_TICKS(500)); continue; }
         const uint32_t revision = camera_access::generation();
@@ -65,7 +65,6 @@ void task(void *) {
         if (!signaling) {
             interrupted = false;
             snprintf(active_room, sizeof(active_room), "%s", room); active_revision = revision;
-            if (provisioning_get_signaling_url(url, sizeof(url)) != ESP_OK) { ESP_LOGW("remote", "Invalid saved signaling server; open provisioning to select a server"); vTaskDelay(pdMS_TO_TICKS(10000)); continue; }
             esp_peer_signaling_cfg_t cfg{};
             cfg.signal_url = url; cfg.on_ice_info = ice_info;
             cfg.on_connected = on_connected; cfg.on_close = on_close; cfg.on_msg = on_message;

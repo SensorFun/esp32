@@ -91,7 +91,7 @@ export function RemoteCamera({ onSessionState }) {
     if (!alive()) return;
     let socket;
     try {
-      socket = new Signaling(access.room, import.meta.env.VITE_SIGNALING_URL);
+      socket = new Signaling(access.room, 'wss://signalserver.sensorfun.net/viewer');
     } catch (error) { if (alive()) stop(error.message); return; }
     const session = { socket, peer: null, channel: null, frame: null, frameId: -1, received: 0, url: null, candidates: [], displayedFrames: 0 };
     connection.current = session;

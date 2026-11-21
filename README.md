@@ -2,10 +2,10 @@
 
 The [React project site](site/README.md) provides a general home and dedicated
 project spaces, ready to deploy with GitHub Pages.
-For private remote access, run the [local signaling stack](tools/signal_server/README.md)
-through Cloudflare Tunnel and connect from the GitHub Pages WebRTC workspace.
+For remote access, open the GitHub Pages WebRTC project and enter the camera
+MAC and provisioning password. Cameras and viewers use SensorFun's signaling service.
 See the [STUN-only end-to-end test guide](site/scripts/README.md) to run the
-React viewer locally with Espressif public signaling and the attached cameras.
+React viewer locally with SensorFun signaling and the attached cameras.
 
 Python host tooling and native ESP-IDF C/C++ firmware share one repository.
 Python packaging does not compile firmware. Firmware applications under

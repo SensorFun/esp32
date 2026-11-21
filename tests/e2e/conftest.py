@@ -90,7 +90,7 @@ def pytest_generate_tests(metafunc):
     devices = selected if selected is not None else list(e2e.devices)
     if len(set(devices)) != len(devices) or any(d not in e2e.devices for d in devices):
         raise pytest.UsageError('Select distinct devices listed in tests/config/e2e.yaml')
-    params = [{"device": device, "board": _board_name(device), "server": e2e.server, "browser": e2e.browser}
+    params = [{"device": device, "board": _board_name(device), "browser": e2e.browser}
               for device in devices]
     if len({p['board'] for p in params}) != len(params):
         raise pytest.UsageError('Devices must have distinct board build directories')

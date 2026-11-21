@@ -32,7 +32,7 @@
 
 namespace {
 using provisioning::Credentials;
-struct SetupRequest { Credentials wifi; char camera_password[97]{}; char signaling_url[provisioning::SIGNALING_URL_SIZE]{}; };
+struct SetupRequest { Credentials wifi; char camera_password[97]{}; };
 constexpr char TAG[] = "provisioning";
 constexpr char NVS_NAMESPACE[] = "wifi_setup";
 constexpr char NVS_KEY[] = "credentials";
@@ -73,12 +73,11 @@ esp_err_t load_credentials(Credentials &credentials) {
     return ESP_OK;
 }
 
-esp_err_t save_credentials(const Credentials &credentials, const char *signaling_url) {
+esp_err_t save_credentials(const Credentials &credentials) {
     nvs_handle_t handle;
     esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
     if (err != ESP_OK) return err;
     err = nvs_set_blob(handle, NVS_KEY, &credentials, sizeof(credentials));
-    if (err == ESP_OK && signaling_url[0]) err = nvs_set_str(handle, "signal_url", signaling_url);
     if (err == ESP_OK) err = nvs_commit(handle);
     nvs_close(handle);
     return err;
@@ -161,9 +160,7 @@ esp_err_t scan(httpd_req_t *request) {
         body += provisioning::json_quote(names[i]);
     }
 #if CONFIG_CAMERA_REMOTE_ACCESS
-    char selected[provisioning::SIGNALING_URL_SIZE]{};
-    if (provisioning_get_signaling_url(selected, sizeof(selected)) != ESP_OK) return json_response(request, "500 Internal Server Error", "{\"error\":\"Could not load signaling settings\"}");
-    body += "],\"camera_password_required\":true,\"signaling_url\":" + provisioning::json_quote(selected) + "}";
+    body += "],\"camera_password_required\":true}";
 #else
     body += "],\"camera_password_required\":false}";
 #endif
@@ -215,10 +212,10 @@ esp_err_t connect_request(httpd_req_t *request) {
         received += count;
     }
     SetupRequest setup{};
-    std::string camera_password, signaling_url;
+    std::string camera_password;
     const bool valid = provisioning::parse_credentials(std::string_view(body, received), setup.wifi,
 #if CONFIG_CAMERA_REMOTE_ACCESS
-        &camera_password, &signaling_url
+        &camera_password
 #else
         nullptr
 #endif
@@ -227,10 +224,9 @@ esp_err_t connect_request(httpd_req_t *request) {
     if (!valid) {
         if (!camera_password.empty()) { volatile char *p = camera_password.data(); for (size_t i = 0; i < camera_password.size(); ++i) p[i] = 0; }
         submitting = false;
-        return json_response(request, "400 Bad Request", "{\"error\":\"Check Wi-Fi credentials, camera password (12–96 bytes), and secure signaling URL ending in /camera\"}");
+        return json_response(request, "400 Bad Request", "{\"error\":\"Check Wi-Fi credentials, camera password (12–96 bytes)\"}");
     }
     memcpy(setup.camera_password, camera_password.data(), camera_password.size());
-    memcpy(setup.signaling_url, signaling_url.data(), signaling_url.size());
     if (!camera_password.empty()) { volatile char *p = camera_password.data(); for (size_t i = 0; i < camera_password.size(); ++i) p[i] = 0; }
     const bool queued = xQueueSend(requests, &setup, 0) == pdTRUE;
     wipe(setup);
@@ -325,7 +321,6 @@ void apply_credentials(const Credentials &credentials) {
 void supervisor(void *) {
     Credentials pending{};
     char pending_camera_password[97]{};
-    char pending_signaling_url[provisioning::SIGNALING_URL_SIZE]{};
     bool save_pending = false;
     TickType_t started = xTaskGetTickCount(), last_attempt = started, close_ap = 0;
     if (load_credentials(pending) == ESP_OK) {
@@ -337,7 +332,6 @@ void supervisor(void *) {
         if (xQueueReceive(requests, &next, pdMS_TO_TICKS(100)) == pdTRUE) {
             pending = next.wifi;
             memcpy(pending_camera_password, next.camera_password, sizeof(pending_camera_password));
-            memcpy(pending_signaling_url, next.signaling_url, sizeof(pending_signaling_url));
             wipe(next);
             save_pending = true;
             apply_credentials(pending);
@@ -353,7 +347,7 @@ void supervisor(void *) {
 #if CONFIG_CAMERA_REMOTE_ACCESS
                 if (save_pending) saved = camera_access::set_password(pending_camera_password);
 #endif
-                if (saved == ESP_OK && save_pending) saved = save_credentials(pending, pending_signaling_url);
+                if (saved == ESP_OK && save_pending) saved = save_credentials(pending);
                 if (saved != ESP_OK) {
                     ESP_LOGE(TAG, "Could not persist Wi-Fi settings");
                     state = State::storage_error;
@@ -365,13 +359,11 @@ void supervisor(void *) {
                 save_pending = false;
                 wipe(pending);
                 wipe(pending_camera_password);
-                wipe(pending_signaling_url);
             } else if (now - started >= pdMS_TO_TICKS(CONNECT_TIMEOUT_MS)) {
                 esp_wifi_disconnect();
                 save_pending = false;
                 wipe(pending);
                 wipe(pending_camera_password);
-                wipe(pending_signaling_url);
                 ESP_LOGW(TAG, "Wi-Fi connection unavailable; opening setup");
                 start_setup();
             } else if ((bits & DISCONNECTED) && now - last_attempt >= pdMS_TO_TICKS(1000)) {
@@ -433,26 +425,6 @@ extern "C" esp_err_t provisioning_start(void) {
 extern "C" bool provisioning_is_ready(void) {
     return events && state.load() == State::connected && !ap_active &&
         (xEventGroupGetBits(events) & CONNECTED);
-}
-
-extern "C" esp_err_t provisioning_get_signaling_url(char *out, size_t size) {
-    if (!out || size < provisioning::SIGNALING_URL_SIZE) return ESP_ERR_INVALID_ARG;
-    nvs_handle_t handle;
-    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle);
-    if (err == ESP_ERR_NVS_NOT_FOUND) {
-        snprintf(out, size, "%s", provisioning::DEFAULT_SIGNALING_URL);
-        return ESP_OK;
-    }
-    if (err != ESP_OK) return err;
-    size_t length = size;
-    err = nvs_get_str(handle, "signal_url", out, &length);
-    nvs_close(handle);
-    if (err == ESP_ERR_NVS_NOT_FOUND) {
-        snprintf(out, size, "%s", provisioning::DEFAULT_SIGNALING_URL);
-        return ESP_OK;
-    }
-    if (err != ESP_OK) return err;
-    return provisioning::valid_signaling_url(out) ? ESP_OK : ESP_ERR_INVALID_ARG;
 }
 
 extern "C" esp_err_t provisioning_submit_credentials_with_camera(const char *ssid, const char *password, const char *camera_password) {

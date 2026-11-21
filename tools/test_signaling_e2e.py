@@ -9,14 +9,12 @@ from collections import deque
 import concurrent.futures
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
-import os
 from pathlib import Path
 import re
 import subprocess
 import sys
 from threading import Event, Thread
 import time
-from urllib.parse import urlsplit
 
 import serial
 
@@ -58,13 +56,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--ports', nargs='+', required=True)
     parser.add_argument('--browser', type=Path, required=True)
-    parser.add_argument('--server', required=True, help='Public signaling hostname without a path')
     args = parser.parse_args()
-    url = urlsplit('wss://' + args.server)
-    if not url.hostname or url.path or url.query or url.fragment or url.username or url.password:
-        parser.error('--server must be a hostname, optionally with a port')
-    environment = dict(os.environ, SIGNALING_URL='wss://' + args.server + '/viewer')
-    subprocess.run(['npm', 'run', 'build'], cwd=ROOT / 'site', env=environment, check=True)
+    subprocess.run(['npm', 'run', 'build'], cwd=ROOT / 'site', check=True)
     devices = []
     server = None
     stop = Event()

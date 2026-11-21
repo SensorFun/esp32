@@ -9,7 +9,7 @@ Run from any directory:
 The launcher uses `uv` to provide Python, pytest-xdist, browser automation,
 esptool and Node dependencies. Docker must be running, and Chromium must already
 be installed at `browser` in `tests/config/e2e.yaml`.
-The configured signaling server and tunnel must already be reachable.
+The built-in SensorFun signaling service must be reachable.
 
 Each configured device gets its own worker. The workers run concurrently through
 firmware build, USB flash, fresh provisioning, public-signaling streaming and
@@ -32,7 +32,7 @@ build directories and USB ports. Board ports are detected automatically. If seve
 and other flashing tools before running.
 
 Configure signaling in each `build/webrtc/<board>/sdkconfig` beforehand, matching
-the server in the test configuration. Builds run in separate Docker containers,
+the built-in SensorFun signaling service. Builds run in separate Docker containers,
 mount source read-only, and keep managed components, dependency locks and outputs
 in each board's build directory. Containers publish no ports. Each worker builds
 the website into a private temporary directory and serves it on its own host

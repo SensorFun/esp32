@@ -6,9 +6,6 @@ if (!['build', 'dev', 'preview'].includes(action)) throw Error('Choose build, de
 const { values } = parseArgs({ args: process.argv.slice(3), options: {
   outDir: { type: 'string' },
 } });
-if (action !== 'preview') {
-  process.env.VITE_SIGNALING_URL = 'wss://signalserver.sensorfun.net/viewer';
-}
 if (action === 'build') await build(values.outDir ? { build: { outDir: values.outDir } } : {});
 else if (action === 'dev') { const server = await createServer({ server: { host: '127.0.0.1' } }); await server.listen(); server.printUrls(); }
 else { const server = await preview({ preview: { host: '127.0.0.1' } }); server.printUrls(); }

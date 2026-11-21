@@ -57,12 +57,11 @@ repository.
 
 ## WebRTC connections
 
-The workspace defaults to a private signaling server. Follow the
-[local signaling and Cloudflare Tunnel guide](../tools/signal_server/README.md) to run the
-signaling server on your computer. Users enter only the camera MAC and camera
-password chosen during setup. The public viewer endpoint is fixed to
-`wss://signalserver.sensorfun.net/viewer`; the signaling API secret stays on the server. No credentials are
-embedded in the public build or saved to browser storage.
+Remote viewing uses SensorFun's signaling service. Users enter only the camera
+MAC and camera password chosen during setup. The viewer endpoint is fixed to
+`wss://signalserver.sensorfun.net/viewer`. The service API secret stays on the
+server and in authorized camera firmware. No credentials are embedded in the
+public website build or saved to browser storage.
 
 The same frontend runs on GitHub Pages, which serves static files only. Both
 camera and browser connect through the signaling server and Cloudflare Tunnel; WebRTC images and
@@ -83,9 +82,8 @@ FPS reports displayed frames over each one-second sampling interval. Streaming
 has no fixed 5 FPS cap; achievable FPS depends on resolution, exposure, and the
 direct connection. Larger images can take longer to transfer.
 
-Choose the camera's signaling server during Wi-Fi provisioning: the built-in
-`signalserver.sensorfun.net` service or a compatible custom server. Configure this
-camera to use the same service as the site's fixed public endpoint.
+Camera firmware connects to the fixed `wss://signalserver.sensorfun.net/camera`
+endpoint. Provisioning asks for Wi-Fi credentials and the camera password.
 
 The local viewer link is shown on the board's Wi-Fi provisioning page after it
 receives its network IP address. Setup closes after about 30 seconds; reconnect

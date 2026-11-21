@@ -286,38 +286,18 @@ are optional and contain settings only.
 
 ## Private signaling
 
-The [signaling server and Cloudflare Tunnel stack](../../tools/signal_server/README.md) runs on your
-computer and lets the GitHub Pages viewer connect through your domain. Configure
-**Camera remote signaling** in menuconfig with the device API secret and STUN
-service, then rebuild and flash. Choose **signalserver.sensorfun.net** (default)
-or **My own signaling server…** on the Wi-Fi provisioning page. Custom server
-URLs must use `wss://` and end in `/camera`; this choice is saved in NVS.
-The selected server must accept the device API secret. Store credentials only in the ignored
-build sdkconfig, never in tracked defaults. The signaling secret is embedded in
-the resulting firmware, so keep binaries private.
+Cameras use `wss://signalserver.sensorfun.net/camera` and the website uses
+`wss://signalserver.sensorfun.net/viewer`. These are fixed service endpoints.
+Provisioning stores Wi-Fi credentials and the camera password. Firmware ignores
+legacy endpoint values in NVS. The server API secret is an internal service
+credential embedded in authorized firmware; keep private builds and sdkconfig
+out of published artifacts.
 
 The signaling server forwards signaling only; camera images and controls remain on the direct
 encrypted WebRTC connection. The viewer asks only for the camera MAC and camera
-password. The site owner configures its `/viewer` endpoint at deployment; the
-signaling API secret stays on the server and in camera firmware. With no saved
-selection, the firmware uses `wss://signalserver.sensorfun.net/camera`.
+password. The signaling API secret stays on the server and in camera firmware.
 
-## Legacy Espressif test tooling
-
-The following describes the older Espressif test tools retained in the repository;
-the current firmware uses the signaling server chosen during provisioning instead.
-The stable room is exactly the station MAC as 12 uppercase hex digits, without separators. Browser and board derive the same room from the MAC. The `CAM_<MAC>` setup
-network name contains this station MAC; keep it for remote viewing. No USB discovery
-is required in normal operation. The browser creates the offer, and the camera answers using
-STUN information supplied by the service. TURN media relaying is disabled. The original local HTTPS viewer is
-still available; only one viewer can use a board at a time.
-
-See [the end-to-end guide](../../site/scripts/README.md). The test serves a static
-React production build locally and uses a small signaling bridge because the
-hosted service's HTTP endpoints do not enable browser cross-origin access.
-No JPEG or camera-control messages pass through that bridge. The board's
-signaling HTTPS/WSS connections verify the service certificate through the IDF
-certificate bundle. DTLS continues to encrypt the WebRTC data channel.
+## Remote authentication
 
 Remote viewing requires the MAC and the camera password chosen during provisioning.
 The ESP32 sends no JPEG frames or settings and rejects commands until password

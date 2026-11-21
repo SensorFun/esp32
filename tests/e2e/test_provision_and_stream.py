@@ -15,7 +15,7 @@ Runs once per board listed in tests/config/e2e.yaml (see tests/e2e/conftest.py);
 each board's USB port is auto-detected, since it can change between runs.
 Assumes `tools/build.py`/`tools/flash.py` already have a working local
 sdkconfig for that device (board selection and signaling API secret
-configured via menuconfig, matching tests/config/e2e.yaml's server), per
+configured via menuconfig, matching the built-in signaling service), per
 tools/signal_server/README.md and projects/webrtc/README.md. Does not touch
 tools/signal_server/.secrets or any other board's saved provisioning.
 """

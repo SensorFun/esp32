@@ -4,7 +4,7 @@ config CAMERA_SIGNALING_API_SECRET
     string "Signaling server API secret"
     default ""
     help
-        Match the local signaling server's SIGNALING_API_SECRET. Keep sdkconfig and
+        Authenticate camera registration with the SensorFun signaling service. Keep sdkconfig and
         build outputs private; the secret is embedded in the flashed firmware.
 
 config CAMERA_SIGNALING_STUN_URL

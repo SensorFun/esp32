@@ -24,11 +24,8 @@ does not erase NVS on initialization errors.
    direct setup page; it does not rely on a captive-portal popup or internet.
 3. Refresh to scan visible SSIDs and choose one from the dropdown. Choose
    **Other network…** to enter a hidden network manually. Enter its password, or leave empty for open Wi-Fi.
-4. For camera projects, set the camera password and select a **Signaling server**:
-   **signalserver.sensorfun.net** (default), or **My own signaling server…** and a
-   compatible `wss://` URL ending in `/camera`. Saved selections are restored when
-   setup opens again. The server's device API key remains an operator firmware
-   setting; choosing a URL does not change that credential.
+4. For camera projects, set the camera password. Remote viewing uses the
+   built-in SensorFun signaling service.
 5. Submit to connect. Only a successful connection with an assigned IP address
    commits the new settings. Invalid credentials leave the old settings intact,
    keep setup available, and allow another attempt. The browser polls status;
@@ -71,8 +68,8 @@ IP and host name; state-changing requests from other origins are rejected.
 | Route | Behavior |
 | --- | --- |
 | `GET /` | Embedded setup page with no external assets |
-| `GET /api/scan` | Scan SSIDs; camera projects also return the selected `signaling_url` |
+| `GET /api/scan` | Scan SSIDs and indicate whether a camera password is required |
 | `GET /api/status` | Connection state without credentials |
-| `POST /api/connect` | URL-encoded `ssid` and `password`; camera projects accept `camera_password`, `signal_server` (`builtin` or `custom`), and custom `signal_server_url`; returns 202 while connecting |
+| `POST /api/connect` | URL-encoded `ssid` and `password`; camera projects also accept `camera_password`; returns 202 while connecting |
 
 Do not put real network names or passwords in source, examples, tests, or configs.

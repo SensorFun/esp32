@@ -5,6 +5,5 @@
 # tools/flash.py's own identity matching (config/device/*.yaml),
 # since ports can change between runs.
 devices: [esp32_cam, esp32s3_wroom, esp32s3_goouuu]
-server: signalserver.sensorfun.net
 # Installed Chromium executable; required, no auto-detection.
 browser: /root/.cache/ms-playwright/chromium-1255/chrome-linux64/chrome
