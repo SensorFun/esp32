@@ -242,7 +242,7 @@ function defineElements() {
           label.append(text);
           if (field.type === 'select') {
             control = document.createElement('select');
-            field.options.forEach((option, index) => { const item = document.createElement('option'); item.value = String(index); item.textContent = option.label; control.append(item); });
+            field.options.forEach((option, index) => { const item = document.createElement('option'); item.value = String(index); item.textContent = field.name === 'method' && option.value === 'optical_flow' ? 'Optical flow' : option.label; control.append(item); });
             control.value = String(Math.max(0, field.options.findIndex(option => option.value === value)));
           } else {
             // Values are one to four characters: keep them on the label's line.

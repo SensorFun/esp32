@@ -33,7 +33,7 @@ struct Field {
 };
 
 // Detection methods. Add new detectors here and dispatch on settings.method.
-constexpr Option kMethods[] = {{"optical_flow", 0, "Optical flow (Lucas-Kanade)"}};
+constexpr Option kMethods[] = {{"optical_flow", 0, "Optical flow"}};
 constexpr Option kCells[] = {{nullptr, 5, "5 px"}, {nullptr, 8, "8 px"}, {nullptr, 10, "10 px"}, {nullptr, 20, "20 px"}};
 
 #define FIELD_BOOL(member) [](const MotionSettings &s) { return double(s.member); }, [](MotionSettings &s, double v) { s.member = v != 0; }

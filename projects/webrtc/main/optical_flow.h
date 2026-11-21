@@ -53,7 +53,7 @@ private:
 struct FlowParams {
     int cell = 8;              // Approximate square cell side in analysis pixels; cells tile the whole frame.
     float min_flow = 0.5f;     // Pixels per analysed frame that count as moving.
-    float min_texture = 4.0f;  // Minimum Lucas-Kanade eigenvalue per pixel; flat cells are skipped.
+    float min_texture = 4.0f;  // Minimum structure-tensor eigenvalue per pixel; flat cells are skipped.
     int blur = 1;              // Box blur radius applied before gradients (0-2).
     float min_area = 2.0f;     // Percentage of cells that must move to report motion.
 };
@@ -68,7 +68,7 @@ struct FlowResult {
 
 bool valid_cell(int cell);
 
-// Single-level Lucas-Kanade over a grid of cells. The first frame of a given
+// Single-level optical flow over a grid of cells. The first frame of a given
 // size only primes the detector and reports no motion.
 class OpticalFlow {
 public:

@@ -197,7 +197,7 @@ them in NVS so they survive a reboot.
   analysis image is therefore 1/8 of the camera resolution (40 x 30 at 320 x 240,
   80 x 60 at 640 x 480, 160 x 90 at 1280 x 720); larger results are averaged to fit
   160 x 120 (1600 x 1200 gives 160 x 120). The motion status shows the current size.
-  A single-level Lucas-Kanade optical flow then runs over a grid of cells of about
+  Single-level optical flow then runs over a grid of cells of about
   **Cell size** pixels that tiles the whole image (`main/optical_flow.cpp`), with global
   brightness changes removed. Speeds, cell size and smoothing are in analysis-image
   pixels, so a resolution change also changes how much of the scene they cover.

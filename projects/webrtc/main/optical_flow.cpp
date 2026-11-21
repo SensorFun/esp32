@@ -65,7 +65,7 @@ float mean(const Image &image) {
 
 struct Track { float u, v; bool textured; };
 
-// Symmetric Lucas-Kanade for one window: gradients average both frames, so an
+// Symmetric optical flow for one window: gradients average both frames, so an
 // object entering a flat background is still trackable. dmean removes global
 // brightness changes such as auto exposure steps.
 Track track(const Image &prev, const Image &cur, int x0, int y0, int x1, int y1,

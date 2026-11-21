@@ -4,7 +4,7 @@
 (() => {
   const fields = [
     { name: 'enabled', label: 'Detect motion', group: 'detection', type: 'boolean', help: 'Analyse the camera continuously.' },
-    { name: 'method', label: 'Method', group: 'detection', type: 'select', help: 'Detection algorithm.', options: [{ value: 'optical_flow', label: 'Optical flow (Lucas-Kanade)' }] },
+    { name: 'method', label: 'Method', group: 'detection', type: 'select', help: 'Detection algorithm.', options: [{ value: 'optical_flow', label: 'Optical flow' }] },
     { name: 'min_speed', label: 'Minimum speed', group: 'detection', type: 'number', unit: 'px/s', min: 0.25, max: 40, step: 0.25, help: 'Speed that marks a cell as moving.' },
     { name: 'cell', label: 'Cell size', group: 'detection', type: 'select', unit: 'px', help: 'Analysis grid.', options: [5, 8, 10, 20].map(value => ({ value, label: `${value} px` })) },
     { name: 'trigger_seconds', label: 'Motion duration', group: 'detection', type: 'number', unit: 's', min: 0, max: 30, step: 0.5, help: 'Motion must last this long.' },
