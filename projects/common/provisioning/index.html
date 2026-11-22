@@ -6,6 +6,8 @@
 <style>
 :root{font:16px system-ui,sans-serif;color:#172535;background:#eef2f6}body{max-width:420px;margin:8vh auto;padding:24px;background:white;border-radius:16px}h1{font-size:1.6rem}label{display:block;margin:20px 0 7px}input,select,button{min-height:44px;font:inherit;box-sizing:border-box;padding:12px;border:1px solid #b7c3cf;border-radius:8px}input,select{width:100%}.row{display:flex;gap:8px}.row select{min-width:0}button{cursor:pointer;background:#174bc4;color:white;border:0}button:disabled{opacity:.55;cursor:wait}#save{width:100%;margin-top:24px}#status{min-height:3em;overflow-wrap:anywhere}small{color:#526173}[hidden]{display:none}
 .viewer-link a{display:inline-block;min-height:44px;max-width:100%;align-content:center;vertical-align:middle;overflow-wrap:anywhere}
+#camera-password-option:not([hidden]){display:flex;align-items:center;gap:8px;min-height:44px;cursor:pointer}
+#change-camera-password{width:20px;height:20px;min-height:0;margin:0}
 </style>
 <h1>Connect to Wi-Fi</h1>
 <p>Select your Wi-Fi network.</p>
@@ -19,6 +21,7 @@
 <label for="password">Wi-Fi network password</label>
 <input id="password" name="password" type="password" autocomplete="new-password">
 <small>Leave empty for an open network.</small>
+<label id="camera-password-option" hidden><input id="change-camera-password" type="checkbox">Change camera password</label>
 <div id="camera-access" hidden><label for="camera-password">Camera password (remote viewing)</label>
 <input id="camera-password" type="password" minlength="12" maxlength="96" autocomplete="new-password" disabled>
 <p>Use a separate password of 12–96 UTF-8 bytes. Remote viewers enter this password and the camera MAC address.</p>
@@ -31,6 +34,7 @@
 <script>
 const form=document.querySelector('#setup'),ssid=document.querySelector('#ssid'),manual=document.querySelector('#manual-ssid'),manualNetwork=document.querySelector('#manual-network'),password=document.querySelector('#password'),refresh=document.querySelector('#refresh'),save=document.querySelector('#save'),status=document.querySelector('#status');
 const cameraAccess=document.querySelector('#camera-access'),cameraPassword=document.querySelector('#camera-password');
+const cameraPasswordOption=document.querySelector('#camera-password-option'),changeCameraPassword=document.querySelector('#change-camera-password');
 const localViewer=document.querySelector('#local-viewer'),localViewerLink=document.querySelector('#local-viewer-link');
 const remoteViewer=document.querySelector('#remote-viewer'),remoteViewerLink=document.querySelector('#remote-viewer-link');
 function showRemoteViewer(data){remoteViewer.hidden=true;if(typeof data.remote_url!=='string'||!/^https:\/\/[^\s/]+\/\S*[0-9A-F]{12}$/.test(data.remote_url))return;remoteViewerLink.href=data.remote_url;remoteViewerLink.textContent=data.remote_url;remoteViewer.hidden=false;}
@@ -54,15 +58,24 @@ localViewerLink.addEventListener('click',async event=>{
     location.assign(url);
 });
 window.addEventListener('pageshow',()=>{if(!localViewer.hidden)status.textContent='Connected. Your settings are saved.';});
-let polling=false,pollFailures=0,networks=[];
+let polling=false,pollFailures=0,networks=[],cameraPasswordRequired=false;
 function selectedNetwork(){if(ssid.value==='manual')return manual.value;if(ssid.value==='')return '';return networks[Number(ssid.value)]||'';}
 function updateManual(){const show=ssid.value==='manual';manualNetwork.hidden=!show;manual.disabled=!show;manual.required=show;}
+function updateCameraPassword(){
+    const show=cameraPasswordRequired||(!cameraPasswordOption.hidden&&changeCameraPassword.checked);
+    cameraAccess.hidden=!show;cameraPassword.disabled=!show;cameraPassword.required=show;
+    if(!show)cameraPassword.value='';
+}
 async function request(path,options={}){const response=await fetch(path,{cache:'no-store',...options});const data=await response.json();if(!response.ok){const error=Error(data.error||'Request failed');error.status=response.status;throw error;}return data;}
 async function scan(){
     refresh.disabled=true;status.textContent='Scanning…';
     const previous=selectedNetwork(),wasManual=ssid.value==='manual';
     try{
-        const data=await request('/api/scan');cameraAccess.hidden=!data.camera_password_required;cameraPassword.disabled=!data.camera_password_required;cameraPassword.required=!!data.camera_password_required;networks=data.ssids;ssid.replaceChildren();
+        const data=await request('/api/scan');
+        cameraPasswordRequired=data.camera_password_required===true;
+        cameraPasswordOption.hidden=cameraPasswordRequired||data.camera_password_saved!==true;
+        if(cameraPasswordOption.hidden)changeCameraPassword.checked=false;
+        updateCameraPassword();networks=data.ssids;ssid.replaceChildren();
         const placeholder=document.createElement('option');placeholder.value='';placeholder.textContent=networks.length?'Choose a network':'No networks found';placeholder.disabled=true;ssid.append(placeholder);
         networks.forEach((name,index)=>{const option=document.createElement('option');option.value=String(index);option.textContent=name;ssid.append(option);});
         const other=document.createElement('option');other.value='manual';other.textContent='Other network…';ssid.append(other);
@@ -72,6 +85,7 @@ async function scan(){
 }
 async function watch(){try{const data=await request('/api/status');pollFailures=0;if(data.state==='connected'){showLocalViewer(data);status.textContent='Connected. Your settings are saved.';polling=false;return;}if(data.state==='provisioning'){status.textContent='Could not connect. Check the network name and password, then try again.';polling=false;save.disabled=false;refresh.disabled=false;return;}status.textContent='Connecting…';}catch(error){if(error.status){status.textContent=error.message;polling=false;save.disabled=false;refresh.disabled=false;}else{status.textContent='Setup connection lost. If setup Wi-Fi disappears, reconnect to your normal network. Otherwise reconnect here and try again.';if(++pollFailures>=3){polling=false;save.disabled=false;refresh.disabled=false;}}}if(polling)setTimeout(watch,1500);}
 ssid.addEventListener('change',updateManual);
+changeCameraPassword.addEventListener('change',updateCameraPassword);
 refresh.addEventListener('click',scan);
 form.addEventListener('submit',async event=>{event.preventDefault();const name=selectedNetwork();if(!name){status.textContent='Choose a network or enter its name.';return;}save.disabled=true;refresh.disabled=true;status.textContent='Connecting…';try{await request('/api/connect',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({...{ssid:name,password:password.value},...(!cameraPassword.disabled?{camera_password:cameraPassword.value}:{})})});password.value='';cameraPassword.value='';pollFailures=0;polling=true;setTimeout(watch,1000);}catch(error){status.textContent=error.message;save.disabled=false;refresh.disabled=false;}});
 scan();

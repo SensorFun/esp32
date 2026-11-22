@@ -115,7 +115,7 @@ int main() {
         harness = r'''
 const vm=require('node:vm'),assert=require('node:assert/strict');
 const elements={};
-for(const id of ['setup','ssid','manual-ssid','manual-network','password','camera-access','camera-password','refresh','save','status','local-viewer','local-viewer-link','remote-viewer','remote-viewer-link']) {
+for(const id of ['setup','ssid','manual-ssid','manual-network','password','camera-access','camera-password','camera-password-option','change-camera-password','refresh','save','status','local-viewer','local-viewer-link','remote-viewer','remote-viewer-link']) {
     elements[id]={value:'',disabled:false,textContent:'',children:[],handlers:{},
         addEventListener(name,fn){this.handlers[name]=fn;},
         replaceChildren(){this.children=[];},append(child){this.children.push(child);}};
@@ -136,6 +136,7 @@ const flush=async()=>{for(let i=0;i<8;i++)await Promise.resolve();};
     assert.equal(elements.ssid.children[2].textContent,'<img src=x onerror=alert(1)>');
     assert.equal(elements.ssid.children[2].value,'1');
     assert.equal(elements['manual-network'].hidden,true);
+    assert.equal(elements['camera-password-option'].hidden,true);
     elements.ssid.value='0';
     reply({ssids:['Other network'],camera_password_required:true});
     await elements.refresh.handlers.click();
@@ -164,11 +165,20 @@ const flush=async()=>{for(let i=0;i<8;i++)await Promise.resolve();};
     assert.equal(elements['manual-network'].hidden,false);
     assert.equal(elements['manual-ssid'].required,true);
     elements['manual-ssid'].value='Hidden network';
-    reply({ssids:[],camera_password_required:true});await elements.refresh.handlers.click();
+    reply({ssids:[],camera_password_required:false,camera_password_saved:true});await elements.refresh.handlers.click();
     assert.equal(elements.ssid.value,'manual');
     assert.equal(elements['manual-ssid'].value,'Hidden network');
+    assert.equal(elements['camera-password-option'].hidden,false);
+    const change=elements['change-camera-password'],cameraPassword=elements['camera-password'];
+    assert.equal(cameraPassword.disabled,true);
+    change.checked=true;change.handlers.change();
+    assert.equal(cameraPassword.required,true);
+    cameraPassword.value='synthetic-test-vector';
+    change.checked=false;change.handlers.change();
+    assert.equal(cameraPassword.value,'');
     reply({state:'connecting'},202);await elements.setup.handlers.submit({preventDefault(){}});
     assert.equal(calls.at(-1).options.body.get('ssid'),'Hidden network');
+    assert.equal(calls.at(-1).options.body.has('camera_password'),false);
     assert.equal(calls.at(-1).options.body.has('signal_server'),false);
     assert.equal(calls.at(-1).options.body.has('signal_server_url'),false);
     reply({state:'connected',ip:'192.0.2.25',local_url:'https://192.0.2.25/'});await timers.shift()();

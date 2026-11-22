@@ -286,15 +286,19 @@ with sync_playwright() as p:
             this.writable = new WritableStream({write(bytes) {
               const command = new TextDecoder().decode(bytes).trim();
               if (command === 'sensorfan-usb scan') {
-                reply({result:'scan',ssids:['Home','Test+network'],camera_password_required:true});
+                reply({result:'scan',ssids:['Home','Test+network'],camera_password_required:!window.testPasswordSaved,
+                       camera_password_saved:!!window.testPasswordSaved});
               } else if (command === 'sensorfan-usb status') {
                 polls++;
                 const project = 'testBoardProject' in window ? window.testBoardProject : 'webrtc';
+                if (polls >= 3 && !failed) window.testPasswordSaved = true;
                 reply({status:true,project,result:polls < 3 ? 'pending' : failed ? 'restored' : 'saved',
                        ...(polls >= 3 ? {ip:'192.0.2.1',remote_url:'https://esp32.sensorfun.net/projects/webrtc/A1B2C3D4E5F6'} : {})});
               } else if (command === 'sensorfan-usb wifi ssid=Test%2Bnetwork&password=&camera_password=' + 'x'.repeat(12)) {
                 reply({result:'pending'});
-              } else if (command === 'sensorfan-usb wifi ssid=Missing&password=&camera_password=' + 'x'.repeat(12)) {
+              } else if (window.testPasswordSaved && command === 'sensorfan-usb wifi ssid=Test%2Bnetwork&password=&camera_password=' + 'y'.repeat(12)) {
+                reply({result:'pending'});
+              } else if (command === 'sensorfan-usb wifi ssid=Missing&password=') {
                 failed = true;
                 reply({result:'pending'});
               } else {
@@ -457,9 +461,23 @@ with sync_playwright() as p:
             assert page.evaluate('window.openedUrl') == 'https://192.0.2.1/'
             page.get_by_role('button', name='Provision', exact=True).click()
             expect(setup.locator('#status')).to_have_text('Choose your network from the list.')
+            change = setup.get_by_role('checkbox', name='Change camera password')
+            expect(change).not_to_be_checked()
+            expect(setup.locator('#camera-password')).to_be_hidden()
+            page.set_viewport_size({'width': 320, 'height': 800})
+            assert setup.locator('#camera-password-option').bounding_box()['height'] >= 44
+            change.check()
+            expect(setup.locator('#camera-password')).to_be_visible()
+            assert setup.locator('html').evaluate('root => root.scrollWidth <= root.clientWidth')
+            setup.locator('#ssid').select_option(label='Test+network')
+            setup.locator('#camera-password').fill('y' * 12)
+            setup.get_by_role('button', name='Save and connect').click()
+            expect(setup.locator('#status')).to_have_text('Connected. Your settings are saved.')
+            popup.get_by_role('button', name='Close').click()
+            page.get_by_role('button', name='Provision', exact=True).click()
+            expect(setup.locator('#status')).to_have_text('Choose your network from the list.')
             setup.locator('#ssid').select_option(label='Other network…')
             setup.locator('#manual-ssid').fill('Missing')
-            setup.locator('#camera-password').fill('x' * 12)
             setup.get_by_role('button', name='Save and connect').click()
             expect(setup.locator('#status')).to_contain_text('reconnected to its saved network')
             assert setup.locator('#save').is_enabled()

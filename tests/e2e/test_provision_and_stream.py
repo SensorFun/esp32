@@ -153,6 +153,9 @@ def provision_in_browser(url, browser_path, port, ssid, wifi_password, camera_pa
             setup.locator('#ssid').select_option('manual')
             setup.locator('#manual-ssid').evaluate('(input, value) => { input.value = value; }', network)
             setup.locator('#password').evaluate('(input, value) => { input.value = value; }', password)
+            change_password = setup.get_by_role('checkbox', name='Change camera password')
+            if camera is not None and change_password.is_visible():
+                change_password.check()
             assert setup.locator('#camera-access').is_visible() == (camera is not None)
             if camera is not None:
                 setup.locator('#camera-password').evaluate('(input, value) => { input.value = value; }', camera)
@@ -163,7 +166,7 @@ def provision_in_browser(url, browser_path, port, ssid, wifi_password, camera_pa
             expect(popup).to_be_hidden()
 
         open_setup()
-        connect(ssid, wifi_password, camera_password)
+        connect(ssid, wifi_password, Secret(secrets.token_urlsafe(24)))
         expect(status).to_have_text('Connected. Your settings are saved.', timeout=195000)
         expect(setup.locator('#local-viewer-link')).to_have_attribute('href', re.compile(r'^https://[\d.]+/$'))
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
@@ -171,6 +174,11 @@ def provision_in_browser(url, browser_path, port, ssid, wifi_password, camera_pa
         open_setup()  # The saved camera password is kept; the page no longer asks for it.
         connect(ssid, wifi_password)
         expect(status).to_have_text('Connected. Your settings are saved.', timeout=60000)
+        close_setup()
+        open_setup()
+        expect(setup.get_by_role('checkbox', name='Change camera password')).to_be_visible()
+        connect(ssid, wifi_password, camera_password)
+        expect(status).to_have_text('Connected. Your settings are saved.', timeout=195000)
         close_setup()
         open_setup()
         connect('missing-' + secrets.token_hex(8), '')

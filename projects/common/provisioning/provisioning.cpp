@@ -59,6 +59,24 @@ template<typename T> void wipe(T &credentials) {
     for (size_t i = 0; i < sizeof(credentials); ++i) bytes[i] = 0;
 }
 
+#if CONFIG_CAMERA_REMOTE_ACCESS
+bool camera_password_saved() {
+    camera_access::Record record;
+    const bool saved = camera_access::load(record) == ESP_OK;
+    wipe(record);
+    return saved;
+}
+#endif
+
+const char *camera_password_fields() {
+#if CONFIG_CAMERA_REMOTE_ACCESS
+    if (camera_password_saved()) return ",\"camera_password_required\":false,\"camera_password_saved\":true";
+    return ",\"camera_password_required\":true,\"camera_password_saved\":false";
+#else
+    return ",\"camera_password_required\":false,\"camera_password_saved\":false";
+#endif
+}
+
 esp_err_t load_credentials(Credentials &credentials) {
     nvs_handle_t handle;
     esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle);
@@ -178,12 +196,7 @@ esp_err_t scan(httpd_req_t *request) {
     if (err == ESP_ERR_WIFI_STATE || err == ESP_ERR_WIFI_TIMEOUT)
         return json_response(request, "503 Service Unavailable", "{\"error\":\"Scan unavailable; try again\"}");
     if (err != ESP_OK) return json_response(request, "503 Service Unavailable", "{\"error\":\"Scan failed\"}");
-    std::string body = "{\"ssids\":" + networks;
-#if CONFIG_CAMERA_REMOTE_ACCESS
-    body += ",\"camera_password_required\":true}";
-#else
-    body += ",\"camera_password_required\":false}";
-#endif
+    const std::string body = "{\"ssids\":" + networks + camera_password_fields() + "}";
     return json_response(request, "200 OK", body.c_str());
 }
 
@@ -246,7 +259,7 @@ esp_err_t connect_request(httpd_req_t *request) {
     std::string camera_password;
     const bool valid = provisioning::parse_credentials(std::string_view(body, received), setup.wifi,
 #if CONFIG_CAMERA_REMOTE_ACCESS
-        &camera_password
+        &camera_password, !camera_password_saved()
 #else
         nullptr
 #endif
@@ -544,15 +557,8 @@ extern "C" void provisioning_usb_command(const char *command) {
         const esp_err_t err = state.load() == State::connecting ? ESP_ERR_INVALID_STATE : scan_networks(networks);
         submitting = false;
         if (err != ESP_OK) { reply(err == ESP_ERR_INVALID_STATE ? "busy" : "scan_failed"); return; }
-#if CONFIG_CAMERA_REMOTE_ACCESS
-        camera_access::Record record;
-        const bool required = camera_access::load(record) != ESP_OK;
-        wipe(record);
-#else
-        const bool required = false;
-#endif
-        std::printf("SENSORFUN_USB {\"result\":\"scan\",\"ssids\":%s,\"camera_password_required\":%s}\n",
-                    networks.c_str(), required ? "true" : "false");
+        std::printf("SENSORFUN_USB {\"result\":\"scan\",\"ssids\":%s%s}\n",
+                    networks.c_str(), camera_password_fields());
         return;
     }
     const char *result = "invalid";
@@ -560,10 +566,7 @@ extern "C" void provisioning_usb_command(const char *command) {
         SetupRequest setup{};
         std::string camera_password;
 #if CONFIG_CAMERA_REMOTE_ACCESS
-        camera_access::Record record;
-        const bool require_camera = camera_access::load(record) != ESP_OK;
-        wipe(record);
-        const bool valid = provisioning::parse_credentials(input.substr(5), setup.wifi, &camera_password, require_camera);
+        const bool valid = provisioning::parse_credentials(input.substr(5), setup.wifi, &camera_password, !camera_password_saved());
 #else
         const bool valid = provisioning::parse_credentials(input.substr(5), setup.wifi);
 #endif

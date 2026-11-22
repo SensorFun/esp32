@@ -114,7 +114,8 @@ export function usbSetupApi(session, { onConnected, onFinish }) {
         const reply = await session.send('scan', reply => ['scan', 'busy', 'scan_failed'].includes(reply.result), 12000);
         if (reply?.result === 'scan') {
           return json(200, { ssids: Array.isArray(reply.ssids) ? reply.ssids.filter(name => typeof name === 'string') : [],
-            camera_password_required: reply.camera_password_required === true });
+            camera_password_required: reply.camera_password_required === true,
+            camera_password_saved: reply.camera_password_saved === true });
         }
         if (reply?.result === 'scan_failed') return json(503, { error: 'Scan failed' });
         if (!reply) throw TypeError('The camera did not answer over USB.');
