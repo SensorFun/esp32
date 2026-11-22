@@ -158,7 +158,7 @@ function defineElements() {
         this.renderStatus();
       }
     }
-    say(text) { const status = this.shadowRoot.querySelector('form [role=status]'); if (status) status.textContent = text; }
+    say(text) { const status = this.shadowRoot.querySelector('form > .save-status'); if (status) status.textContent = text; }
     setBusy(busy) {
       this.shadowRoot.querySelectorAll('form button,form input,form select').forEach(control => {
         if (busy) { control.dataset.wasDisabled = String(control.disabled); control.disabled = true; } else control.disabled = control.dataset.wasDisabled === 'true';
@@ -172,7 +172,18 @@ function defineElements() {
       // Keep an untouched field valid when the limit drops, e.g. after a resolution change.
       if (!this.dirty && Number(control.value) > max) control.value = max;
     }
+    renderRecordingWarning() {
+      const warning = this.shadowRoot.querySelector('#recording-warning');
+      if (!warning) return;
+      const record = this.shadowRoot.querySelector('input[name=record]');
+      const sd = this.status?.sd;
+      const message = record?.checked && sd && sd.state !== 'mounted'
+        ? `${cardText(sd)}. The camera can't record clips right now.`
+        : '';
+      if (warning.textContent !== message) warning.textContent = message;
+    }
     renderStatus() {
+      this.renderRecordingWarning();
       const box = this.shadowRoot.querySelector('.live');
       if (!box || !this.status) return;
       const s = this.status;
@@ -192,7 +203,6 @@ function defineElements() {
         // The recordings list below shows the card itself; the full panel says it here.
         if (!this.getAttribute('group')) notes.push(cardText(s.sd));
         if (!s.enabled && recording && this.getAttribute('group')) notes.push('Clips are recorded only while motion detection is on (Motion detection tab)');
-        if (s.enabled && recording && s.sd && s.sd.state !== 'mounted') notes.push('Motion is still detected, but clips are not saved');
         if (s.recorder_error) notes.push(s.recorder_error);
         if (s.clock === false) notes.push('Camera clock not set yet; clips are named by uptime until it syncs.');
       }
@@ -214,8 +224,9 @@ function defineElements() {
         label.toggle{flex-direction:row;flex-wrap:wrap;align-items:center;gap:10px;min-height:44px}label.toggle input{width:24px;height:24px;min-height:0;margin:0;accent-color:#00d4cb;flex:none}
         label.toggle small{flex-basis:100%;padding-left:34px}.live{margin-bottom:6px}.card{margin:0 0 18px}
         :host([group=recording]){margin-bottom:18px}.groups.fields{margin-bottom:18px}
+        #recording-warning{color:#ffd58a;margin:0}#recording-warning:not(:empty){background:#3a2a12;border:1px solid #8a6421;border-radius:6px;padding:10px 12px;margin-bottom:12px}
       </style><section><header><h2></h2></header><div class="live pills" aria-live="polite"></div><p class="card muted"></p>
-      <form><div class="groups"></div><div class="actions"><button type="submit">Save</button><button type="button" class="secondary">Reset to Default</button></div><p role="status"></p></form></section>`;
+      <form><div class="groups"></div>${this.shows('recording') ? '<p id="recording-warning" role="status"></p>' : ''}<div class="actions"><button type="submit">Save</button><button type="button" class="secondary">Reset to Default</button></div><p class="save-status" role="status"></p></form></section>`;
       this.shadowRoot.querySelector('h2').textContent = this.panel.title;
       const groups = this.shadowRoot.querySelector('.groups');
       const titles = { detection: 'Detection', recording: 'SD card recording' };
@@ -254,6 +265,7 @@ function defineElements() {
         }
         control.name = field.name;
         control.setAttribute('aria-label', field.label);
+        if (field.name === 'record') control.setAttribute('aria-describedby', 'recording-warning');
         if (field.help) { const help = document.createElement('small'); help.textContent = field.help; label.append(help); }
         if (field.max_reason) {
           // The camera computes this maximum; it follows resolution and memory.
@@ -263,6 +275,7 @@ function defineElements() {
         }
         control.addEventListener('input', () => {
           this.dirty = true;
+          if (field.name === 'record') this.renderRecordingWarning();
           // Apply live, as camera settings do; Save also stores them.
           if (this.pending || !control.checkValidity() || control.value === '') return;
           command(this, { op: 'motion_set', settings: this.collect() });

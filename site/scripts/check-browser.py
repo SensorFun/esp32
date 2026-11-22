@@ -402,7 +402,8 @@ with sync_playwright() as p:
         recording = page.locator('sensorfan-motion-settings[group=recording]')
         expect(recording.get_by_role('heading', name='Recording settings', exact=True)).to_be_visible()
         expect(recording.get_by_label('Minimum speed', exact=True)).to_have_count(0)
-        expect(recording.get_by_label('Record to SD card', exact=True)).to_be_checked()
+        record = recording.get_by_label('Record to SD card', exact=True)
+        expect(record).to_be_checked()
         expect(recording.get_by_text('Recording 0:12', exact=True)).to_be_visible()
         for button in recording.get_by_role('button').all():
             assert button.bounding_box()['height'] >= 44
@@ -418,6 +419,19 @@ with sync_playwright() as p:
         expect(recording.get_by_text('Recording settings saved on camera.', exact=True)).to_be_visible()
         applied = page.evaluate("motionHarness.state.commands.filter(c=>c.op==='motion_apply').at(-1).settings")
         assert applied == {'record': True, 'pre_seconds': 2, 'post_seconds': 10}, applied
+        warning = recording.get_by_text("No SD card inserted. The camera can't record clips right now.", exact=True)
+        expect(warning).to_be_hidden()
+        page.evaluate("motionHarness.status({sd: {state: 'absent'}, enabled: false, recording: false})")
+        expect(warning).to_be_visible()
+        record.uncheck()
+        expect(warning).to_be_hidden()
+        record.check()
+        expect(warning).to_be_visible()
+        recording.get_by_role('button', name='Save', exact=True).click()
+        expect(recording.get_by_text('Recording settings saved on camera.', exact=True)).to_be_visible()
+        expect(warning).to_be_visible()
+        page.evaluate('motionHarness.status()')
+        expect(warning).to_be_hidden()
         # Reset restores only this panel's fields; detection keeps its saved values.
         recording.get_by_label('Keep recording', exact=True).fill('30')
         recording.get_by_role('button', name='Reset to Default', exact=True).click()
