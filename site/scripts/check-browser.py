@@ -639,6 +639,27 @@ with sync_playwright() as p:
             recordings.get_by_role('button', name='Download', exact=True).click()
         assert re.fullmatch(r'camera-2026-11-1\d_\d\d-\d\d-00\.avi', download.value.suggested_filename), download.value.suggested_filename
         assert page.evaluate("motionHarness.state.commands.filter(c=>c.op==='recording_download').length") == 1  # Download reused the played clip.
+        if width == 390:
+            page.evaluate("""() => {
+                window.screenLocks = { acquired: 0, released: 0 };
+                Object.defineProperty(navigator, 'wakeLock', { configurable: true, value: {
+                    async request(type) {
+                        if (type !== 'screen') throw Error('Expected a screen wake lock');
+                        screenLocks.acquired++;
+                        return { released: false, async release() {
+                            if (!this.released) { this.released = true; screenLocks.released++; }
+                        } };
+                    },
+                } });
+            }""")
+            download_clip = recordings.locator('li').first.get_by_role('button', name=re.compile('^Download '))
+            download_clip.click()
+            page.wait_for_function('screenLocks.acquired === 1 && screenLocks.released === 0')
+            recordings.get_by_role('button', name='Cancel', exact=True).click()
+            page.wait_for_function('screenLocks.released === 1')
+            with page.expect_download():
+                download_clip.click()
+            page.wait_for_function('screenLocks.acquired === 2 && screenLocks.released === 2')
         page.once('dialog', lambda dialog: dialog.accept())
         recordings.locator('li').first.get_by_role('button', name=re.compile('^Delete ')).click()
         expect(recordings.locator('li')).to_have_count(1)

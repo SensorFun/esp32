@@ -113,7 +113,7 @@ $('login').onsubmit=async event=>{
   channel=pc.createDataChannel('camera',{ordered:true});channel.binaryType='arraybuffer';channel.onmessage=message;
   channel.onopen=()=>{if(current===run)status('Waiting for the camera password check…');};
   channel.onclose=()=>{if(run===current)stop();};
-  pc.onconnectionstatechange=()=>{if(run===current&&['failed','disconnected'].includes(connection.connectionState))stop();};
+  pc.onconnectionstatechange=()=>{if(run===current&&['failed','closed'].includes(connection.connectionState))stop();};
   status('Gathering local ICE candidates…');
   await pc.setLocalDescription(await pc.createOffer());
   await new Promise((resolve,reject)=>{if(connection.iceGatheringState==='complete'){resolve();return;}const timer=setTimeout(()=>reject(Error('ICE gathering timed out')),10000);connection.onicegatheringstatechange=()=>{if(connection.iceGatheringState==='complete'){clearTimeout(timer);resolve();}};});

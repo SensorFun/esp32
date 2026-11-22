@@ -35,6 +35,8 @@
 namespace {
 constexpr char TAG[] = "local_webrtc";
 constexpr size_t CHUNK = 2048;
+constexpr int64_t PEER_IDLE_US = 30000000;
+constexpr int64_t DOWNLOAD_IDLE_US = 60000000;
 // Bound bulk traffic independently of how fast the peer loop can run. Control
 // replies and pings bypass this pacing so a full video queue cannot starve them.
 constexpr int64_t BULK_BYTES_PER_SECOND = 256 * 1024;
@@ -45,7 +47,7 @@ esp_peer_default_cfg_t peer_defaults(uint8_t candidates) {
     esp_peer_default_cfg_t cfg{};
     cfg.agent_recv_timeout = CAMERA_ICE_RECEIVE_MS;
     // Encrypted application pings already maintain NAT mappings and update
-    // activity; the worker closes peers after 30 seconds without them. Avoid
+    // activity; the worker also counts recording transfer progress. Avoid
     // a second STUN keepalive checker dropping an otherwise active channel.
     cfg.alive_binding_retries = 0xff;
     // The browser creates a reliable, ordered channel. Retain its packets
@@ -236,7 +238,7 @@ esp_err_t session(httpd_req_t *r) {
         httpd_resp_set_hdr(r, "Cache-Control", "no-store");
         return httpd_resp_send(r, answer.data(), answer.size());
     }
-    if (peer) return respond(r, "409 Conflict", "{\"error\":\"One browser at a time; disconnect or wait 30 seconds\"}");
+    if (peer) return respond(r, "409 Conflict", "{\"error\":\"One browser at a time; disconnect the other viewer or try again shortly\"}");
     if (!RemoteAuth::configured()) return respond(r, "403 Forbidden", "{\"error\":\"Set a camera password over USB before viewing\"}");
     if (RemoteAuth::blocked()) return respond(r, "429 Too Many Requests", "{\"error\":\"Too many wrong passwords; wait 30 seconds\"}");
     if (!r->content_len || r->content_len > 16384) return respond(r, "400 Bad Request", "{}");
@@ -435,7 +437,8 @@ void worker(common::Application &app) {
                          unsigned(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
                          unsigned(heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)));
             }
-            if (peer && (failed || peer_auth.expired(now) || now - activity > 30000000)) {
+            const int64_t idle_limit = transfer.fd >= 0 ? DOWNLOAD_IDLE_US : PEER_IDLE_US;
+            if (peer && (failed || peer_auth.expired(now) || now - activity > idle_limit)) {
                 if (fb) { camera_frame_return(fb); fb = nullptr; }
                 ESP_LOGW(TAG, "Closing camera peer: failed=%d idle_ms=%lld", failed, (now - activity) / 1000);
                 close_peer();
@@ -517,7 +520,8 @@ void worker(common::Application &app) {
                     chunk.data = packet; chunk.size = size + 16;
                     int ret = esp_peer_send_data(peer, &chunk);
                     if (ret != 0) { if (ret != ESP_PEER_ERR_WOULD_BLOCK && ret != ESP_PEER_ERR_NO_MEM) failed = true; break; }
-                    next_bulk_send = esp_timer_get_time() + int64_t(size) * 1000000 / BULK_BYTES_PER_SECOND;
+                    activity = esp_timer_get_time();
+                    next_bulk_send = activity + int64_t(size) * 1000000 / BULK_BYTES_PER_SECOND;
                     transfer.offset += size;
                     if (transfer.offset == transfer.size) stop_transfer();
                 }

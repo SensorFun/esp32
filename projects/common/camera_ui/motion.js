@@ -309,9 +309,35 @@ function defineElements() {
 
   class Recordings extends HTMLElement {
     constructor() { super(); this.attachShadow({ mode: 'open' }); this.list = null; this.transfer = null; this.cache = null; this.player = null; this.recording = false; this.formatting = false; }
+    onVisibilityChange = () => { void this.keepScreenAwake(); };
+    connectedCallback() { document.addEventListener('visibilitychange', this.onVisibilityChange); }
+    disconnectedCallback() {
+      document.removeEventListener('visibilitychange', this.onVisibilityChange);
+      this.finishTransfer();
+    }
+    async keepScreenAwake() {
+      const transfer = this.transfer;
+      if (!transfer || (transfer.purpose !== 'save' && !transfer.saveWhenDone) ||
+          transfer.wakeLockPending || (transfer.wakeLock && !transfer.wakeLock.released) ||
+          document.visibilityState !== 'visible' || !navigator.wakeLock) return;
+      transfer.wakeLockPending = true;
+      try {
+        const lock = await navigator.wakeLock.request('screen');
+        if (this.transfer === transfer && document.visibilityState === 'visible') transfer.wakeLock = lock;
+        else await lock.release();
+      } catch { /* The browser can deny a wake lock while the download continues. */ }
+      finally { transfer.wakeLockPending = false; }
+    }
+    finishTransfer() {
+      const transfer = this.transfer;
+      this.transfer = null;
+      if (transfer?.wakeLock) void transfer.wakeLock.release().catch(() => {});
+      return transfer;
+    }
     reset() {
       this.stopPlayer();
-      this.list = null; this.transfer = null; this.cache = null; this.recording = false; this.formatting = false;
+      this.finishTransfer();
+      this.list = null; this.cache = null; this.recording = false; this.formatting = false;
       this.hidden = true; this.shadowRoot.innerHTML = '';
     }
     handle(message) {
@@ -374,16 +400,15 @@ function defineElements() {
     }
     downloadStarted(message) {
       const transfer = this.transfer;
-      if (!transfer || message.name !== transfer.name) return;
-      if (message.error) { this.transfer = null; this.render(); this.say(message.error); return; }
+      if (!transfer || (message.name !== transfer.name && (message.id === undefined || message.id !== transfer.id))) return;
+      if (message.error) { this.finishTransfer(); this.render(); this.say(message.error); return; }
       if (message.id === undefined) return;
       Object.assign(transfer, { id: message.id, size: message.size, received: 0, stream: new AviStream(message.size) });
       if (transfer.purpose === 'play') this.play(transfer.name, transfer.stream);  // Starts with the first frame.
       else this.progress();
     }
     downloadFinished() {
-      const transfer = this.transfer;
-      this.transfer = null;
+      const transfer = this.finishTransfer();
       const blob = new Blob([transfer.stream.bytes], { type: 'video/x-msvideo' });
       this.cache = { name: transfer.name, blob, stream: transfer.stream };
       this.render();
@@ -402,17 +427,21 @@ function defineElements() {
       if (this.cache?.name === name) { if (purpose === 'save') this.save(name, this.cache.blob); else this.play(name, this.cache.stream); return; }
       if (this.transfer) {
         // Saving the clip that is still streaming into the player: save it when it completes.
-        if (purpose === 'save' && this.transfer.name === name) { this.transfer.saveWhenDone = true; this.say('The download starts when the clip has finished loading.'); }
+        if (purpose === 'save' && this.transfer.name === name) {
+          this.transfer.saveWhenDone = true;
+          void this.keepScreenAwake();
+          this.say('The download starts when the clip has finished loading.');
+        }
         return;
       }
       this.transfer = { name, purpose, id: undefined, size: 0, received: 0, stream: null };
+      void this.keepScreenAwake();
       this.render();
       command(this, { op: 'recording_download', name });
     }
     cancel() {
       if (!this.transfer) return;
-      const stream = this.transfer.stream;
-      this.transfer = null;
+      const { stream } = this.finishTransfer();
       command(this, { op: 'recording_cancel' });
       if (stream && this.player?.stream === stream) this.stopPlayer();
       this.render();
