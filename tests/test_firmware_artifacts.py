@@ -65,6 +65,25 @@ class FirmwareArtifactTests(unittest.TestCase):
         self.assertTrue(json.loads((out / 'build.json').read_text())['private'])
         self.assertFalse((out / 'sdkconfig').exists())
 
+    def test_ci_signaling_image_requires_the_release_credential(self):
+        secret = b'synthetic-ci-token'
+        (self.build / 'sdkconfig').write_text(artifacts.RELEASE_SETTING + '\n')
+        (self.build / artifacts.CI_SIGNALING_OBJECT).write_bytes(secret)
+        kwargs = {'release': True, 'signaling_credential': secret.decode()}
+        with self.assertRaisesRegex(ValueError, 'missing the CI signaling configuration'):
+            artifacts.package(self.root, 'webrtc', 'test_board', 'abc', **kwargs)
+        (self.build / 'webrtc.bin').write_bytes(secret + b'\0')
+        out = artifacts.package(self.root, 'webrtc', 'test_board', 'abc')
+        self.assertTrue(json.loads((out / 'build.json').read_text())['private'])
+        out = artifacts.package(self.root, 'webrtc', 'test_board', 'abc', **kwargs)
+        self.assertFalse(json.loads((out / 'build.json').read_text())['private'])
+        self.assertFalse((out / 'sdkconfig').exists())
+        self.assertFalse((out / artifacts.CI_SIGNALING_OBJECT).exists())
+        with (self.build / 'sdkconfig').open('a') as config:
+            config.write('CONFIG_CAMERA_SIGNALING_API_SECRET="synthetic-local-token"\n')
+        with self.assertRaisesRegex(ValueError, 'private sdkconfig settings'):
+            artifacts.package(self.root, 'webrtc', 'test_board', 'abc', **kwargs)
+
     def test_release_packaging_refuses_debug_builds(self):
         (self.build / 'sdkconfig').write_text('CONFIG_COMPILER_OPTIMIZATION_DEBUG=y\n')
         artifacts.package(self.root, 'webrtc', 'test_board', 'abc')  # Local packaging allows it.

@@ -12,7 +12,17 @@
 #include <cstring>
 #include "sdkconfig.h"
 
+#ifdef USE_CI_CAMERA_SIGNALING
+extern "C" const char ci_camera_signaling_secret[];
+#endif
+
 namespace {
+#ifdef USE_CI_CAMERA_SIGNALING
+constexpr const char *signaling_secret = ci_camera_signaling_secret;
+#else
+constexpr const char *signaling_secret = CONFIG_CAMERA_SIGNALING_API_SECRET;
+#endif
+
 QueueHandle_t incoming, outgoing;
 std::atomic<bool> connected{false}, interrupted{false};
 esp_peer_signaling_handle_t signaling;
@@ -68,7 +78,7 @@ void task(void *) {
             esp_peer_signaling_cfg_t cfg{};
             cfg.signal_url = url; cfg.on_ice_info = ice_info;
             cfg.on_connected = on_connected; cfg.on_close = on_close; cfg.on_msg = on_message;
-            CameraSignalingConfig signaling_cfg{room, CONFIG_CAMERA_SIGNALING_API_SECRET, CONFIG_CAMERA_SIGNALING_STUN_URL};
+            CameraSignalingConfig signaling_cfg{room, signaling_secret, CONFIG_CAMERA_SIGNALING_STUN_URL};
             cfg.extra_cfg = &signaling_cfg; cfg.extra_size = sizeof(signaling_cfg);
             int ret = esp_peer_signaling_start(&cfg, camera_signaling_impl(), &signaling);
             if (ret) { ESP_LOGW("remote", "Signaling unavailable: %d; retry in 10 seconds", ret); vTaskDelay(pdMS_TO_TICKS(10000)); continue; }

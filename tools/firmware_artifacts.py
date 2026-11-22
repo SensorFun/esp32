@@ -46,9 +46,11 @@ def commit_id(root: Path) -> str:
 
 
 RELEASE_SETTING = 'CONFIG_COMPILER_OPTIMIZATION_PERF=y'
+CI_SIGNALING_OBJECT = 'ci_camera_signaling.o'
 
 
-def package(root: Path, project: str, board: str, commit: str, release: bool = False) -> Path:
+def package(root: Path, project: str, board: str, commit: str, release: bool = False, *,
+            signaling_credential: str | None = None) -> Path:
     """Copy one ESP-IDF build's flashable files into build/firmware.
 
     With release=True (CI), a build not compiled for performance is refused.
@@ -69,12 +71,20 @@ def package(root: Path, project: str, board: str, commit: str, release: bool = F
     selection = json.loads((build / 'firmware_selection.json').read_text())
     if selection.get('board') != board:
         raise ValueError(f'firmware_selection.json does not belong to {board}; rebuild it')
-    # A build with any private setting (such as a signaling secret) is served by
-    # the dev server only; the site build never publishes it.
     sdkconfig = build / 'sdkconfig'
-    private = sdkconfig.is_file() and is_private(sdkconfig.read_text(), firmware['private_settings'])
-    if release and (not sdkconfig.is_file() or RELEASE_SETTING not in sdkconfig.read_text().splitlines()):
+    settings = sdkconfig.read_text() if sdkconfig.is_file() else ''
+    if release and RELEASE_SETTING not in settings.splitlines():
         raise ValueError(f'{project} for {board} is not a release build ({RELEASE_SETTING} is not set)')
+    private = is_private(settings, firmware['private_settings'])
+    has_ci_signaling = (build / CI_SIGNALING_OBJECT).is_file()
+    if signaling_credential is not None:
+        if project != 'webrtc' or not release or private:
+            raise ValueError('Public camera signaling requires a WebRTC release with no private sdkconfig settings')
+        if (not signaling_credential or not has_ci_signaling
+                or signaling_credential.encode('ascii') + b'\0' not in (build / 'webrtc.bin').read_bytes()):
+            raise ValueError('The WebRTC application is missing the CI signaling configuration')
+    else:
+        private = private or has_ci_signaling
 
     out = root / 'build' / 'firmware' / project / board
     if out.exists():
@@ -111,15 +121,26 @@ def package(root: Path, project: str, board: str, commit: str, release: bool = F
     return out
 
 
-def build_here(root: Path, project: str, board: str) -> None:
+def build_here(root: Path, project: str, board: str, *, signaling_credential: str | None = None) -> None:
     """Build inside an ESP-IDF environment (CI job or our container)."""
     from esp32_workspace.boards import load_board
 
     grabbers = load_board(root, board).get('supported_frame_grabber', [])
     # Firmware detects the sensor at runtime; the grabber only labels the build.
+    grabber = 'ov' if 'ov' in grabbers else next(iter(grabbers), None)
+    if signaling_credential is not None:
+        from esp32_workspace.cli import command
+
+        build = root / 'build' / project / board
+        if build.exists():
+            raise ValueError(f'Public camera signaling requires a fresh build directory for {board}')
+        cmd = command(root, project, board, 'build', None, grabber)
+        env = {**os.environ, 'CAMERA_SIGNALING_API_SECRET': signaling_credential}
+        subprocess.run(cmd, cwd=root, env=env, check=True)
+        return
     overrides = [f'project={project}', f'board={board}']
-    if grabbers:
-        overrides.append('frame_grabber=' + ('ov' if 'ov' in grabbers else grabbers[0]))
+    if grabber:
+        overrides.append('frame_grabber=' + grabber)
     env = {**os.environ, 'ESP32_IN_DOCKER': '1', 'PYTHONPATH': str(root / 'python')}
     result = subprocess.call([sys.executable, str(root / 'tools/build.py'), *overrides], cwd=root, env=env)
     if result:
@@ -189,13 +210,19 @@ def main() -> int:
     in_container = IN_CONTAINER
     if args.ci and (in_container or args.package_only):
         parser.error('--ci runs on the host and builds in Docker')
+    signaling = os.environ.pop('CAMERA_SIGNALING_API_SECRET', '') or None
+    if signaling is not None:
+        if not in_container or not args.release or args.package_only or any(pair['project'] != 'webrtc' for pair in pairs):
+            parser.error('CAMERA_SIGNALING_API_SECRET requires a fresh WebRTC release build inside the CI container')
+        if not re.fullmatch(r'[ -~]+', signaling) or signaling != signaling.strip():
+            parser.error('CAMERA_SIGNALING_API_SECRET must be nonempty printable ASCII without surrounding whitespace')
     for pair in pairs:
         project, board = pair['project'], pair['board']
         if args.package_only:
             package(ROOT, project, board, commit, args.release)
         elif in_container:
-            build_here(ROOT, project, board)
-            package(ROOT, project, board, commit, args.release)
+            build_here(ROOT, project, board, signaling_credential=signaling)
+            package(ROOT, project, board, commit, args.release, signaling_credential=signaling)
         else:
             build_in_docker(ROOT, project, board, commit, ci=args.ci)
     if not in_container:

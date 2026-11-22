@@ -76,9 +76,9 @@ repository.
 
 Remote viewing uses SensorFun's signaling service. Users enter only the camera
 MAC and camera password chosen during setup. The viewer endpoint is fixed to
-`wss://signalserver.sensorfun.net/viewer`. The service API secret stays on the
-server and in authorized camera firmware. No credentials are embedded in the
-public website build or saved to browser storage.
+`wss://signalserver.sensorfun.net/viewer`. The downloadable camera firmware
+includes a shared registration credential. The viewer uses the provisioned
+camera password and keeps it out of browser storage.
 
 The same frontend runs on GitHub Pages, which serves static files only. Both
 camera and browser connect through the signaling server and Cloudflare Tunnel; WebRTC images and
@@ -184,7 +184,7 @@ the same `espressif/idf:v6.1` image, one container per project and board:
 
 ```sh
 python3 tools/firmware_artifacts.py --list           # project/board pairs CI builds
-python3 tools/firmware_artifacts.py --ci             # exactly as CI: fresh builds, default settings
+python3 tools/firmware_artifacts.py --ci             # fresh builds with default settings
 python3 tools/firmware_artifacts.py                  # reuse your build/<project>/<board> folders
 python3 tools/firmware_artifacts.py --project webrtc --board esp32s3n16r8_goouuu_cam
 python3 tools/firmware_artifacts.py --package-only   # package existing builds without building
@@ -200,10 +200,11 @@ In CI, a job lists the pairs, a matrix job builds each one and uploads
 
 A package is private when its `sdkconfig` sets any of the project's
 `private_settings` (WebRTC lists its signaling secret). The dev server serves
-private packages to this computer only; `npm run build` never bundles them,
-and the bundle check fails if one is present. Default builds (`--ci` and CI)
-set none, so they can be published; WebRTC builds without a secret cannot join
-a signaling server that requires one, while local viewing is unaffected.
+private packages to this computer only. WebRTC releases built on `main` take
+`CAMERA_SIGNALING_API_SECRET` from the GitHub Actions environment and pass it
+to the compiler over standard input. The firmware package includes the flash
+binaries and metadata. The credential can be extracted from the downloadable
+application binary. Pull request and default local builds use the empty default.
 
 ## Browser verification
 

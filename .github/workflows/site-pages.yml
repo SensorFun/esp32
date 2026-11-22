@@ -62,7 +62,13 @@ jobs:
       # --release refuses any build not compiled for performance (-O2).
       - name: Build and package ${{ matrix.project }} / ${{ matrix.board }}
         shell: bash
+        env:
+          CAMERA_SIGNALING_API_SECRET: ${{ (github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && matrix.project == 'webrtc') && secrets.CAMERA_SIGNALING_API_SECRET || '' }}
         run: |
+          if [[ "${GITHUB_REF}" == refs/heads/main && "${GITHUB_EVENT_NAME}" != pull_request && "${{ matrix.project }}" == webrtc && -z "${CAMERA_SIGNALING_API_SECRET}" ]]; then
+            echo "::error::Set CAMERA_SIGNALING_API_SECRET for the WebRTC release build."
+            exit 1
+          fi
           source "$IDF_PATH/export.sh"
           python -m pip install --quiet hydra-core==1.3.2
           python tools/firmware_artifacts.py --project "${{ matrix.project }}" --board "${{ matrix.board }}" --commit "${GITHUB_SHA::12}" --release
