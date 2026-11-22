@@ -27,7 +27,7 @@ def test_stdin_credentials_do_not_prompt_or_echo(provision, monkeypatch, capsys)
 
     class Console:
         def __init__(self, *args, **kwargs):
-            self.messages = iter((b'Setup Wi-Fi:', b'Local camera ready: https://192.0.2.1/'))
+            self.messages = iter((b'No saved Wi-Fi; waiting for USB provisioning', b'Local camera ready: https://192.0.2.1/'))
 
         def __enter__(self):
             return self

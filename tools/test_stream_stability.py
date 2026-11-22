@@ -10,7 +10,7 @@ import threading
 import time
 
 from playwright.sync_api import sync_playwright
-from test_local_webrtc import CameraConsole, wait_js
+from test_local_webrtc import CameraConsole, add_password_argument, camera_password, connect_local, wait_js
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--url', required=True)
@@ -19,9 +19,11 @@ parser.add_argument('--browser', required=True)
 parser.add_argument('--seconds', type=int, default=180)
 parser.add_argument('--reconnects', type=int, default=2)
 parser.add_argument('--reset', action='store_true', help='Pulse reset before the observation window')
+add_password_argument(parser)
 args = parser.parse_args()
 if args.seconds < 30 or args.reconnects < 0:
     parser.error('Use at least 30 seconds and a nonnegative reconnect count')
+password = camera_password(args)
 
 # Set line levels before opening. Some USB adapters still pulse reset on open;
 # the observation baseline begins after the application and stream are ready.
@@ -78,8 +80,8 @@ with console, sync_playwright() as p:
                 page.wait_for_timeout(1000)
 
         def connect():
-            page.locator('#connect').click()
-            wait_js(page, "channel?.readyState==='open'")
+            wait_js(page, "!document.querySelector('#connect').disabled")
+            connect_local(page, password)
             page.evaluate("""()=>{
               window.frames=0; window.replies=0; window.lastSettings=null;
               window.originalPeer=pc; window.originalChannel=channel;

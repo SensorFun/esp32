@@ -36,6 +36,9 @@ cJSON *RemoteAuth::begin(const std::string &offer, const std::string &answer) {
     cJSON *reply = cJSON_CreateObject();
     cJSON_AddStringToObject(reply, "type", "auth_challenge");
     cJSON_AddStringToObject(reply, "algorithm", "camera-scram-sha256-v2");
+    // The local viewer needs the ID for its key derivation. A camera claiming
+    // another ID cannot produce the auth_ok signature the browser verifies.
+    cJSON_AddStringToObject(reply, "camera", room);
     cJSON_AddStringToObject(reply, "salt", salt.c_str()); cJSON_AddStringToObject(reply, "nonce", nonce.c_str());
     cJSON_AddNumberToObject(reply, "iterations", record_.iterations);
     return reply;

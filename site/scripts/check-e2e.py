@@ -49,6 +49,9 @@ window.RTCPeerConnection=class extends NativePeer{
     page.get_by_label('Camera password', exact=True).fill(password)
     page.get_by_role('button', name='Connect camera', exact=True).click()
     try:
+        # The camera checks the proof; the page drops the typed password at once.
+        expect(page.get_by_label('Camera password', exact=True)).to_have_value('')
+        assert password not in page.content(), 'The password appears in the page HTML'
         if args.reject or args.unauthenticated:
             expect(page.get_by_test_id('remote-status')).to_contain_text('authentication required' if args.unauthenticated else 'Camera not found', timeout=60000)
             assert not page.get_by_test_id('remote-image').evaluate('(img)=>img.naturalWidth > 0')
@@ -163,7 +166,8 @@ window.RTCPeerConnection=class extends NativePeer{
             page.wait_for_function("parseFloat(document.querySelector('[data-testid=remote-fps]').textContent) > 0", timeout=5000)
             frame_count = page.evaluate('window.__frameStats.frameEnds')
             page.wait_for_function('window.__frameStats.frameEnds >= ' + str(frame_count + 3), timeout=20000)
-            print('PASS: reconnect to the same camera session')
+            assert password not in page.content(), 'The password appears in the page HTML'
+            print('PASS: reconnect with the derived key; the password is not kept in the page')
             page.get_by_role('button', name='Disconnect', exact=True).click()
     except Exception as error:
         print('STATUS:', page.get_by_test_id('remote-status').inner_text())

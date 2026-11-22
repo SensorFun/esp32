@@ -88,7 +88,7 @@ export async function openUsbSession(port, signal) {
       await port.setSignals({ requestToSend: false });
       for (let attempt = 0; attempt < 20 && !current; attempt++) current = await status();
     }
-    if (!current) throw Error('The board did not answer over USB. Start it normally and try again, or set it up over Wi-Fi: join its CAM_<MAC> setup network and open https://192.168.4.1.');
+    if (!current) throw Error('The board did not answer over USB. Start it normally (release BOOT and reset), then try again.');
     session.firmware = current;
     return session;
   } catch (error) {

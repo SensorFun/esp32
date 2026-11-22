@@ -1,5 +1,10 @@
 menu "Wi-Fi provisioning"
 config PROVISIONING_SECURE
-    bool "Also serve HTTPS for provisioning"
+    bool "USB provisioning commands and device TLS identity"
     default n
+    help
+        Enables the USB console provisioning commands (used by the browser
+        flasher and tools/provision.py) and creates the TLS identity that the
+        camera viewer serves over HTTPS. Wi-Fi is provisioned only over USB;
+        the board never opens a setup access point.
 endmenu

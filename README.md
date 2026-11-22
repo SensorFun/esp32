@@ -156,11 +156,11 @@ the workspace independently of the current directory.
 ## Wi-Fi provisioning
 
 WebRTC uses the shared [provisioning component](projects/common/provisioning/README.md).
-Without saved settings, join the board's open `CAM_<MAC>` Wi-Fi (no password
-or serial access needed), then open `http://192.168.4.1`. Refresh to
-scan networks, choose or enter an SSID, and save its password. Credentials persist
-in board NVS after a successful connection; setup closes afterward. A failed saved
-connection reopens setup after 20 seconds.
+Wi-Fi is provisioned only over USB: use **Provision** in the browser flasher or
+`tools/provision.py`. The board never opens a setup access point. Choose or
+enter an SSID, its password and the camera password that every viewer enters.
+Credentials persist in board NVS after a successful connection. If the saved
+network becomes unavailable, the board keeps rejoining it.
 
 [The common application class](projects/common/application/README.md) owns
 `setup()`, `main()`, and `enter_setup()`. Its reset wiring comes from board headers:
@@ -168,6 +168,8 @@ connection reopens setup after 20 seconds.
 - **ESP32-CAM:** connect **IO12 to GND** for **two seconds**, then disconnect.
 - **ESP32-S3:** hold **BOOT** for **two seconds while running**, then release.
 - Serial `wifi-reset` and `common.enter_setup()` also request setup.
+
+After a setup reset the board waits for USB provisioning.
 
 A setup reset clears the entire default NVS partition on the next software boot,
 including Wi-Fi and other saved application settings. A normal reboot preserves

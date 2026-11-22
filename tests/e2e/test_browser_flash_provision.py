@@ -5,13 +5,15 @@ setup popup that opens afterwards, the way a first-time user would.
    (`npm run dev -- --firmware-dir build`).
 2. In Chromium, choose the board, select Clear settings and Flash firmware, and
    flash over Web Serial (esptool-js), so the board starts with no saved Wi-Fi
-   or camera password.
+   or camera password. It must wait for USB provisioning; Wi-Fi setup is
+   USB-only and the board never opens a setup access point.
 3. The "Provision WebRTC camera" popup opens by itself and shows the firmware's
    own setup page. Choose the network, enter the Wi-Fi and camera passwords,
    and wait for "Connected".
-4. Check the page links the remote viewer for this camera's ID, the
-   reported local viewer answers over HTTPS, and that reopening the
-   popup no longer asks for the camera password.
+4. Check the page links the remote viewer for this camera's ID, and that the
+   reported local viewer answers over HTTPS, rejects a wrong camera password
+   and streams with the right one. Reopening the popup no longer asks for the
+   camera password.
 5. Try a network that does not exist and check the camera returns to the
    saved one.
 
@@ -104,6 +106,7 @@ class SerialBridge:
         self.console.port = path
         self.console.timeout = .03
         self.transcript = bytearray()  # Recent board output, shown on failure.
+        self.output = bytearray()  # All board output, checked for a setup access point.
 
     def info(self):
         for item in list_ports.comports():
@@ -136,6 +139,7 @@ class SerialBridge:
             if data and self.console.in_waiting:
                 data += self.console.read(self.console.in_waiting)
             self.transcript = (self.transcript + data)[-16384:]
+            self.output += data
             return list(data)
         except (OSError, serial.SerialException):
             self.console.close()
@@ -210,6 +214,45 @@ def viewer_answers(url):
     raise RuntimeError(f'Local viewer {url} did not answer')
 
 
+def assert_no_access_point(output):
+    # ESP-IDF logs "mode : sta (...)" or "mode : sta (...) + softAP (...)".
+    assert b'softAP' not in output and b'Setup Wi-Fi:' not in output, 'The board opened a setup access point'
+
+
+def check_local_password(browser, viewer, camera_password):
+    """The board's own viewer streams only after the camera password."""
+    context = browser.new_context(ignore_https_errors=True, viewport={'width': 390, 'height': 844})
+    try:
+        page = context.new_page()
+
+        def wait(expression, timeout=40):
+            # Polls with evaluate, which the viewer's strict CSP allows.
+            deadline = time.monotonic() + timeout
+            while not page.evaluate(expression):
+                assert time.monotonic() < deadline, f'Local viewer: {page.locator("#status").inner_text()}'
+                page.wait_for_timeout(200)
+
+        def sign_in(password):
+            page.goto(viewer, wait_until='load')
+            wait("!document.querySelector('#connect').disabled")
+            page.locator('#camera-password').evaluate('(input, value) => { input.value = value; }', password)
+            page.locator('#connect').click()
+
+        sign_in('wrong-' + secrets.token_urlsafe(16))
+        wait("document.querySelector('#status').textContent.includes('Camera authentication failed')")
+        assert not page.evaluate("authed || !!document.querySelector('#preview').getAttribute('src')")
+        sign_in(camera_password)
+        wait("authed && document.querySelector('#preview').naturalWidth > 0")
+        # The board checked the proof; the page keeps no copy of the password.
+        assert page.locator('#camera-password').input_value() == ''
+        assert camera_password not in page.content(), 'The password appears in the page HTML'
+        page.locator('#disconnect').click()
+        wait("!document.querySelector('#connect').disabled")
+        assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+    finally:
+        context.close()
+
+
 def test_browser_flash_then_usb_provision(board, wifi_credentials):
     device, port, board_id = board['device'], board['port'], board['board']
     ssid, wifi_password = wifi_credentials
@@ -275,6 +318,11 @@ def test_browser_flash_then_usb_provision(board, wifi_credentials):
                 wait_for_page()
 
             wait_for_page()
+            # The boot log is only seen if the port stayed open across the
+            # post-flash reset; test_provision_and_stream always checks it.
+            if b'wifi:mode' in bridge.output:
+                assert b'No saved Wi-Fi; waiting for USB provisioning' in bridge.output, 'A cleared board must wait for USB setup'
+            assert_no_access_point(bridge.output)
             assert setup.locator('#camera-access').is_visible(), 'A fresh board must ask for a camera password'
             connect(ssid, wifi_password, camera_password)
             expect(status).to_have_text('Connected. Your settings are saved.', timeout=120000)
@@ -286,8 +334,9 @@ def test_browser_flash_then_usb_provision(board, wifi_credentials):
             expect(page.get_by_role('link', name=remote.get_attribute('href'))).to_be_visible()
             expect(page.get_by_role('link', name=viewer)).to_be_visible()
             assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
-            print('Camera joined Wi-Fi; checking the local viewer…', flush=True)
+            print('Camera joined Wi-Fi; checking the local viewer and its camera password…', flush=True)
             viewer_answers(viewer)
+            check_local_password(browser, viewer, camera_password)
 
             print('Checking the saved camera password and Wi-Fi recovery…', flush=True)
             reopen()
@@ -297,6 +346,7 @@ def test_browser_flash_then_usb_provision(board, wifi_credentials):
             popup.get_by_role('button', name='Close').click()
             expect(popup).to_be_hidden()
             viewer_answers(viewer)
+            assert_no_access_point(bridge.output)
             browser.close()
         print(f'PASS: {device} flashed in the browser and set up over USB', flush=True)
     except Exception:

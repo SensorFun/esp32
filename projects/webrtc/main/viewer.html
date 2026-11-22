@@ -1,11 +1,12 @@
 <!doctype html>
 <html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Local WebRTC camera</title>
-<style>body{font:16px system-ui;max-width:1000px;margin:2rem auto;padding:0 1rem;background:#101923;color:#eef4fa}button,input,select{font:inherit;padding:.45rem;margin:.25rem}img{display:block;max-width:100%;min-height:240px;background:#202d3b}#controls{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:.5rem}label{display:flex;align-items:center;justify-content:space-between;background:#202d3b;padding:.5rem}input[type=number]{width:5rem}#status{white-space:pre-wrap}small{color:#b8cddd}#frame{position:relative;width:fit-content;max-width:100%}#overlay{position:absolute;inset:0}sensorfan-camera-settings,sensorfan-motion-settings,sensorfan-recordings{margin-top:1rem}button{min-height:44px}@media(max-width:600px){body{margin:1rem auto}button,input,select{font-size:16px}}</style>
+<style>body{font:16px system-ui;max-width:1000px;margin:2rem auto;padding:0 1rem;background:#101923;color:#eef4fa}button,input,select{font:inherit;padding:.45rem;margin:.25rem}img{display:block;max-width:100%;min-height:240px;background:#202d3b}#controls{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:.5rem}label{display:flex;align-items:center;justify-content:space-between;background:#202d3b;padding:.5rem}input[type=number]{width:5rem}#status{white-space:pre-wrap}small{color:#b8cddd}#frame{position:relative;width:fit-content;max-width:100%}#overlay{position:absolute;inset:0}sensorfan-camera-settings,sensorfan-motion-settings,sensorfan-recordings{margin-top:1rem}button,#camera-password{min-height:44px}#login label{gap:.5rem;flex-wrap:wrap}#camera-password{flex:1;min-width:0}@media(max-width:600px){body{margin:1rem auto}button,input,select{font-size:16px}}</style>
 <h1>Local WebRTC camera</h1>
-<p>Connect directly to the camera on your local network. No pairing or access key is required.</p>
-<button id="connect" disabled>Connect</button><button id="disconnect" disabled>Disconnect</button>
-<p id="status" role="status">Provision the board and connect to the same local network.</p>
+<p>Connect directly to the camera on your local network with its camera password.</p>
+<form id="login"><label for="camera-password">Camera password <input id="camera-password" type="password" autocomplete="current-password"></label>
+<button id="connect" disabled>Connect</button><button id="disconnect" type="button" disabled>Disconnect</button></form>
+<p id="status" role="status">Enter the camera password chosen during setup.</p>
 <p><output id="fps" title="Displayed frames per second, averaged over the last sampling interval">0.0 FPS</output> <small>(1-second average)</small></p>
 <div id="frame"><img id="preview" alt="Live camera frames"><sensorfan-motion-overlay id="overlay"></sensorfan-motion-overlay></div><sensorfan-camera-tabs style="margin-top:1rem">
 <div data-label="Camera settings"><sensorfan-camera-settings id="settings-panel" hidden></sensorfan-camera-settings></div>
@@ -17,7 +18,40 @@
 <script>
 'use strict';
 const $=id=>document.getElementById(id);
-let pc,channel,ping,objectURL,frame,frameId=-1,received=0,run=0;
+let pc,channel,ping,objectURL,frame,frameId=-1,received=0,run=0,authed=false,expected=null,password='',access=null;
+const encoder=new TextEncoder();
+// Camera password proof: the same exchange as the website's remote viewer
+// (site/src/projects/webrtc/access.mjs). The password never leaves the page,
+// and the board, not the page, decides whether the proof matches its stored
+// verifier. The page keeps only a non-extractable key derived from the
+// password (for reconnects); the typed password is cleared at once.
+const hex=bytes=>Array.from(bytes,byte=>byte.toString(16).padStart(2,'0')).join('');
+function unhex(value,length){if(typeof value!=='string'||value.length!==length*2||!/^[a-f\d]+$/i.test(value))throw Error('Invalid authentication response');return Uint8Array.from(value.match(/../g),pair=>parseInt(pair,16));}
+function fingerprint(sdp){if((sdp.match(/a=fingerprint:/gi)||[]).length!==1)throw Error('Ambiguous WebRTC certificate fingerprints');const value=/^a=fingerprint:sha-256 ([a-f\d:]+)\r?$/im.exec(sdp)?.[1].replace(/:/g,'').toLowerCase();if(!value||value.length!==64)throw Error('Missing WebRTC certificate fingerprint');return value;}
+async function hmac(key,data){const imported=await crypto.subtle.importKey('raw',key,{name:'HMAC',hash:'SHA-256'},false,['sign']);return new Uint8Array(await crypto.subtle.sign('HMAC',imported,typeof data==='string'?encoder.encode(data):data));}
+async function deriveAccess(secret,camera){
+ const bytes=encoder.encode(secret);
+ const salt=await crypto.subtle.digest('SHA-256',encoder.encode('camera-kdf-v2\n'+camera));
+ const input=await crypto.subtle.importKey('raw',bytes,'PBKDF2',false,['deriveBits']);bytes.fill(0);
+ const root=new Uint8Array(await crypto.subtle.deriveBits({name:'PBKDF2',hash:'SHA-256',salt,iterations:210000},input,256));
+ const key=await crypto.subtle.importKey('raw',root,{name:'HMAC',hash:'SHA-256'},false,['sign']);root.fill(0);
+ return {camera,key};
+}
+async function createProof(challenge,offer,answer){
+ if(!globalThis.crypto?.subtle)throw Error('Open this page over HTTPS to enter the camera password');
+ if(!/^[A-F\d]{12}$/.test(challenge.camera)||challenge.algorithm!=='camera-scram-sha256-v2'||challenge.iterations!==210000)throw Error('Unsupported camera authentication');
+ unhex(challenge.salt,16);unhex(challenge.nonce,32);
+ if(password){const secret=password;password='';access=await deriveAccess(secret,challenge.camera);}
+ if(access?.camera!==challenge.camera)throw Error('Enter the camera password');
+ const salted=new Uint8Array(await crypto.subtle.sign('HMAC',access.key,encoder.encode('camera-auth-v2\n'+challenge.salt)));
+ const text=encoder.encode(['camera-scram-v2',challenge.camera,challenge.salt,challenge.iterations,challenge.nonce,fingerprint(offer),fingerprint(answer)].join('\n'));
+ const client=await hmac(salted,'Client Key'),signature=await hmac(new Uint8Array(await crypto.subtle.digest('SHA-256',client)),text);
+ const proof=hex(client.map((byte,index)=>byte^signature[index]));
+ const server=await hmac(await hmac(salted,'Server Key'),text);
+ salted.fill(0);client.fill(0);
+ return {proof,expected:server};
+}
+function verified(signature){if(expected?.length!==32)return false;try{const actual=unhex(signature,32);let diff=0;actual.forEach((byte,index)=>{diff|=byte^expected[index];});return diff===0;}catch{return false;}}
 let fpsTimer,displayedFrames=0;
 function resetFps(){clearInterval(fpsTimer);displayedFrames=0;$('fps').textContent='0.0 FPS';}
 function startFps(){
@@ -37,8 +71,24 @@ function settings(data){
  if(data.type!=='settings')return;
  $('settings-panel').hidden=false;$('settings-panel').settings=data;
 }
+function authenticated(current){
+ if(current!==run)return;authed=true;expected=null;startFps();status('Connected: DTLS encrypted camera data and controls');
+ command({op:'time',now:Date.now()});command({op:'get'});command({op:'motion_get'});command({op:'recordings'});ping=setInterval(()=>command({op:'ping'}),5000);
+}
+async function authenticate(data,current){
+ try{
+  if(data.type==='auth_challenge'){
+   if(expected||authed)throw Error('Repeated authentication challenge');
+   expected=new Uint8Array(0);status('Checking camera password…');
+   const response=await createProof(data,pc.localDescription.sdp,pc.remoteDescription.sdp);
+   if(current!==run)return;expected=response.expected;command({op:'authenticate',proof:response.proof});
+  }else if(data.type==='auth_ok'){if(!verified(data.signature))throw Error('Camera identity verification failed');authenticated(current);}
+  else if(data.type==='auth_error'){access=null;throw Error(data.error||'Camera authentication failed');}
+ }catch(error){if(current===run){await stop();status(error.message);}}
+}
 function message(event){
- if(typeof event.data==='string'){let data;try{data=JSON.parse(event.data);}catch{status('Invalid camera response');return;}settings(data);for(const view of motionViews())view.handle(data);return;}
+ if(typeof event.data==='string'){let data;try{data=JSON.parse(event.data);}catch{status('Invalid camera response');return;}if(!authed){authenticate(data,run);return;}settings(data);for(const view of motionViews())view.handle(data);return;}
+ if(!authed)return;
  if(!(event.data instanceof ArrayBuffer)||event.data.byteLength<16||$('recordings').binary(event.data))return;
  const view=new DataView(event.data);if(view.getUint32(0,true)!==0x4745504a)return;
  const id=view.getUint32(4,true),total=view.getUint32(8,true),offset=view.getUint32(12,true),bytes=new Uint8Array(event.data,16);
@@ -48,14 +98,20 @@ function message(event){
  frame.set(bytes,offset);received+=bytes.length;
  if(received===total){const url=URL.createObjectURL(new Blob([frame],{type:'image/jpeg'}));const old=objectURL;objectURL=url;$('preview').src=url;if(old)URL.revokeObjectURL(old);frame=null;}
 }
-async function stop(notify=true){++run;clearInterval(ping);resetFps();channel?.close();pc?.close();channel=null;pc=null;frame=null;$('preview').removeAttribute('src');if(objectURL)URL.revokeObjectURL(objectURL);objectURL=null;$('settings-panel').hidden=true;$('settings-panel').dirty=false;$('settings-panel').pending=false;for(const view of motionViews())view.reset();$('connect').disabled=true;$('disconnect').disabled=true;if(notify){try{await api('DELETE');}catch{}}$('connect').disabled=false;status('Disconnected');}
+async function stop(notify=true){++run;authed=false;expected=null;password='';clearInterval(ping);resetFps();channel?.close();pc?.close();channel=null;pc=null;frame=null;$('preview').removeAttribute('src');if(objectURL)URL.revokeObjectURL(objectURL);objectURL=null;$('settings-panel').hidden=true;$('settings-panel').dirty=false;$('settings-panel').pending=false;for(const view of motionViews())view.reset();$('connect').disabled=true;$('disconnect').disabled=true;if(notify){try{await api('DELETE');}catch{}}$('connect').disabled=false;status('Disconnected');}
 $('disconnect').onclick=()=>stop();
-$('connect').onclick=async()=>{
+$('login').onsubmit=async event=>{
+ event.preventDefault();
+ const field=$('camera-password'),length=encoder.encode(field.value).length;
+ if(!length&&!access){status('Enter the camera password.');return;}
+ if(length&&(length<12||length>96)){status('The camera password is 12–96 bytes long.');return;}
+ // Hold the typed password only until it is turned into a key.
+ if(length){password=field.value;access=null;}field.value='';
  $('connect').disabled=true;$('disconnect').disabled=false;const current=++run;
  try{
   pc=new RTCPeerConnection({iceServers:[]});const connection=pc;
   channel=pc.createDataChannel('camera',{ordered:true});channel.binaryType='arraybuffer';channel.onmessage=message;
-  channel.onopen=()=>{if(current!==run)return;startFps();status('Connected: DTLS encrypted camera data and controls');command({op:'time',now:Date.now()});command({op:'get'});command({op:'motion_get'});command({op:'recordings'});ping=setInterval(()=>command({op:'ping'}),5000);};
+  channel.onopen=()=>{if(current===run)status('Waiting for the camera password check…');};
   channel.onclose=()=>{if(run===current)stop();};
   pc.onconnectionstatechange=()=>{if(run===current&&['failed','disconnected'].includes(connection.connectionState))stop();};
   status('Gathering local ICE candidates…');

@@ -6,6 +6,6 @@ endif()
 idf_component_register(
     SRCS "provisioning.cpp"
     INCLUDE_DIRS "include"
-    REQUIRES camera_access esp_app_format esp_https_server tls_identity esp_wifi esp_netif esp_event esp_http_server nvs_flash esp_hw_support
-    EMBED_TXTFILES "index.html"
+    # local_http.h, shared with the camera viewer, includes esp_http_server.h.
+    REQUIRES camera_access esp_app_format tls_identity esp_wifi esp_netif esp_event esp_http_server nvs_flash esp_hw_support
 )

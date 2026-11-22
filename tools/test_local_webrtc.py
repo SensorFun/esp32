@@ -5,10 +5,12 @@ Requires pyserial and playwright plus an installed Chromium browser. Provision
 first. Credentials and camera images are never written to disk.
 """
 import argparse
+import getpass
 import hashlib
 import re
 import socket
 import ssl
+import sys
 import time
 import threading
 import urllib.error
@@ -81,11 +83,41 @@ def wait_js(page, expression, *, arg=None, timeout=40000):
     raise TimeoutError('Browser condition timed out')
 
 
+def add_password_argument(parser):
+    parser.add_argument('--password-stdin', action='store_true',
+                        help='Read the camera password from stdin instead of prompting')
+
+
+def camera_password(args):
+    """The camera password, from one stdin line or a hidden prompt; never logged."""
+    password = sys.stdin.readline().rstrip('\r\n') if args.password_stdin else getpass.getpass('Camera password: ')
+    if not 12 <= len(password.encode()) <= 96:
+        raise SystemExit('The camera password must be 12–96 UTF-8 bytes')
+    return password
+
+
+def enter_password(page, password):
+    # Set without typing, so Playwright never records the value.
+    page.locator('#camera-password').evaluate('(input, value) => { input.value = value; }', password)
+
+
+def connect_local(page, password, *, timeout=40000):
+    """Sign in on the board's viewer and wait for the authenticated channel."""
+    enter_password(page, password)
+    page.locator('#connect').click()
+    wait_js(page, "authed && channel?.readyState==='open'", timeout=timeout)
+    # The board checks the proof; the page must not keep the password anywhere.
+    assert page.locator('#camera-password').input_value() == '', 'The password stayed in the form'
+    assert password not in page.content(), 'The password appears in the page HTML'
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--port', required=True)
     parser.add_argument('--browser', required=True, help='Installed Chromium executable')
+    add_password_argument(parser)
     args = parser.parse_args()
+    password = camera_password(args)
     url, fingerprint, console = identity(args.port)
     host = url.split('/')[2]
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
@@ -109,10 +141,10 @@ def main():
         except urllib.error.HTTPError as error:
             return error.code
 
-    assert request_status() == 404  # Accessible without credentials; no active peer.
+    assert request_status() == 404  # No active peer; the data channel requires the camera password.
     assert request_status(headers={'Origin': 'https://untrusted.invalid'}) == 403
     assert request_status('POST', b'invalid SDP') == 400
-    print('Local API works without credentials; cross-origin and malformed SDP rejected')
+    print('Local session API answers; cross-origin and malformed SDP rejected')
     with sync_playwright() as p:
         browser = p.chromium.launch(executable_path=args.browser, headless=True,
                                     args=['--no-sandbox'])
@@ -121,9 +153,9 @@ def main():
         page.on('pageerror', lambda error: print('Browser error:', error))
         page.goto(url, wait_until='domcontentloaded')
         print('Viewer loaded')
-        assert page.locator('input[type=password]').count() == 0
-        page.locator('#connect').click()
-        print('Connect clicked')
+        assert page.locator('input[type=password]').count() == 1
+        connect_local(page, password)
+        print('Signed in with the camera password')
         try:
             wait_js(page, "document.querySelector('#preview').naturalWidth > 0", timeout=40000)
         except Exception:
@@ -210,8 +242,7 @@ def main():
         await_disconnect.click()
         wait_js(page, "!document.querySelector('#connect').disabled")
         assert page.locator('#fps').inner_text() == '0.0 FPS'
-        page.locator('#connect').click()
-        wait_js(page, "channel && channel.readyState==='open'", timeout=40000)
+        connect_local(page, password)
         wait_js(page, "parseFloat(document.querySelector('#fps').textContent) > 0", timeout=5000)
         page.locator('#disconnect').click()
         browser.close()

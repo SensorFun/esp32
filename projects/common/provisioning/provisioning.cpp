@@ -1,14 +1,12 @@
 #include "provisioning.h"
 #include "esp_app_desc.h"
 #if CONFIG_PROVISIONING_SECURE
-#include "esp_https_server.h"
 #include "tls_identity.h"
 #endif
 #include "credentials.h"
 #if CONFIG_CAMERA_REMOTE_ACCESS
 #include "camera_access.h"
 #endif
-#include "local_http.h"
 
 #include <algorithm>
 #include <atomic>
@@ -19,7 +17,6 @@
 
 #include "esp_check.h"
 #include "esp_event.h"
-#include "esp_http_server.h"
 #include "esp_log.h"
 #include "esp_netif.h"
 #include "esp_wifi.h"
@@ -27,10 +24,12 @@
 #include "freertos/event_groups.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
-#include "lwip/sockets.h"
 #include "nvs.h"
 #include "nvs_flash.h"
 
+// Wi-Fi is provisioned only over the physical USB console. The board never
+// opens a setup access point: anyone in radio range could otherwise move it
+// to a network of their choosing.
 namespace {
 using provisioning::Credentials;
 struct SetupRequest { Credentials wifi; char camera_password[97]{}; bool usb = false; };
@@ -39,20 +38,16 @@ constexpr char NVS_NAMESPACE[] = "wifi_setup";
 constexpr char NVS_KEY[] = "credentials";
 constexpr EventBits_t CONNECTED = BIT0, DISCONNECTED = BIT1;
 constexpr uint32_t CONNECT_TIMEOUT_MS = 20000;
+// Pause between attempts to rejoin an unavailable saved network. Scans need
+// the station idle, so USB setup can list networks during the pause.
+constexpr uint32_t RETRY_PAUSE_MS = 15000;
 enum class State { starting, connecting, provisioning, connected, storage_error };
 std::atomic<State> state{State::starting};
 std::atomic<bool> submitting{false};
 std::atomic<const char *> usb_result{"idle"};
-std::atomic<TickType_t> handoff_at{0};
 EventGroupHandle_t events = nullptr;
 QueueHandle_t requests = nullptr;
-esp_netif_t *station_netif = nullptr, *ap_netif = nullptr;
-httpd_handle_t server = nullptr, local_http = nullptr;
-char ap_address[16]{};
-std::atomic<bool> ap_active{false};
-
-extern const unsigned char html_start[] asm("_binary_index_html_start");
-extern const unsigned char html_end[] asm("_binary_index_html_end");
+esp_netif_t *station_netif = nullptr;
 
 template<typename T> void wipe(T &credentials) {
     volatile unsigned char *bytes = reinterpret_cast<volatile unsigned char *>(&credentials);
@@ -113,42 +108,6 @@ void wifi_event(void *, esp_event_base_t base, int32_t id, void *) {
     }
 }
 
-void response_headers(httpd_req_t *request) {
-    httpd_resp_set_hdr(request, "Cache-Control", "no-store");
-    httpd_resp_set_hdr(request, "X-Content-Type-Options", "nosniff");
-    httpd_resp_set_hdr(request, "Referrer-Policy", "no-referrer");
-}
-
-esp_err_t json_response(httpd_req_t *request, const char *status, const char *body) {
-    response_headers(request);
-    httpd_resp_set_status(request, status);
-    httpd_resp_set_type(request, "application/json");
-    return httpd_resp_sendstr(request, body);
-}
-
-bool secure_request(httpd_req_t *request) {
-#if CONFIG_PROVISIONING_SECURE
-    return request->handle != local_http;
-#else
-    (void)request;
-    return false;
-#endif
-}
-
-bool setup_request(httpd_req_t *request) {
-    esp_netif_ip_info_t ip{};
-    if (esp_netif_get_ip_info(ap_netif, &ip) != ESP_OK) return false;
-    return camera_http::allow_request(request, ip, secure_request(request));
-}
-
-esp_err_t page(httpd_req_t *request) {
-    if (!setup_request(request)) return json_response(request, "403 Forbidden", "{\"error\":\"Use the setup Wi-Fi address\"}");
-    response_headers(request);
-    httpd_resp_set_hdr(request, "Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'");
-    httpd_resp_set_type(request, "text/html; charset=utf-8");
-    return httpd_resp_send(request, reinterpret_cast<const char *>(html_start), html_end - html_start - 1);
-}
-
 #if CONFIG_CAMERA_REMOTE_ACCESS
 // The remote viewer address for this camera, e.g. <viewer>/A1B2C3D4E5F6.
 std::string remote_url() {
@@ -158,7 +117,7 @@ std::string remote_url() {
 }
 #endif
 
-// Lists nearby networks as a JSON array. The setup page and USB setup share it.
+// Lists nearby networks as a JSON array for USB setup.
 esp_err_t scan_networks(std::string &json) {
     wifi_scan_config_t config{};
     config.show_hidden = true;
@@ -186,169 +145,6 @@ esp_err_t scan_networks(std::string &json) {
     return ESP_OK;
 }
 
-esp_err_t scan(httpd_req_t *request) {
-    if (!setup_request(request)) return json_response(request, "403 Forbidden", "{\"error\":\"Use setup Wi-Fi\"}");
-    if (state.load() != State::provisioning || submitting.load()) {
-        return json_response(request, "409 Conflict", "{\"error\":\"Wait for the connection attempt to finish\"}");
-    }
-    std::string networks;
-    const esp_err_t err = scan_networks(networks);
-    if (err == ESP_ERR_WIFI_STATE || err == ESP_ERR_WIFI_TIMEOUT)
-        return json_response(request, "503 Service Unavailable", "{\"error\":\"Scan unavailable; try again\"}");
-    if (err != ESP_OK) return json_response(request, "503 Service Unavailable", "{\"error\":\"Scan failed\"}");
-    const std::string body = "{\"ssids\":" + networks + camera_password_fields() + "}";
-    return json_response(request, "200 OK", body.c_str());
-}
-
-esp_err_t status(httpd_req_t *request) {
-    if (!setup_request(request)) return json_response(request, "403 Forbidden", "{\"error\":\"Use setup Wi-Fi\"}");
-    const State current = state.load();
-    if (current == State::storage_error) return json_response(request, "500 Internal Server Error", "{\"error\":\"Could not save Wi-Fi settings; try again\"}");
-    if (current == State::connected) {
-        esp_netif_ip_info_t ip{};
-        if (esp_netif_get_ip_info(station_netif, &ip) != ESP_OK || !ip.ip.addr)
-            return json_response(request, "200 OK", "{\"state\":\"connecting\"}");
-        char address[16]{};
-        std::snprintf(address, sizeof(address), IPSTR, IP2STR(&ip.ip));
-        std::string body = "{\"state\":\"connected\",\"ip\":" + provisioning::json_quote(address);
-#if CONFIG_CAMERA_REMOTE_ACCESS
-        body += ",\"local_url\":" + provisioning::json_quote(std::string(secure_request(request) ? "https://" : "http://") + address + "/");
-        if (const std::string remote = remote_url(); !remote.empty()) body += ",\"remote_url\":" + provisioning::json_quote(remote);
-#endif
-        body += "}";
-        return json_response(request, "200 OK", body.c_str());
-    }
-    const char *body =
-        (current == State::connecting || submitting.load()) ? "{\"state\":\"connecting\"}" : "{\"state\":\"provisioning\"}";
-    return json_response(request, "200 OK", body);
-}
-
-esp_err_t finish_setup(httpd_req_t *request) {
-    if (!setup_request(request)) return json_response(request, "403 Forbidden", "{\"error\":\"Use setup Wi-Fi\"}");
-    if (state.load() != State::connected || !(xEventGroupGetBits(events) & CONNECTED)) {
-        return json_response(request, "409 Conflict", "{\"error\":\"Wait for Wi-Fi setup to finish\"}");
-    }
-    const auto result = json_response(request, "200 OK", "{}");
-    if (result == ESP_OK) handoff_at = xTaskGetTickCount();
-    return result;
-}
-
-esp_err_t connect_request(httpd_req_t *request) {
-    if (!setup_request(request)) return json_response(request, "403 Forbidden", "{\"error\":\"Use setup Wi-Fi\"}");
-    if (state.load() == State::connecting || submitting.exchange(true)) {
-        return json_response(request, "409 Conflict", "{\"error\":\"Connection already in progress\"}");
-    }
-    char type[64]{};
-    if (httpd_req_get_hdr_value_str(request, "Content-Type", type, sizeof(type)) != ESP_OK ||
-        std::strcmp(type, "application/x-www-form-urlencoded") != 0 ||
-        request->content_len == 0 || request->content_len > 1024) {
-        submitting = false;
-        return json_response(request, "400 Bad Request", "{\"error\":\"Invalid setup request\"}");
-    }
-    char body[1025]{};
-    size_t received = 0;
-    while (received < request->content_len) {
-        const int count = httpd_req_recv(request, body + received, request->content_len - received);
-        if (count <= 0) {
-            submitting = false;
-            return json_response(request, "408 Request Timeout", "{\"error\":\"Setup request timed out\"}");
-        }
-        received += count;
-    }
-    SetupRequest setup{};
-    std::string camera_password;
-    const bool valid = provisioning::parse_credentials(std::string_view(body, received), setup.wifi,
-#if CONFIG_CAMERA_REMOTE_ACCESS
-        &camera_password, !camera_password_saved()
-#else
-        nullptr
-#endif
-    );
-    wipe(body);
-    if (!valid) {
-        if (!camera_password.empty()) { volatile char *p = camera_password.data(); for (size_t i = 0; i < camera_password.size(); ++i) p[i] = 0; }
-        submitting = false;
-        return json_response(request, "400 Bad Request", "{\"error\":\"Check Wi-Fi credentials, camera password (12–96 bytes)\"}");
-    }
-    memcpy(setup.camera_password, camera_password.data(), camera_password.size());
-    if (!camera_password.empty()) { volatile char *p = camera_password.data(); for (size_t i = 0; i < camera_password.size(); ++i) p[i] = 0; }
-    const bool queued = xQueueSend(requests, &setup, 0) == pdTRUE;
-    wipe(setup);
-    if (!queued) {
-        submitting = false;
-        return json_response(request, "409 Conflict", "{\"error\":\"Setup is busy; try again\"}");
-    }
-    return json_response(request, "202 Accepted", "{\"state\":\"connecting\"}");
-}
-
-void start_setup() {
-    if (ap_active) { state = State::provisioning; return; }
-    uint8_t mac[6]{};
-    ESP_ERROR_CHECK(esp_wifi_get_mac(WIFI_IF_STA, mac));
-    char name[32];
-    std::snprintf(name, sizeof(name), "CAM_%02X:%02X:%02X:%02X:%02X:%02X",
-                  mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-    wifi_config_t config{};
-    std::memcpy(config.ap.ssid, name, std::strlen(name));
-    config.ap.ssid_len = std::strlen(name);
-    // Setup is an open access point. HTTPS encrypts credentials; local HTTP
-    // is also available when explicitly chosen by the user.
-    // The remote camera password is independent of joining this setup network.
-    config.ap.authmode = WIFI_AUTH_OPEN;
-    config.ap.max_connection = 2;
-    config.ap.channel = 1;
-    esp_wifi_disconnect();
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &config));
-    esp_netif_ip_info_t ip{};
-    ESP_ERROR_CHECK(esp_netif_get_ip_info(ap_netif, &ip));
-    std::snprintf(ap_address, sizeof(ap_address), IPSTR, IP2STR(&ip.ip));
-    httpd_config_t http = HTTPD_DEFAULT_CONFIG();
-    http.stack_size = 6144;
-    http.recv_wait_timeout = 5;
-    http.send_wait_timeout = 5;
-    http.lru_purge_enable = true;
-#if CONFIG_PROVISIONING_SECURE
-    // ESP-IDF 6.1's initializer omits use_secure_element, which is zero initialized.
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wmissing-field-initializers"
-    httpd_ssl_config_t secure = HTTPD_SSL_CONFIG_DEFAULT();
-#pragma GCC diagnostic pop
-    secure.httpd = http;
-    secure.httpd.server_port = 443;
-    secure.httpd.max_open_sockets = 2;
-    secure.servercert = (const uint8_t *)tls_identity_cert();
-    secure.servercert_len = strlen(tls_identity_cert()) + 1;
-    secure.prvtkey_pem = (const uint8_t *)tls_identity_key();
-    secure.prvtkey_len = strlen(tls_identity_key()) + 1;
-    ESP_ERROR_CHECK(httpd_ssl_start(&server, &secure));
-    http.server_port = 80;
-    http.ctrl_port = secure.httpd.ctrl_port + 1;
-    http.max_open_sockets = 2;
-    ESP_ERROR_CHECK(httpd_start(&local_http, &http));
-#else
-    ESP_ERROR_CHECK(httpd_start(&server, &http));
-#endif
-    const httpd_uri_t routes[] = {
-        {.uri="/", .method=HTTP_GET, .handler=page, .user_ctx=nullptr},
-        {.uri="/api/scan", .method=HTTP_GET, .handler=scan, .user_ctx=nullptr},
-        {.uri="/api/status", .method=HTTP_GET, .handler=status, .user_ctx=nullptr},
-        {.uri="/api/connect", .method=HTTP_POST, .handler=connect_request, .user_ctx=nullptr},
-        {.uri="/api/finish", .method=HTTP_POST, .handler=finish_setup, .user_ctx=nullptr},
-    };
-    for (const auto &route : routes) {
-        ESP_ERROR_CHECK(httpd_register_uri_handler(server, &route));
-        if (local_http) ESP_ERROR_CHECK(httpd_register_uri_handler(local_http, &route));
-    }
-    ap_active = true;
-    state = State::provisioning;
-#if CONFIG_PROVISIONING_SECURE
-    ESP_LOGI(TAG, "Setup Wi-Fi: %s (no password) | https://%s | http://%s", name, ap_address, ap_address);
-#else
-    ESP_LOGI(TAG, "Setup Wi-Fi: %s (no password) | http://%s", name, ap_address);
-#endif
-}
-
 void apply_credentials(const Credentials &credentials) {
     esp_wifi_scan_stop();
     const bool connected = xEventGroupGetBits(events) & CONNECTED;
@@ -367,22 +163,28 @@ void apply_credentials(const Credentials &credentials) {
     esp_wifi_connect();
 }
 
+bool due(TickType_t now, TickType_t at) { return static_cast<int32_t>(now - at) >= 0; }
+
 void supervisor(void *) {
     Credentials pending{};
     char pending_camera_password[97]{};
     bool save_pending = false;
-    bool usb_pending = false, restoring = false;
-    TickType_t started = xTaskGetTickCount(), last_attempt = started, close_ap = 0;
+    bool usb_pending = false, restoring = false, retry_pending = false;
+    TickType_t started = xTaskGetTickCount(), last_attempt = started, retry_at = 0;
     if (load_credentials(pending) == ESP_OK) {
         apply_credentials(pending);
         wipe(pending);
-    } else start_setup();
+    } else {
+        state = State::provisioning;
+        ESP_LOGI(TAG, "No saved Wi-Fi; waiting for USB provisioning");
+    }
     for (;;) {
         SetupRequest next{};
         if (xQueueReceive(requests, &next, pdMS_TO_TICKS(100)) == pdTRUE) {
             pending = next.wifi;
             memcpy(pending_camera_password, next.camera_password, sizeof(pending_camera_password));
             usb_pending = next.usb;
+            restoring = retry_pending = false;
             wipe(next);
             save_pending = true;
             apply_credentials(pending);
@@ -403,13 +205,10 @@ void supervisor(void *) {
                     ESP_LOGE(TAG, "Could not persist Wi-Fi settings");
                     state = State::storage_error;
                 } else {
-                    handoff_at = 0;
                     state = State::connected;
                     ESP_LOGI(TAG, "Wi-Fi connected; settings ready");
-                    close_ap = xTaskGetTickCount();
                 }
                 if (usb_pending) {
-                    if (saved == ESP_OK) handoff_at = xTaskGetTickCount();
                     usb_result = saved != ESP_OK ? "storage_error" : restoring ? "restored" : "saved";
                     restoring = usb_pending = false;
                     submitting = false;
@@ -430,37 +229,41 @@ void supervisor(void *) {
                     started = last_attempt = now;
                     continue;
                 }
-                ESP_LOGW(TAG, "Wi-Fi connection unavailable; opening setup");
-                start_setup();
                 if (usb_pending) {
                     usb_result = "failed";
                     restoring = usb_pending = false;
                     submitting = false;
+                }
+                state = State::provisioning;
+                // A saved network may only be down for now (router restart,
+                // out of range). Keep rejoining it rather than opening setup.
+                retry_pending = load_credentials(pending) == ESP_OK;
+                wipe(pending);
+                if (retry_pending) {
+                    retry_at = now + pdMS_TO_TICKS(RETRY_PAUSE_MS);
+                    ESP_LOGW(TAG, "Saved Wi-Fi unavailable; retrying in %u s", unsigned(RETRY_PAUSE_MS / 1000));
+                } else {
+                    ESP_LOGW(TAG, "Wi-Fi connection unavailable; waiting for USB provisioning");
                 }
             } else if ((bits & DISCONNECTED) && now - last_attempt >= pdMS_TO_TICKS(1000)) {
                 xEventGroupClearBits(events, DISCONNECTED);
                 esp_wifi_connect();
                 last_attempt = now;
             }
-        } else if (current == State::connected) {
-            const auto handoff = handoff_at.load();
-            if (!(bits & CONNECTED)) {
-                state = State::connecting;
-                started = last_attempt = now;
-                esp_wifi_connect();
-            } else if (ap_active && (now - close_ap >= pdMS_TO_TICKS(30000) ||
-                       (handoff && xTaskGetTickCount() - handoff >= pdMS_TO_TICKS(750)))) {
-#if CONFIG_PROVISIONING_SECURE
-                ESP_ERROR_CHECK(httpd_ssl_stop(server));
-#else
-                ESP_ERROR_CHECK(httpd_stop(server));
-#endif
-                server = nullptr;
-                if (local_http) { ESP_ERROR_CHECK(httpd_stop(local_http)); local_http = nullptr; }
-                ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-                ap_active = false;
-                ESP_LOGI(TAG, "Setup Wi-Fi closed");
+        } else if (current == State::provisioning) {
+            // A USB scan in progress needs the station idle; retry after it.
+            if (retry_pending && due(now, retry_at) && !submitting.load()) {
+                retry_pending = false;
+                if (load_credentials(pending) == ESP_OK) {
+                    apply_credentials(pending);
+                    started = last_attempt = now;
+                }
+                wipe(pending);
             }
+        } else if (current == State::connected && !(bits & CONNECTED)) {
+            state = State::connecting;
+            started = last_attempt = now;
+            esp_wifi_connect();
         }
     }
 }
@@ -476,8 +279,7 @@ extern "C" esp_err_t provisioning_start(void) {
     err = esp_event_loop_create_default();
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) return err;
     station_netif = esp_netif_create_default_wifi_sta();
-    ap_netif = esp_netif_create_default_wifi_ap();
-    if (!station_netif || !ap_netif) return ESP_ERR_NO_MEM;
+    if (!station_netif) return ESP_ERR_NO_MEM;
     events = xEventGroupCreate();
     requests = xQueueCreate(1, sizeof(SetupRequest));
     if (!events || !requests) return ESP_ERR_NO_MEM;
@@ -496,8 +298,7 @@ extern "C" esp_err_t provisioning_start(void) {
 }
 
 extern "C" bool provisioning_is_ready(void) {
-    return events && state.load() == State::connected && !ap_active &&
-        (xEventGroupGetBits(events) & CONNECTED);
+    return events && state.load() == State::connected && (xEventGroupGetBits(events) & CONNECTED);
 }
 
 extern "C" esp_err_t provisioning_submit_credentials_with_camera(const char *ssid, const char *password, const char *camera_password) {
@@ -551,8 +352,8 @@ extern "C" void provisioning_usb_command(const char *command) {
     if (!requests || state.load() == State::starting) { reply("busy"); return; }
     if (submitting.exchange(true)) { reply("busy"); return; }
     if (input == "scan") {
-        // Same list as the setup page. A camera password is only required
-        // while none is saved, so re-running setup keeps the current one.
+        // A camera password is only required while none is saved, so
+        // re-running setup keeps the current one.
         std::string networks;
         const esp_err_t err = state.load() == State::connecting ? ESP_ERR_INVALID_STATE : scan_networks(networks);
         submitting = false;
@@ -562,7 +363,9 @@ extern "C" void provisioning_usb_command(const char *command) {
         return;
     }
     const char *result = "invalid";
-    if (input.starts_with("wifi ") && state.load() != State::connecting) {
+    // Accepted while the board is rejoining its saved network, too: the new
+    // network replaces that attempt, and the saved one is restored on failure.
+    if (input.starts_with("wifi ")) {
         SetupRequest setup{};
         std::string camera_password;
 #if CONFIG_CAMERA_REMOTE_ACCESS
@@ -582,8 +385,6 @@ extern "C" void provisioning_usb_command(const char *command) {
             volatile char *secret = camera_password.data();
             for (size_t i = 0; i < camera_password.size(); ++i) secret[i] = 0;
         }
-    } else if (input.starts_with("wifi ")) {
-        result = "busy";
     }
 #if CONFIG_CAMERA_REMOTE_ACCESS
     else if (input.starts_with("password ")) {

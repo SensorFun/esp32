@@ -6,23 +6,25 @@ logs while changing camera and motion controls. Restores the starting settings.
 import argparse
 
 from playwright.sync_api import sync_playwright
-from test_local_webrtc import identity, wait_js
+from test_local_webrtc import add_password_argument, camera_password, connect_local, identity, wait_js
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--port', required=True)
 parser.add_argument('--browser', required=True)
 parser.add_argument('--rounds', type=int, default=2)
+add_password_argument(parser)
 args = parser.parse_args()
 if args.rounds < 1:
     parser.error('--rounds must be positive')
+password = camera_password(args)
 
 url, _, console = identity(args.port)
 with console, sync_playwright() as p:
     browser = p.chromium.launch(executable_path=args.browser, args=['--no-sandbox'])
     page = browser.new_page(ignore_https_errors=True, viewport={'width': 390, 'height': 844})
     page.goto(url, wait_until='domcontentloaded')
-    page.locator('#connect').click()
-    wait_js(page, "channel?.readyState==='open'")
+    wait_js(page, "!document.querySelector('#connect').disabled")
+    connect_local(page, password)
     page.evaluate("""()=>{
       window.responses={}; window.frames=0; window.originalChannel=channel;
       channel.addEventListener('message', event=>{
@@ -90,8 +92,7 @@ with console, sync_playwright() as p:
         if page.evaluate("channel?.readyState!=='open'"):
             page.evaluate('stop()')
             wait_js(page, '!document.querySelector("#connect").disabled')
-            page.locator('#connect').click()
-            wait_js(page, "channel?.readyState==='open'")
+            connect_local(page, password)
             page.evaluate('window.originalChannel=channel')
         motion(original_motion)
         page.evaluate("s=>{responses.settings=null;command({op:'apply',settings:s})}", original_camera)

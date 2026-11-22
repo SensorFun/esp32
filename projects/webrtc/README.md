@@ -4,11 +4,12 @@ Uses the `esp_peer` component from Espressif's
 [esp-webrtc-solution](https://github.com/espressif/esp-webrtc-solution), pinned in
 `main/idf_component.yml`. JPEG frames and camera commands use a browser WebRTC
 SCTP/DTLS data channel. This is JPEG over WebRTC, rather than an H.264 video track.
-The device hosts its own local HTTP/HTTPS SDP exchange; no external signaling/STUN/TURN
+The device hosts its own local HTTPS SDP exchange; no external signaling/STUN/TURN
 service or Internet connection is required. Browser and board must have local
 IP connectivity (guest network/client isolation can prevent this). This local
-mode requires direct IPv4 HTTP or HTTPS access to the device, without a reverse proxy.
-Browser mDNS host candidates are mapped to the HTTP/HTTPS socket's
+mode requires direct IPv4 HTTPS access to the device, without a reverse proxy.
+Every viewer, local or remote, enters the camera password.
+Browser mDNS host candidates are mapped to the HTTPS socket's
 source address, preserving their UDP ports, ICE credentials, and DTLS
 fingerprint. Normal browser privacy settings can remain enabled.
 
@@ -31,10 +32,10 @@ within 4 MB flash on both boards. S3 uses octal PSRAM; ESP32-CAM uses quad PSRAM
 ## Provision and connect
 
 In the browser flasher, select the USB port and flash the WebRTC firmware.
-When the board restarts, the **Provision WebRTC camera** popup opens. It shows
-the same setup page as the camera's setup hotspot, but talks to the board over
-USB, so the computer can stay on its usual Wi-Fi. Choose the network and enter
-the camera password; the page then shows the local viewer link. To move an
+When the board restarts, the **Provision WebRTC camera** popup opens. Its setup
+page talks to the board over USB, so the computer can stay on its usual Wi-Fi.
+Choose the network and enter the camera password; the page then shows the
+local viewer link. To move an
 existing board to another network, select WebRTC camera and the board's port,
 then choose **Provision** next to the flash button. The popup first checks
 that the board runs the WebRTC firmware. A board that already has a camera
@@ -42,17 +43,18 @@ password keeps it, and the page does not ask for it again. If the board cannot
 join the new network, it reconnects to the saved one. On boards that need
 manual bootloader mode, release BOOT and reset before using USB setup.
 
-The camera's setup hotspot and USB command-line tools are also available.
+Wi-Fi is provisioned only over USB. The board never opens a setup access
+point, so nobody in radio range can move it to another network. Without saved
+Wi-Fi it waits for USB provisioning. If its saved network becomes unavailable
+(router restart, out of range), it keeps rejoining that network, pausing
+15 seconds between 20-second attempts; USB setup can scan and switch networks
+during the pauses.
 
 1. Open the USB console at 115200 baud. Without saved Wi-Fi credentials, the
-   board starts an open `CAM_<MAC>` setup network and prints its HTTPS
-   certificate SHA256 fingerprint. Joining the setup Wi-Fi needs no password.
-   The separate camera password is chosen on the provisioning page.
-2. Join that network and open `https://192.168.4.1`. Compare the certificate's
-   SHA256 fingerprint with the physical USB console before accepting the
-   self-signed certificate. Select a network, enter its Wi-Fi password, and
-   choose a separate camera password (12–96 UTF-8 bytes) for remote viewers.
-   Alternatively, provision through the physical USB console:
+   board prints `No saved Wi-Fi; waiting for USB provisioning` and its HTTPS
+   certificate SHA256 fingerprint.
+2. Provision with the browser flasher's **Provision** popup, or from the
+   command line:
 
    ```sh
    python tools/provision.py --port /dev/ttyUSB0 --camera-password
@@ -62,12 +64,14 @@ The camera's setup hotspot and USB command-line tools are also available.
    The console command `wifi-provision`, followed by SSID, Wi-Fi password, and camera password
    lines, submits through the same provisioning queue. USB is a physical trusted
    interface; its serial traffic is not cryptographically encrypted.
-3. After the station connects and the setup AP closes, the console prints
+   Choose a separate camera password (12–96 UTF-8 bytes) for local and
+   remote viewers.
+3. After the station connects, the console prints
    `Local camera ready: https://<device-ip>/`. Join the same LAN, open that URL,
-   click **Connect**. No pairing, access key, or login is required on the LAN.
-   Your browser may show a certificate warning for the device’s self-signed HTTPS certificate.
-   Alternatively, use `http://<device-ip>/` on the same private subnet. Both
-   protocols serve the same viewer, settings and WebRTC session endpoints.
+   enter the camera password and click **Connect**. Compare the certificate's
+   SHA256 fingerprint with the USB console before accepting the device’s
+   self-signed HTTPS certificate. Plain HTTP is not served: the password proof
+   uses the browser's Web Crypto API, which needs HTTPS.
 4. Use the displayed controls while watching the live camera. **Disconnect**
    releases the single peer. An abandoned session expires after 30 seconds
    without browser data-channel keepalives.
@@ -181,7 +185,8 @@ Hardware regression (restores starting camera/motion settings):
 .venv/bin/python tools/test_settings_stability.py --port /dev/ttyUSB1 --browser /path/to/chromium --rounds 2
 ```
 
-It changes every supported resolution, all timing profiles, image controls, and
+These local tools prompt for the camera password, or read one stdin line with
+`--password-stdin`. It changes every supported resolution, all timing profiles, image controls, and
 both Camera/Motion Save paths under maximum configured analysis load, checking
 frame progress, the same live channel, and USB watchdog/reset diagnostics.
 
@@ -248,20 +253,18 @@ On the original ESP32, large resolutions record fewer frames per second.
 
 ## Security scope
 
-The setup AP is open and requires no Wi-Fi password. HTTPS protects
-provisioning credentials and SDP. Local
-HTTPS delivers the DTLS fingerprint, and the browser WebRTC stack
-negotiates DTLS encryption for images and controls. The API checks Host
-and Origin and does not enable CORS. Any device with LAN access can view and
-control the camera; no pairing token or application login is used. The viewer
-loads no remote assets. Plain HTTP is accepted only from private IPv4 clients
-on the camera's own subnet, with matching Host/Origin and no forwarding headers.
-HTTP does not encrypt the setup form or SDP exchange; use HTTPS when those
-need protection. Public website/signaling access continues to use HTTPS/WSS.
-Do not forward port 80 or proxy the local HTTP service onto the internet:
-source NAT can make external clients appear to come from a local router.
-The firmware socket budget is 16 to accommodate the two bounded listeners
-alongside signaling and WebRTC sockets.
+Wi-Fi provisioning and camera password changes need physical USB access; the
+board opens no setup access point. Local HTTPS delivers the DTLS fingerprint,
+and the browser WebRTC stack negotiates DTLS encryption for images and controls.
+Local viewers prove the camera password exactly as remote viewers do (see
+[Remote authentication](#remote-authentication)); the camera sends no frames,
+settings or recordings and accepts no commands before that. A board without a
+camera password refuses local sessions. The API checks Host and Origin and
+does not enable CORS. The viewer loads no remote assets. Plain HTTP is not
+served. Public website/signaling access uses HTTPS/WSS. The device's HTTPS
+certificate is self-signed and changes after each reboot, so compare its
+fingerprint with the USB console: a look-alike page served by another device
+on the LAN could otherwise capture the password you type.
 
 This implements encryption in transit, not encryption of flash contents. Saved
 Wi-Fi credentials remain in the existing NVS partition. Secure boot, flash/NVS
@@ -278,15 +281,18 @@ python tools/test_local_webrtc.py --port /dev/ttyUSB0 --browser /path/to/chromiu
 ```
 
 The test resets the board, reads its ephemeral identity over USB, compares the
-HTTPS certificate, checks access without credentials and origin rules, connects a real browser,
+HTTPS certificate, checks that plain HTTP is closed and the origin rules, signs in with the camera password in a real browser,
 decodes camera JPEG, exercises sensor controls and invalid values, inspects
 DTLS connection statistics, and reconnects. It writes no credentials or camera
 images. Keep serial monitors closed while flashing or running either USB tool.
 
 The full hardware E2E suite (`python -m pytest tests/e2e -v -s`) also runs
 `tools/test_https_reconnect.py` and `tools/test_camera_settings.py` after its
-public-signaling browser checks. The HTTPS test checks HTML, the shared settings
+public-signaling browser checks, passing the run's camera password on stdin. The HTTPS test checks HTML, the shared settings
 module, parallel requests, settings and video after repeated hardware resets.
+On the first boot it also checks the camera password: plain HTTP is closed, a
+session that skips authentication gets only authentication errors (no frames,
+settings or recordings), and a wrong password is rejected.
 The viewer allows four HTTPS sockets so browser parallel connections do not
 evict a controls-module download, and enables Connect only after controls load.
 Three randomized rounds change at least five supported image controls, resolution,
@@ -312,8 +318,9 @@ password. The signaling API secret stays on the server and in camera firmware.
 
 ## Remote authentication
 
-Remote viewing requires the MAC and the camera password chosen during provisioning.
-The ESP32 sends no JPEG frames or settings and rejects commands until password
+Remote viewing requires the MAC and the camera password chosen during provisioning;
+local viewing requires the password (the board's page reads the MAC from the
+challenge). The ESP32 sends no JPEG frames or settings and rejects commands until password
 authentication succeeds. It stores a salted PBKDF2-HMAC-SHA256 verifier (210,000
 iterations), never the password. The data-channel challenge/response uses the
 [SCRAM key/proof construction](https://www.rfc-editor.org/rfc/rfc5802.html#section-3)
@@ -321,8 +328,12 @@ with SHA-256. This is a project-specific JSON protocol, not an RFC SCRAM wire
 implementation. Its transcript binds a random challenge, camera room, salt,
 iteration count, and both WebRTC SDP certificate fingerprints. The browser also
 checks the camera's server signature. Replayed proofs from other connections
-fail. Five failed proofs cause a 30-second cooldown; pending authentication
-expires after 15 seconds. Changing/clearing the password invalidates remote sessions.
+fail. The password never leaves the browser and is never compared there: the
+page turns it into a per-connection proof, and the board decides whether that
+proof matches its stored verifier. Both viewers clear the typed password as
+soon as Connect starts and keep only a non-extractable Web Crypto key derived
+from it, so Connect can reconnect; a rejected password discards that key. Five failed proofs cause a 30-second cooldown; pending authentication
+expires after 15 seconds. Changing/clearing the password invalidates current sessions.
 Use a strong unique camera password; password-derived proofs allow offline
 password guessing by a malicious peer that records an authentication exchange.
 
@@ -333,8 +344,8 @@ resetting Wi-Fi:
 .venv/bin/python tools/camera_password.py --port /dev/ttyUSB0
 ```
 
-The tool prompts securely and confirms the password. `--clear` disables remote
-access until a password is set again. These commands require physical USB access.
+The tool prompts securely and confirms the password. `--clear` disables local
+and remote viewing until a password is set again. These commands require physical USB access.
 Do not run a serial monitor or the test launcher at the same time.
 Initial camera password derivation can take 1–2 minutes on ESP32-CAM; subsequent logins use the stored verifier.
 

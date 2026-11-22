@@ -2,9 +2,11 @@
 public signaling tunnel from a locally served copy of the website.
 
 This is the full first-run path end to end: build + flash the firmware,
-`wifi-reset` any previous provisioning, provision fresh through the browser
-over USB, verify Wi-Fi recovery and camera password changes, confirm the
-board reaches the default public signaling server,
+`wifi-reset` any previous provisioning and check the board then waits for USB
+provisioning without opening a setup access point, provision fresh through the
+browser over USB (a failed first attempt must not open one either), verify
+Wi-Fi recovery and camera password changes, check the local viewer demands the
+camera password, confirm the board reaches the default public signaling server,
 then drive a real browser against a local static build of the site to
 confirm it streams, that live setting changes reach the camera, and that
 Save ("apply") persists on the camera while Reset to Default changes only live settings. No Wi-Fi
@@ -70,10 +72,15 @@ def wait_for(console, *needles, timeout, on_line=None):
     raise TimeoutError('Timed out waiting for: ' + ', '.join(needles))
 
 
+def assert_no_access_point(output):
+    # ESP-IDF logs "mode : sta (...)" or "mode : sta (...) + softAP (...)".
+    assert 'softAP' not in output and 'Setup Wi-Fi:' not in output, 'The board opened a setup access point'
+
+
 def reset_to_setup(port):
     # A board left over from a previous run is already connected to Wi-Fi;
-    # wifi-reset clears its saved credentials and restarts into the setup AP,
-    # exactly as documented for recovering an already-provisioned board.
+    # wifi-reset clears its saved credentials and restarts. Wi-Fi setup is
+    # USB-only: the board must wait for it instead of opening an access point.
     console = serial.Serial(port, 115200, timeout=.2)
     try:
         console.dtr = False
@@ -85,7 +92,8 @@ def reset_to_setup(port):
         # writing, or the command can land before anything is reading stdin.
         wait_for(console, 'Type wifi-reset', timeout=30)
         console.write(b'wifi-reset\n')
-        wait_for(console, 'Setup Wi-Fi:', timeout=60)
+        # Startup logs the radio mode before the provisioning state.
+        assert_no_access_point(wait_for(console, 'wifi:mode', 'No saved Wi-Fi; waiting for USB provisioning', timeout=60))
     finally:
         console.close()
 
@@ -93,6 +101,15 @@ def reset_to_setup(port):
 def provision_in_browser(url, browser_path, port, ssid, wifi_password, camera_password):
     # Bridge Chromium's Web Serial boundary to real hardware without interacting
     # with the native chooser. The production flasher and firmware exchange bytes.
+    transcript = bytearray()  # Everything the board prints, checked for an access point.
+
+    def read():
+        if not console.is_open:
+            return []
+        data = console.read(4096)
+        transcript.extend(data)
+        return list(data)
+
     with serial.Serial(baudrate=115200, timeout=.15) as console, sync_playwright() as playwright:
         console.port = port
         console.dtr = console.rts = False
@@ -104,7 +121,7 @@ def provision_in_browser(url, browser_path, port, ssid, wifi_password, camera_pa
             console.reset_input_buffer()
 
         page.expose_function('testSerialOpen', open_port)
-        page.expose_function('testSerialRead', lambda: list(console.read(4096)) if console.is_open else [])
+        page.expose_function('testSerialRead', read)
         page.expose_function('testSerialWrite', lambda data: console.write(bytes(data)))
         page.expose_function('testSerialClose', console.close)
         page.add_init_script("""
@@ -166,6 +183,9 @@ def provision_in_browser(url, browser_path, port, ssid, wifi_password, camera_pa
             expect(popup).to_be_hidden()
 
         open_setup()
+        # A failed first join leaves the board waiting for USB, not broadcasting setup Wi-Fi.
+        connect('missing-' + secrets.token_hex(8), '', Secret(secrets.token_urlsafe(24)))
+        expect(status).to_contain_text('Could not connect', timeout=60000)
         connect(ssid, wifi_password, Secret(secrets.token_urlsafe(24)))
         expect(status).to_have_text('Connected. Your settings are saved.', timeout=195000)
         expect(setup.locator('#local-viewer-link')).to_have_attribute('href', re.compile(r'^https://[\d.]+/$'))
@@ -185,6 +205,9 @@ def provision_in_browser(url, browser_path, port, ssid, wifi_password, camera_pa
         expect(status).to_contain_text('reconnected to its saved network', timeout=60000)
         close_setup()
         browser.close()
+    output = transcript.decode(errors='replace')
+    assert 'Wi-Fi connection unavailable; waiting for USB provisioning' in output, 'The failed join was not reported'
+    assert_no_access_point(output)
 
 
 def discover(port, lines):
@@ -267,11 +290,14 @@ def test_provision_and_stream(board, wifi_credentials, tmp_path):
         console.close()
         print('Testing HTTPS assets and camera reconnects across restarts…', flush=True)
         run([sys.executable, 'tools/test_https_reconnect.py', '--port', port,
-             '--browser', board['browser'], '--cycles', '3'], stage='Local HTTPS reconnect checks')
+             '--browser', board['browser'], '--cycles', '3', '--password-stdin'],
+            stage='Local HTTPS, camera password and reconnect checks', input=camera_password + '\n', text=True)
         print('Testing randomized settings across board restarts…', flush=True)
         run([sys.executable, 'tools/test_camera_settings.py', '--url', local_url,
-             '--port', port, '--browser', board['browser'], '--rounds', '3'], stage='Randomized settings persistence checks')
-        print('PASS: fresh flash, provisioning, streaming, live reset and saved settings across reboots', flush=True)
+             '--port', port, '--browser', board['browser'], '--rounds', '3', '--password-stdin'],
+            stage='Randomized settings persistence checks', input=camera_password + '\n', text=True)
+        print('PASS: fresh flash, USB-only provisioning, password-protected local and remote streaming, '
+              'live reset and saved settings across reboots', flush=True)
     except Exception:
         print('USB diagnostics:', flush=True)
         for line in diagnostics:

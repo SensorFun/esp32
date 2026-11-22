@@ -12,8 +12,11 @@ be installed at `browser` in `tests/config/e2e.yaml`.
 The built-in SensorFun signaling service must be reachable.
 
 Each configured device gets its own worker. The workers run concurrently through
-firmware build, USB flash, fresh provisioning, public-signaling streaming and
-controls, three HTTPS reboot/reconnect cycles, and three randomized Save/reboot
+firmware build, USB flash, fresh USB-only provisioning (the board must wait for
+USB setup without opening a setup access point, also after a failed join),
+public-signaling streaming and controls, local camera password checks (plain
+HTTP closed; no frames or settings without authentication; wrong password
+rejected), three HTTPS reboot/reconnect cycles, and three randomized Save/reboot
 rounds plus reboot checks for unsaved changes, live reset and saved defaults. Operations
 on an individual board remain sequential. A failure on one board does not cancel
 the other board; the launcher exits unsuccessfully if any board fails.

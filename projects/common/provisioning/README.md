@@ -14,38 +14,32 @@ does not erase NVS on initialization errors.
 
 ## Setup
 
-1. With no saved settings, or after 20 seconds of failed connection attempts, the
-   board starts an open `CAM_<MAC>` network. Join it without a password;
-   serial access is not needed. The suffix is the board's station Wi-Fi MAC
-   in uppercase, colon-separated form; the SSID stays the same across reboots.
-2. Join that access point and open `http://192.168.4.1` in a browser, or
-   `https://192.168.4.1` as an additional encrypted option for projects with
-   `CONFIG_PROVISIONING_SECURE=y`. This is a
-   direct setup page; it does not rely on a captive-portal popup or internet.
+Wi-Fi is provisioned only over the physical USB console. The board never opens
+a setup access point: an open one would let anyone in radio range move the
+board to a network of their choosing.
+
+1. Without saved settings the board logs `No saved Wi-Fi; waiting for USB
+   provisioning` and waits.
+2. Provision over USB with the browser flasher's **Provision** popup (it shows
+   [index.html](index.html) and relays its requests as USB commands, see
+   below), `tools/provision.py`, or the console command `wifi-provision`.
 3. Refresh to scan visible SSIDs and choose one from the dropdown. Choose
    **Other network…** to enter a hidden network manually. Enter its password, or leave empty for open Wi-Fi.
-4. For camera projects, set the camera password. Remote viewing uses the
-   built-in SensorFun signaling service.
+4. For camera projects, set the camera password. Every viewer, local or
+   remote, enters it.
 5. Submit to connect. Only a successful connection with an assigned IP address
-   commits the new settings. Invalid credentials leave the old settings intact,
-   keep setup available, and allow another attempt. The browser polls status;
-   tap the camera address to close setup and open the viewer. Setup also closes
-   automatically 30 seconds after a successful save.
+   commits the new settings. If a new network fails, the board rejoins its
+   saved one; without a saved network it keeps waiting for USB provisioning.
 
 Networks must be supported by the board's radio. The page accepts personal Wi-Fi
 and open networks, not enterprise authentication. SSIDs are limited to 32 bytes;
 passwords are empty, 8–63 bytes, or a 64-digit hexadecimal PSK.
 
 Credentials are stored in the `wifi_setup` NVS namespace as one committed blob
-and survive power loss. Saved passwords are never returned over HTTP; the
-component never logs submitted credentials. This basic firmware uses ordinary
-NVS, without encryption at rest. The temporary setup AP is open. Projects
-with `CONFIG_PROVISIONING_SECURE=y` offer HTTPS to encrypt submitted credentials
-alongside local HTTP. HTTP sends setup credentials without TLS, including over
-the open setup Wi-Fi. Only private IPv4 clients on the setup subnet can use HTTP;
-cross-origin, public-source and forwarded requests are rejected. Other projects
-use local HTTP alone. Only that AP interface serves setup; it
-closes after a successful connection.
+and survive power loss. Saved passwords are never reported back; the component
+never logs submitted credentials. This basic firmware uses ordinary NVS,
+without encryption at rest. USB is a physical trusted interface; its serial
+traffic is not encrypted.
 
 ## Reset and recovery
 
@@ -59,19 +53,20 @@ Reset inputs and the serial `wifi-reset` command belong to the shared
 These reset requests clear the entire default NVS partition on the next boot,
 including saved Wi-Fi and other application settings. Ordinary power cycles keep
 settings. If a saved network disappears or authentication fails, the Wi-Fi
-component opens provisioning after 20 seconds without erasing saved settings.
+component keeps rejoining it: each 20-second attempt is followed by a
+15-second pause in which USB setup can scan and choose another network. Saved
+settings are not erased.
 
-## HTTP interface
+## USB interface
 
-All responses disable caching. Setup is available only through the access point's
-IP and host name; state-changing requests from other origins are rejected.
+With `CONFIG_PROVISIONING_SECURE=y`, the console accepts `sensorfan-usb <command>`
+lines and answers with `SENSORFUN_USB <json>` lines:
 
-| Route | Behavior |
+| Command | Behavior |
 | --- | --- |
-| `GET /` | Embedded setup page with no external assets |
-| `GET /api/scan` | Scan SSIDs and indicate whether a camera password is required |
-| `GET /api/status` | Connection state without credentials |
-| `POST /api/connect` | URL-encoded `ssid` and `password`; camera projects also accept `camera_password`; returns 202 while connecting |
-| `POST /api/finish` | Close the setup access point after Wi-Fi is connected and settings are saved |
+| `status` | Firmware project, last setup result, and the local IP and remote viewer link once connected |
+| `scan` | Visible SSIDs and whether a camera password is required; `busy` while joining a network |
+| `wifi <form>` | URL-encoded `ssid` and `password`; camera projects also accept `camera_password`; replies `pending` |
+| `password <form-encoded password>` | Set the camera password |
 
 Do not put real network names or passwords in source, examples, tests, or configs.

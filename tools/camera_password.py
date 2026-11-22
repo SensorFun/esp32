@@ -41,7 +41,7 @@ def main():
         deadline = time.monotonic() + 60
         while time.monotonic() < deadline:
             data += console.read(4096).decode(errors='replace')
-            if 'Local camera ready:' in data or 'Setup Wi-Fi:' in data:
+            if 'Local camera ready:' in data or 'waiting for USB provisioning' in data:
                 break
         else:
             raise TimeoutError('Board console not ready')

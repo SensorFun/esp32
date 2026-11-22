@@ -22,9 +22,9 @@
 <input id="password" name="password" type="password" autocomplete="new-password">
 <small>Leave empty for an open network.</small>
 <label id="camera-password-option" hidden><input id="change-camera-password" type="checkbox">Change camera password</label>
-<div id="camera-access" hidden><label for="camera-password">Camera password (remote viewing)</label>
+<div id="camera-access" hidden><label for="camera-password">Camera password (local and remote viewing)</label>
 <input id="camera-password" type="password" minlength="12" maxlength="96" autocomplete="new-password" disabled>
-<p>Use a separate password of 12–96 UTF-8 bytes. Remote viewers enter this password and the camera MAC address.</p>
+<p>Use a separate password of 12–96 UTF-8 bytes. Every viewer enters it: on the local network, and with the camera MAC address for remote viewing.</p>
 </div>
 <button id="save" type="submit">Save and connect</button>
 </form>
@@ -38,7 +38,7 @@ const cameraPasswordOption=document.querySelector('#camera-password-option'),cha
 const localViewer=document.querySelector('#local-viewer'),localViewerLink=document.querySelector('#local-viewer-link');
 const remoteViewer=document.querySelector('#remote-viewer'),remoteViewerLink=document.querySelector('#remote-viewer-link');
 function showRemoteViewer(data){remoteViewer.hidden=true;if(typeof data.remote_url!=='string'||!/^https:\/\/[^\s/]+\/\S*[0-9A-F]{12}$/.test(data.remote_url))return;remoteViewerLink.href=data.remote_url;remoteViewerLink.textContent=data.remote_url;remoteViewer.hidden=false;}
-function showLocalViewer(data){showRemoteViewer(data);localViewer.hidden=true;if(typeof data.ip!=='string'||!data.local_url)return;const parts=data.ip.split('.');if(parts.length!==4||parts.some(part=>!/^\d{1,3}$/.test(part)||Number(part)>255))return;if(![`http://${data.ip}/`,`https://${data.ip}/`].includes(data.local_url))return;localViewerLink.href=data.local_url;localViewerLink.textContent=data.local_url;localViewer.hidden=false;}
+function showLocalViewer(data){showRemoteViewer(data);localViewer.hidden=true;if(typeof data.ip!=='string'||!data.local_url)return;const parts=data.ip.split('.');if(parts.length!==4||parts.some(part=>!/^\d{1,3}$/.test(part)||Number(part)>255))return;if(data.local_url!==`https://${data.ip}/`)return;localViewerLink.href=data.local_url;localViewerLink.textContent=data.local_url;localViewer.hidden=false;}
 let openingCamera=false;
 localViewerLink.addEventListener('click',async event=>{
     if(event.ctrlKey||event.metaKey||event.shiftKey||event.altKey)return;
@@ -52,7 +52,7 @@ localViewerLink.addEventListener('click',async event=>{
         // Give the device time to leave setup and rejoin its Wi-Fi.
         await new Promise(resolve=>setTimeout(resolve,5000));
     }catch{
-        // Setup Wi-Fi may have already closed. The saved address still works on the LAN.
+        // The saved address still works on the LAN.
     }
     openingCamera=false;
     location.assign(url);
@@ -83,7 +83,7 @@ async function scan(){
         status.textContent=networks.length?'Choose your network from the list.':'No networks found. Choose Other network to enter a hidden network.';
     }catch(error){status.textContent=error.message;}finally{refresh.disabled=false;}
 }
-async function watch(){try{const data=await request('/api/status');pollFailures=0;if(data.state==='connected'){showLocalViewer(data);status.textContent='Connected. Your settings are saved.';polling=false;return;}if(data.state==='provisioning'){status.textContent='Could not connect. Check the network name and password, then try again.';polling=false;save.disabled=false;refresh.disabled=false;return;}status.textContent='Connecting…';}catch(error){if(error.status){status.textContent=error.message;polling=false;save.disabled=false;refresh.disabled=false;}else{status.textContent='Setup connection lost. If setup Wi-Fi disappears, reconnect to your normal network. Otherwise reconnect here and try again.';if(++pollFailures>=3){polling=false;save.disabled=false;refresh.disabled=false;}}}if(polling)setTimeout(watch,1500);}
+async function watch(){try{const data=await request('/api/status');pollFailures=0;if(data.state==='connected'){showLocalViewer(data);status.textContent='Connected. Your settings are saved.';polling=false;return;}if(data.state==='provisioning'){status.textContent='Could not connect. Check the network name and password, then try again.';polling=false;save.disabled=false;refresh.disabled=false;return;}status.textContent='Connecting…';}catch(error){if(error.status){status.textContent=error.message;polling=false;save.disabled=false;refresh.disabled=false;}else{status.textContent='USB connection lost. Reconnect the camera and try again.';if(++pollFailures>=3){polling=false;save.disabled=false;refresh.disabled=false;}}}if(polling)setTimeout(watch,1500);}
 ssid.addEventListener('change',updateManual);
 changeCameraPassword.addEventListener('change',updateCameraPassword);
 refresh.addEventListener('click',scan);

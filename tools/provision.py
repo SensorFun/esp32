@@ -49,10 +49,10 @@ def main():
         buffer = ''
         while time.monotonic() < deadline:
             buffer += port.read(4096).decode(errors='replace')
-            if 'Setup Wi-Fi:' in buffer:
+            if 'waiting for USB provisioning' in buffer:
                 break
         else:
-            raise RuntimeError('No setup AP announced; use wifi-reset first if already provisioned')
+            raise RuntimeError('Board is not waiting for provisioning; use wifi-reset first if already provisioned')
         port.write(('wifi-provision\n' + ssid + '\n' + password + '\n' + (camera_password + '\n' if camera_password is not None else '')).encode())
         camera_password = None
         password = ''

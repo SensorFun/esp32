@@ -1,4 +1,5 @@
 """Check the firmware's authentication serialization independently of the browser."""
+import json
 from pathlib import Path
 import shutil
 import subprocess
@@ -41,3 +42,65 @@ int main() {
             (path / 'test.cpp').write_text(source)
             subprocess.run(['c++', '-std=c++17', '-Wall', '-Wextra', '-Werror', '-I', str(ROOT / 'projects/webrtc/main'), str(path / 'test.cpp'), '-o', str(path / 'test')], check=True)
             subprocess.run([str(path / 'test')], check=True)
+
+    @unittest.skipUnless(shutil.which('node'), 'Node.js required for browser logic tests')
+    def test_local_viewer_proof_matches_website(self):
+        # The board's own viewer inlines the password proof; it must stay
+        # identical to the website's remote viewer, which the firmware verifies.
+        html = (ROOT / 'projects/webrtc/main/viewer.html').read_text()
+        start, end = html.index('let pc,channel'), html.index('function verified(')
+        snippet = html[start:html.index('\n', end)]
+        harness = r'''
+import vm from 'node:vm';
+import assert from 'node:assert/strict';
+import { createProof } from 'ACCESS';
+const context = vm.createContext({ TextEncoder, crypto: globalThis.crypto, Uint8Array, Error, Array, parseInt });
+vm.runInContext(SNIPPET + ';globalThis.viewer={createProof,verified,setExpected:value=>{expected=value;},setPassword:value=>{password=value;},state:()=>({password,access})};', context);
+const fp = side => Array.from({ length: 32 }, (_, i) => ((i * 7 + side) & 255).toString(16).padStart(2, '0').toUpperCase()).join(':');
+const offer = `v=0\r\na=fingerprint:sha-256 ${fp(1)}\r\n`, answer = `v=0\r\na=fingerprint:sha-256 ${fp(2)}\r\n`;
+const challenge = { type: 'auth_challenge', algorithm: 'camera-scram-sha256-v2', camera: '020000000001',
+  salt: '00112233445566778899aabbccddeeff', nonce: 'ab'.repeat(32), iterations: 210000 };
+const password = 'synthetic-test-vector';
+const viewer = context.viewer;
+await assert.rejects(viewer.createProof(challenge, offer, answer), /Enter the camera password/);
+viewer.setPassword(password);
+const local = await viewer.createProof(challenge, offer, answer);
+const remote = await createProof(password, challenge.camera, challenge, offer, answer);
+assert.equal(local.proof, remote.proof);
+assert.equal(Buffer.from(local.expected).toString('hex'), remote.expected);
+// The typed password is dropped; only a non-extractable derived key remains.
+assert.equal(viewer.state().password, '');
+assert.equal(viewer.state().access.key.extractable, false);
+await assert.rejects(crypto.subtle.exportKey('raw', viewer.state().access.key));
+// Reconnects reuse the key, and a new challenge gives a new proof.
+assert.equal((await viewer.createProof(challenge, offer, answer)).proof, remote.proof);
+const fresh = { ...challenge, nonce: 'cd'.repeat(32) };
+assert.equal((await viewer.createProof(fresh, offer, answer)).proof, (await createProof(password, fresh.camera, fresh, offer, answer)).proof);
+assert.notEqual((await viewer.createProof(fresh, offer, answer)).proof, remote.proof);
+await assert.rejects(viewer.createProof({ ...challenge, camera: '020000000002' }, offer, answer), /Enter the camera password/);
+viewer.setPassword('another-synthetic-vector');
+assert.notEqual((await viewer.createProof(challenge, offer, answer)).proof, remote.proof);
+await assert.rejects(viewer.createProof({ ...challenge, camera: 'not-a-camera' }, offer, answer));
+await assert.rejects(viewer.createProof(challenge, offer + offer, answer));
+assert.equal(context.viewer.verified(remote.expected), false, 'No signature is accepted before a challenge');
+context.viewer.setExpected(new Uint8Array(0));
+assert.equal(context.viewer.verified('00'.repeat(32)), false, 'An empty expectation must not match');
+context.viewer.setExpected(local.expected);
+assert.equal(context.viewer.verified(remote.expected), true);
+assert.equal(context.viewer.verified('00'.repeat(32)), false);
+'''
+        script = harness.replace('ACCESS', (ROOT / 'site/src/projects/webrtc/access.mjs').as_uri()).replace('SNIPPET', json.dumps(snippet))
+        subprocess.run(['node', '--input-type=module', '-e', script], check=True)
+
+    def test_every_viewer_must_authenticate(self):
+        # Local sessions used to skip the password; the gate must cover all peers.
+        main = (ROOT / 'projects/webrtc/main/main.cpp').read_text()
+        self.assertIn('send_text(peer_auth.begin(peer_offer, answer));', main)
+        self.assertIn('if (!peer_auth.allowed()) {', main)
+        self.assertIn('const bool viewer = channel_ready && peer_auth.allowed();', main)
+        self.assertNotIn('remote_peer && !', main)
+        self.assertNotIn('!remote_peer ||', main)
+        self.assertNotIn('httpd_start(', main, 'The viewer is served over HTTPS only')
+        viewer = (ROOT / 'projects/webrtc/main/viewer.html').read_text()
+        self.assertIn('type="password"', viewer)
+        self.assertNotIn('No pairing or access key', viewer)

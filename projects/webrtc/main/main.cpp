@@ -60,11 +60,13 @@ esp_peer_default_cfg_t peer_defaults(uint8_t candidates) {
 std::deque<std::string> commands;
 SemaphoreHandle_t mutex;
 esp_peer_handle_t peer;
-httpd_handle_t server, local_http;
-std::string answer, remote_offer;
+httpd_handle_t server;
+std::string answer, peer_offer;
 // Replies and status pushes waiting for the data channel, oldest first.
 std::deque<std::string> replies;
-RemoteAuth remote_auth;
+// Every viewer, local or remote, proves the camera password before it
+// receives frames, settings or recordings.
+RemoteAuth peer_auth;
 bool channel_ready = false, failed = false, remote_peer = false;
 uint16_t stream_id;
 int64_t activity = 0;
@@ -152,7 +154,7 @@ int on_channel(esp_peer_data_channel_info_t *info, void *) {
     channel_ready = true;
     camera_peer_transport_ready(true);
     activity = esp_timer_get_time();
-    if (remote_peer) send_text(remote_auth.begin(remote_offer, answer));
+    send_text(peer_auth.begin(peer_offer, answer));
     return 0;
 }
 int on_data(esp_peer_data_frame_t *frame, void *) {
@@ -162,8 +164,8 @@ int on_data(esp_peer_data_frame_t *frame, void *) {
     const char *end = nullptr;
     cJSON *request = cJSON_ParseWithOpts(text.c_str(), &end, true);
     if (!request) return 0;
-    if (remote_peer && !remote_auth.allowed()) {
-        send_text(remote_auth.verify(request));
+    if (!peer_auth.allowed()) {
+        send_text(peer_auth.verify(request));
         cJSON_Delete(request); return 0;
     }
     activity = esp_timer_get_time();
@@ -187,7 +189,7 @@ void close_peer() {
     camera_peer_transport_ready(false);
     if (peer) { esp_peer_close(peer); peer = nullptr; }
     stop_transfer();
-    answer.clear(); replies.clear(); commands.clear(); remote_offer.clear(); remote_auth.clear(); failed = false; remote_peer = false;
+    answer.clear(); replies.clear(); commands.clear(); peer_offer.clear(); peer_auth.clear(); failed = false; remote_peer = false;
 }
 esp_err_t respond(httpd_req_t *r, const char *status, const char *body) {
     httpd_resp_set_status(r, status);
@@ -200,7 +202,7 @@ bool same_origin(httpd_req_t *r) {
     esp_netif_ip_info_t ip{};
     esp_netif_t *sta = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
     if (!sta || esp_netif_get_ip_info(sta, &ip) != ESP_OK) return false;
-    return camera_http::allow_request(r, ip, r->handle != local_http);
+    return camera_http::allow_request(r, ip, true);
 }
 esp_err_t page(httpd_req_t *r) {
     if (!same_origin(r)) return respond(r, "403 Forbidden", "{}");
@@ -235,6 +237,8 @@ esp_err_t session(httpd_req_t *r) {
         return httpd_resp_send(r, answer.data(), answer.size());
     }
     if (peer) return respond(r, "409 Conflict", "{\"error\":\"One browser at a time; disconnect or wait 30 seconds\"}");
+    if (!RemoteAuth::configured()) return respond(r, "403 Forbidden", "{\"error\":\"Set a camera password over USB before viewing\"}");
+    if (RemoteAuth::blocked()) return respond(r, "429 Too Many Requests", "{\"error\":\"Too many wrong passwords; wait 30 seconds\"}");
     if (!r->content_len || r->content_len > 16384) return respond(r, "400 Bad Request", "{}");
     std::string offer(r->content_len, '\0');
     size_t read = 0;
@@ -264,6 +268,7 @@ esp_err_t session(httpd_req_t *r) {
     char remote_ip[INET_ADDRSTRLEN]{};
     if (!inet_ntop(AF_INET, &address, remote_ip, sizeof(remote_ip))) return ESP_FAIL;
     normalize_local_candidates(offer, remote_ip);
+    peer_offer = offer;
     esp_peer_default_cfg_t extra = peer_defaults(4);
     camera_peer_transport_ready(false);
     esp_peer_cfg_t cfg{};
@@ -308,7 +313,7 @@ void remote_events() {
             if (peer) { remote_send(4, "busy"); continue; }
             if (!RemoteAuth::configured()) { remote_send(4, "password_not_configured"); continue; }
             if (RemoteAuth::blocked()) { remote_send(4, "authentication_rate_limited"); continue; }
-            remote_offer = event.data;
+            peer_offer = event.data;
             esp_peer_default_cfg_t extra = peer_defaults(8);
             camera_peer_transport_ready(false);
             esp_peer_ice_server_cfg_t ice{}; remote_ice(ice);
@@ -363,31 +368,23 @@ void start_server() {
     cfg.servercert_len = strlen(tls_identity_cert()) + 1;
     cfg.prvtkey_pem = reinterpret_cast<const uint8_t *>(tls_identity_key());
     cfg.prvtkey_len = strlen(tls_identity_key()) + 1;
-    // Capture the plain configuration before HTTPS installs TLS callbacks.
-    httpd_config_t plain = cfg.httpd;
+    // HTTPS only: the viewer's password proof needs Web Crypto, which
+    // browsers provide only in secure contexts.
     ESP_ERROR_CHECK(httpd_ssl_start(&server, &cfg));
-    plain.server_port = 80;
-    plain.ctrl_port = cfg.httpd.ctrl_port + 1;
-    plain.max_open_sockets = 3;
-    plain.stack_size = 6144;
-    ESP_ERROR_CHECK(httpd_start(&local_http, &plain));
-    for (httpd_handle_t listener : {server, local_http}) {
-        httpd_uri_t route{};
-        route.uri = "/"; route.method = HTTP_GET; route.handler = page;
-        ESP_ERROR_CHECK(httpd_register_uri_handler(listener, &route));
-        route.uri = "/camera-settings.js"; route.handler = settings_script;
-        ESP_ERROR_CHECK(httpd_register_uri_handler(listener, &route));
-        route.uri = "/camera-motion.js"; route.handler = motion_script;
-        ESP_ERROR_CHECK(httpd_register_uri_handler(listener, &route));
-        route.uri = "/api/session"; route.handler = session;
-        for (auto method : {HTTP_GET, HTTP_POST, HTTP_DELETE}) {
-            route.method = method; ESP_ERROR_CHECK(httpd_register_uri_handler(listener, &route));
-        }
+    httpd_uri_t route{};
+    route.uri = "/"; route.method = HTTP_GET; route.handler = page;
+    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &route));
+    route.uri = "/camera-settings.js"; route.handler = settings_script;
+    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &route));
+    route.uri = "/camera-motion.js"; route.handler = motion_script;
+    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &route));
+    route.uri = "/api/session"; route.handler = session;
+    for (auto method : {HTTP_GET, HTTP_POST, HTTP_DELETE}) {
+        route.method = method; ESP_ERROR_CHECK(httpd_register_uri_handler(server, &route));
     }
     esp_netif_ip_info_t ip{};
     ESP_ERROR_CHECK(esp_netif_get_ip_info(esp_netif_get_handle_from_ifkey("WIFI_STA_DEF"), &ip));
     ESP_LOGI(TAG, "Local camera ready: https://" IPSTR "/", IP2STR(&ip.ip));
-    ESP_LOGI(TAG, "Local HTTP viewer: http://" IPSTR "/", IP2STR(&ip.ip));
 }
 void worker(common::Application &app) {
     bool camera_ready = false;
@@ -403,7 +400,6 @@ void worker(common::Application &app) {
     for (;;) {
         if (!provisioning_is_ready()) {
             { Lock guard; if (fb) { camera_frame_return(fb); fb = nullptr; } close_peer(); }
-            if (local_http) { ESP_ERROR_CHECK(httpd_stop(local_http)); local_http = nullptr; }
             if (server) { ESP_ERROR_CHECK(httpd_ssl_stop(server)); server = nullptr; }
             // Keep detecting and recording while Wi-Fi is down.
             if (camera_ready && motion_frame_due()) {
@@ -439,7 +435,7 @@ void worker(common::Application &app) {
                          unsigned(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
                          unsigned(heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)));
             }
-            if (peer && (failed || (remote_peer && remote_auth.expired(now)) || now - activity > 30000000)) {
+            if (peer && (failed || peer_auth.expired(now) || now - activity > 30000000)) {
                 if (fb) { camera_frame_return(fb); fb = nullptr; }
                 ESP_LOGW(TAG, "Closing camera peer: failed=%d idle_ms=%lld", failed, (now - activity) / 1000);
                 close_peer();
@@ -464,7 +460,7 @@ void worker(common::Application &app) {
                     cJSON_Delete(request);
                 }
             }
-            const bool viewer = channel_ready && (!remote_peer || remote_auth.allowed());
+            const bool viewer = channel_ready && peer_auth.allowed();
             if (viewer && now >= next_status) {
                 send_text(motion_status());
                 next_status = now + (motion_overlay_active() ? 500000 : 1000000);

@@ -32,7 +32,7 @@ def discover(port):
         deadline = time.monotonic() + 65
         while time.monotonic() < deadline:
             data += console.read(4096).decode(errors='replace')
-            if 'Setup Wi-Fi:' in data:
+            if 'waiting for USB provisioning' in data:
                 raise RuntimeError(f'{port}: Wi-Fi provisioning is required')
             if 'Guru Meditation' in data or 'abort() was called' in data:
                 raise RuntimeError(f'{port}: firmware crashed')

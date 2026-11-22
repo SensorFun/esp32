@@ -39,6 +39,10 @@ export function RemoteCamera({ onSessionState }) {
   const [fps, setFps] = useState(0);
   const image = useRef(null);
   const connection = useRef(null);
+  // Only a non-extractable key derived from the password is kept, so Connect
+  // can reconnect; the typed password is cleared as soon as Connect starts.
+  // The camera, not this page, checks the proof made with that key.
+  const savedAccess = useRef(null);
   const settingsPanel = useRef(null);
   const root = useRef(null);
   const motionPanel = useRef(null);
@@ -86,14 +90,19 @@ export function RemoteCamera({ onSessionState }) {
   useEffect(() => () => { generation.current++; onSessionState('idle'); const session = connection.current; if (session) { clearInterval(session.heartbeat); clearTimeout(session.timeout); session.socket?.close(); session.peer?.close(); if (session.url) URL.revokeObjectURL(session.url); } }, []);
   function command(message) { const channel = connection.current?.channel; if (connection.current?.authenticated && channel?.readyState === 'open') channel.send(JSON.stringify(message)); }
   async function connect() {
-    const accessPassword = password;
+    let secret = password;
+    setPassword('');
     stop();
     const current = generation.current;
     const alive = () => current === generation.current;
     setState('connecting'); setStatus('Finding private camera room…');
     let access;
-    try { access = await deriveCameraAccess(camera, accessPassword); }
-    catch (error) { if (alive()) stop(error.message); return; }
+    try {
+      access = secret ? await deriveCameraAccess(camera, secret) : savedAccess.current;
+      secret = '';
+      if (!access) throw Error('Enter the camera password.');
+      savedAccess.current = access;
+    } catch (error) { if (alive()) stop(error.message); return; }
     if (!alive()) return;
     let socket;
     try {
@@ -101,7 +110,7 @@ export function RemoteCamera({ onSessionState }) {
     } catch (error) { if (alive()) stop(error.message); return; }
     const session = { socket, peer: null, channel: null, frame: null, frameId: -1, received: 0, url: null, candidates: [], displayedFrames: 0 };
     connection.current = session;
-    session.timeout = setTimeout(() => { if (alive()) stop('Camera not found. Check the MAC/password and camera internet connection.'); }, 15000);
+    session.timeout = setTimeout(() => { if (alive()) { savedAccess.current = null; stop('Camera not found. Check the MAC/password and camera internet connection.'); } }, 15000);
     async function data(event) {
       if (!alive()) return;
       if (typeof event.data === 'string') {
@@ -110,7 +119,7 @@ export function RemoteCamera({ onSessionState }) {
           if (message.type === 'auth_challenge') {
             if (session.authStarted) throw Error('Repeated authentication challenge');
             session.authStarted = true;
-            const response = await createProof(accessPassword, access.id, message, session.peer.localDescription.sdp, session.peer.remoteDescription.sdp, access);
+            const response = await createProof('', access.id, message, session.peer.localDescription.sdp, session.peer.remoteDescription.sdp, access);
             if (!alive()) return;
             session.expectedSignature = response.expected;
             session.channel.send(JSON.stringify({ op: 'authenticate', proof: response.proof }));
@@ -118,7 +127,7 @@ export function RemoteCamera({ onSessionState }) {
             if (session.authenticated || !verifyServer(message.signature, session.expectedSignature)) throw Error('Camera identity verification failed');
             session.authenticated = true; session.expectedSignature = null;
             startAuthenticated();
-          } else if (message.type === 'auth_error') throw Error(message.error || 'Camera authentication failed');
+          } else if (message.type === 'auth_error') { savedAccess.current = null; throw Error(message.error || 'Camera authentication failed'); }
           else if (session.authenticated && message.type === 'settings') setSettings(message);
           else if (session.authenticated && message.type === 'error') { setStatus(message.error); if (settingsPanel.current) settingsPanel.current.error = message.error; }
           else if (session.authenticated) for (const view of motionViews()) view.handle(message);
@@ -214,8 +223,8 @@ export function RemoteCamera({ onSessionState }) {
   }
   return <section className="remote-camera" data-state={state} ref={root}>
     <div className="rtc-panel remote-connection"><div className="panel-title"><Icon name="signal" /><h2>Remote camera</h2></div>
-      <form className="remote-credentials" onSubmit={event => { event.preventDefault(); if (camera && password && state === 'idle') connect(); }}>
-        <label htmlFor="camera-mac">Camera MAC address</label><input id="camera-mac" value={camera} placeholder="AA:BB:CC:DD:EE:FF" autoComplete="off" disabled={state !== 'idle'} onChange={e => setCamera(e.target.value)} /><label htmlFor="camera-access-password">Camera password</label><input id="camera-access-password" type="password" autoComplete="current-password" value={password} disabled={state !== 'idle'} onChange={e => setPassword(e.target.value)} /><div className="remote-actions"><button type="submit" className="button rtc-primary" disabled={!password || !camera || state !== 'idle'}>Connect camera</button><button type="button" className="button rtc-secondary" disabled={state === 'idle'} onClick={() => stop()}>Disconnect</button></div></form>
+      <form className="remote-credentials" onSubmit={event => { event.preventDefault(); if (camera && (password || savedAccess.current) && state === 'idle') connect(); }}>
+        <label htmlFor="camera-mac">Camera MAC address</label><input id="camera-mac" value={camera} placeholder="AA:BB:CC:DD:EE:FF" autoComplete="off" disabled={state !== 'idle'} onChange={e => { savedAccess.current = null; setCamera(e.target.value); }} /><label htmlFor="camera-access-password">Camera password</label><input id="camera-access-password" type="password" autoComplete="current-password" value={password} disabled={state !== 'idle'} onChange={e => setPassword(e.target.value)} /><div className="remote-actions"><button type="submit" className="button rtc-primary" disabled={(!password && !savedAccess.current) || !camera || state !== 'idle'}>Connect camera</button><button type="button" className="button rtc-secondary" disabled={state === 'idle'} onClick={() => stop()}>Disconnect</button></div></form>
       <p className="muted">Direct WebRTC</p><p role="status" data-testid="remote-status">{status}</p>
     </div>
     <div className="monitor"><div className="monitor-top"><span>CAMERA PREVIEW</span><span data-testid="remote-fps" title="Displayed frames per second · 1-second average">{fps.toFixed(1)} FPS</span><span>{transport}</span></div><div className="remote-preview"><div className="preview-frame"><img ref={image} alt="Remote camera stream" data-testid="remote-image" onLoad={() => { const session = connection.current; if (session?.authenticated && image.current?.getAttribute('src') === session.url) session.displayedFrames++; }} /><sensorfan-motion-overlay ref={overlay} /></div>{state !== 'connected' && <span>Awaiting encrypted camera stream</span>}</div></div>

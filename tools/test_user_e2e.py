@@ -15,7 +15,7 @@ import threading
 import time
 
 from playwright.sync_api import sync_playwright
-from test_local_webrtc import identity, wait_js
+from test_local_webrtc import add_password_argument, camera_password, enter_password, identity, wait_js
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--port', required=True, help='USB serial port of the board')
@@ -23,7 +23,9 @@ parser.add_argument('--browser', required=True, help='Installed Chromium executa
 parser.add_argument('--headed', action='store_true', help='Show the browser window (needs a display)')
 parser.add_argument('--watch', type=float, default=12, help='Seconds of streaming checked after each action')
 parser.add_argument('--usb-log', help='Also write the full USB log to this file')
+add_password_argument(parser)
 args = parser.parse_args()
+password = camera_password(args)
 
 # Frame gaps a user would still call a live stream. Large JPEGs take longer
 # to capture and send, so big resolutions get more slack.
@@ -103,9 +105,10 @@ def connect(page, label):
     page.evaluate(INSTRUMENT)
     wait_js(page, "!document.querySelector('#connect').disabled", timeout=35000)
     start = time.monotonic()
+    enter_password(page, password)
     page.get_by_role('button', name='Connect', exact=True).click()
     try:
-        wait_js(page, "channel?.readyState==='open'", timeout=30000)
+        wait_js(page, "authed && channel?.readyState==='open'", timeout=30000)
         page.evaluate(TAP_CHANNEL)
         page.evaluate('e2e.frames=[]')
         wait_js(page, 'e2e.frames.length>0', timeout=10000)

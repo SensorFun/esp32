@@ -10,7 +10,7 @@ from contextlib import ExitStack
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
-from test_local_webrtc import identity, wait_js
+from test_local_webrtc import add_password_argument, camera_password, connect_local, identity, wait_js
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--url', required=True)
@@ -20,9 +20,11 @@ parser.add_argument('--snapshot', type=Path)
 parser.add_argument('--rounds', type=int, default=3)
 parser.add_argument('--seed', type=int, help='Replay a reported random seed')
 parser.add_argument('--capture', action='store_true')
+add_password_argument(parser)
 args = parser.parse_args()
 if args.rounds < 1 or (args.capture and args.snapshot is None) or (not args.capture and not args.port):
     parser.error('Use positive rounds, --snapshot for capture, and --port for reboot tests')
+password = camera_password(args)
 
 
 def values(data):
@@ -41,8 +43,7 @@ with sync_playwright() as p, ExitStack() as serial_handles:
         page = browser.new_page(ignore_https_errors=True, viewport={'width': 375, 'height': 844})
         page.goto(args.url, wait_until='domcontentloaded')
         wait_js(page, "!!customElements.get('sensorfan-camera-settings')")
-        page.locator('#connect').click()
-        wait_js(page, "channel?.readyState==='open'", timeout=40000)
+        connect_local(page, password)
         page.evaluate("window.snapshot=null;channel.addEventListener('message',e=>{if(typeof e.data==='string'){const message=JSON.parse(e.data);if(['settings','error'].includes(message.type))window.snapshot=message;}});command({op:'get'})")
         wait_js(page, "window.snapshot?.type==='settings'")
         page.evaluate("()=>{window.commands=[];const send=channel.send.bind(channel);channel.send=text=>{const c=JSON.parse(text);if(c.op!=='ping')window.commands.push(c);send(text)}}")

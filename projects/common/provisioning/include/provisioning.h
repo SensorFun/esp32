@@ -8,10 +8,11 @@ extern "C" {
 #endif
 
 // Start once after common setup. Owns Wi-Fi and the default network interfaces.
-// Uses the default NVS partition; opens setup if no working credentials exist.
+// Uses the default NVS partition. Without saved credentials it waits for USB
+// provisioning; it never opens a setup access point.
 esp_err_t provisioning_start(void);
 bool provisioning_is_ready(void);
-// USB console and setup page submit through the same validation/queue.
+// USB console provisioning submits through the shared validation/queue.
 esp_err_t provisioning_submit_credentials(const char *ssid, const char *password);
 esp_err_t provisioning_submit_credentials_with_camera(const char *ssid, const char *password, const char *camera_password);
 // USB setup commands (status, scan, wifi, password). Replies are printed as

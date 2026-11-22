@@ -10,5 +10,5 @@ private_settings: [CONFIG_CAMERA_SIGNALING_API_SECRET]
 provisioning:
   page: projects/common/provisioning/index.html
 after_flash:
-  text: Set up Wi-Fi from the board's CAM_<MAC> setup network, then open the camera in WebRTC.
+  text: Set up Wi-Fi and the camera password over USB with Provision, then open the camera in WebRTC.
   link: /projects/webrtc
