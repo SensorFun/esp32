@@ -26,7 +26,7 @@ class FirmwareCatalogTests(unittest.TestCase):
             (self.root / 'projects' / project).mkdir(parents=True)
             (self.root / 'projects' / project / 'CMakeLists.txt').write_text('')
         self.entries = {'camera': {'name': 'Camera', 'description': 'Streams video.', 'boards': 'all', 'requires_frame_grabber': True,
-                                   'private_settings': ['CONFIG_SECRET'], 'after_flash': {'text': 'Open it.', 'link': '#/projects/camera'}},
+                                   'private_settings': ['CONFIG_SECRET'], 'after_flash': {'text': 'Open it.', 'link': '/projects/camera'}},
                         'blink': {'name': 'Blink', 'description': 'Blinks.', 'boards': ['plain']}}
         self.save()
 
@@ -61,6 +61,7 @@ class FirmwareCatalogTests(unittest.TestCase):
                                 ({'private_settings': ['SECRET']}, 'private_settings'),
                                 ({'requires_frame_grabber': 'yes'}, 'requires_frame_grabber'),
                                 ({'after_flash': {'link': 'javascript:alert(1)'}}, 'after_flash.link'),
+                                ({'after_flash': {'link': '//evil.example/'}}, 'after_flash.link'),
                                 ({'after_flash': {'color': 'red'}}, 'after_flash takes'),
                                 ({'provisioning': {'page': '../secrets.html'}}, 'provisioning takes'),
                                 ({'provisioning': {'page': 'projects/camera/setup.txt'}}, 'provisioning takes'),

@@ -6,6 +6,7 @@ import { Icon } from '../../components/Icon';
 import { boards, firmwares } from 'virtual:board-catalog';
 import { checkLayout, chipId, chipName, inspectImage, isEsp32Port, md5, parseFlasherArgs, portLabel } from './plan.mjs';
 import { resetNvs } from './nvs.mjs';
+import { sitePath } from '../../routes.mjs';
 import { UsbProvisioning } from './UsbProvisioning';
 
 const decoder = new TextDecoder();
@@ -14,7 +15,7 @@ const bauds = [115200, 230400, 460800, 921600];
 // Firmware packaged by tools/firmware_artifacts.py and served with the site.
 function hostedRoot(project, board) {
   return { label: board.name, board: board.id, async read(path) {
-    const response = await fetch(`firmware/${project}/${board.id}/${path}`, { cache: 'no-cache' });
+    const response = await fetch(sitePath(`/firmware/${project}/${board.id}/${path}`), { cache: 'no-cache' });
     return response.ok ? new Uint8Array(await response.arrayBuffer()) : null;
   } };
 }
@@ -49,9 +50,9 @@ async function loadUpload(file, packages) {
   };
 }
 
-// #/tools/flasher?project=<id> opens a catalog project directly.
+// /tools/flasher?project=<id> opens a catalog project directly.
 function linkedProject() {
-  const id = new URLSearchParams(window.location.hash.split('?')[1] ?? '').get('project');
+  const id = new URLSearchParams(window.location.search).get('project');
   return id === 'upload' || firmwares.some(item => item.id === id) ? id : null;
 }
 
@@ -90,7 +91,7 @@ export function FlasherProject() {
   const [status, setStatus] = useState('');
   const [log, setLog] = useState([]);
   const [showUsb, setShowUsb] = useState(false);
-  const [viewerUrl, setViewerUrl] = useState('');
+  const [viewer, setViewer] = useState(null);  // { local, remote } after provisioning.
   const fileInput = useRef(null);
   const resetMode = state.startsWith('reset');
   const flashBusy = state === 'flashing' || state === 'resetting';
@@ -99,7 +100,7 @@ export function FlasherProject() {
 
   useEffect(() => {
     let active = true;
-    fetch('firmware/index.json', { cache: 'no-cache' })
+    fetch(sitePath('/firmware/index.json'), { cache: 'no-cache' })
       .then(response => response.ok ? response.json() : {})
       .catch(() => ({}))
       .then(manifest => { if (active) setPackages(manifest ?? {}); });
@@ -151,7 +152,7 @@ export function FlasherProject() {
       // Forget the previous board's port so only the selected board stays allowed.
       if (port && port !== chosen) { try { await port.forget?.(); } catch { /* Already gone. */ } }
       setPort(chosen);
-      if (port !== chosen) { setState('idle'); setStatus(''); setLog([]); setProgress(0); setShowUsb(false); setViewerUrl(''); }
+      if (port !== chosen) { setState('idle'); setStatus(''); setLog([]); setProgress(0); setShowUsb(false); setViewer(null); }
     } catch (error) { if (error.name !== 'NotFoundError') setStatus(error.message); }
   }
 
@@ -172,7 +173,7 @@ export function FlasherProject() {
         setStatus('Loading the latest local firmware…');
         const [latest, manifest] = await Promise.all([
           loadFirmware(hostedRoot(project, selectedBoard)),
-          fetch('firmware/index.json', { cache: 'no-cache' }).then(response => response.json()),
+          fetch(sitePath('/firmware/index.json'), { cache: 'no-cache' }).then(response => response.json()),
         ]);
         plan = latest;
         setFirmware(latest);
@@ -259,7 +260,7 @@ export function FlasherProject() {
 
     <section className="rtc-panel flasher-step" aria-labelledby="firmware-title">
       <div className="panel-title"><span className="flasher-number">1</span><h2 id="firmware-title">Firmware</h2></div>
-      <div className="flasher-source"><label htmlFor="firmware-source">Firmware source</label><select id="firmware-source" disabled={busy} value={project} onChange={event => { setProject(event.target.value); window.history.replaceState(null, '', `#/tools/flasher?project=${event.target.value}`); setBoardId(''); load.current++; setFirmware(null); setFirmwareError(''); setState('idle'); setStatus(''); }}>{firmwares.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}<option value="upload">Upload your firmware</option></select></div>
+      <div className="flasher-source"><label htmlFor="firmware-source">Firmware source</label><select id="firmware-source" disabled={busy} value={project} onChange={event => { setProject(event.target.value); window.history.replaceState(null, '', `?project=${event.target.value}`); setBoardId(''); load.current++; setFirmware(null); setFirmwareError(''); setState('idle'); setStatus(''); }}>{firmwares.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}<option value="upload">Upload your firmware</option></select></div>
       {offered && <><p>{offered.description} Choose your board below.</p>
       <fieldset className="flasher-boards" disabled={busy}><legend className="flasher-hidden">Board</legend>{offeredBoards.map(board => {
         const available = packages?.[project]?.[board.id];
@@ -281,7 +282,7 @@ export function FlasherProject() {
       {firmware && <div className="flasher-firmware" data-testid="firmware-summary">
         <dl>{selectedBoard && <div><dt>Board</dt><dd>{selectedBoard.name}</dd></div>}{upload && <div><dt>File</dt><dd>{firmware.label}</dd></div>}<div><dt>Chip</dt><dd>{chipName(firmware.chip)}</dd></div>{upload && <div><dt>Type</dt><dd>{upload.kind === 'app' ? `App image${upload.project ? ` · ${upload.project}` : ''}${upload.version ? ` ${upload.version}` : ''}` : 'Full flash image'}</dd></div>}{info && <div><dt>Built</dt><dd>{builtDate(info.built)} · {info.local ? 'Local build' : info.commit}</dd></div>}<div><dt>Flash</dt><dd>{upload ? "Board's current settings" : `${firmware.flashSize} · ${firmware.flashMode.toUpperCase()} · ${firmware.flashFreq}`}</dd></div></dl>
         {upload?.kind === 'app' && <p className="flasher-note">The board must already have a bootloader and partition table with an app at 0x{upload.address.toString(16)}, for example from flashing one of the boards above once.</p>}
-        {info && !info.local && <a className="button rtc-secondary" href={`firmware/${project}/${boardId}/firmware.bin`} download={`${project}-${boardId}.bin`}>Download firmware file</a>}
+        {info && !info.local && <a className="button rtc-secondary" href={sitePath(`/firmware/${project}/${boardId}/firmware.bin`)} download={`${project}-${boardId}.bin`}>Download firmware file</a>}
         {upload?.kind === 'full' && <p className="flasher-note">A complete flash image replaces existing firmware and settings, including saved Wi-Fi credentials.</p>}
       </div>}
     </section>
@@ -316,11 +317,12 @@ export function FlasherProject() {
       {supported && next?.provisioning && <button type="button" className="button rtc-secondary flasher-provision" disabled={!port || busy} onClick={() => setShowUsb(true)}>Provision</button>}
       {state !== 'idle' && !resetMode && <div className="flasher-progress" data-state={state}><progress max="1" value={progress} aria-label="Flashing progress" /><span>{Math.round(progress * 100)}%</span></div>}
       <p role="status" className="flasher-status" data-testid="flash-status">{status}</p>
-      {viewerUrl && <p className="flasher-viewer">Camera on Wi-Fi: <a href={viewerUrl} target="_blank" rel="noreferrer">{viewerUrl}</a></p>}
-      {state === 'done' && !next?.provisioning && next?.afterFlash.text && <p>{next.afterFlash.text} {next.afterFlash.link && <a href={next.afterFlash.link}>Open {next.name}</a>}</p>}
+      {viewer && <p className="flasher-viewer">Camera on Wi-Fi: <a href={viewer.local} target="_blank" rel="noreferrer">{viewer.local}</a></p>}
+      {viewer?.remote && <p className="flasher-viewer">Watch from anywhere: <a href={viewer.remote} target="_blank" rel="noreferrer">{viewer.remote}</a></p>}
+      {state === 'done' && !next?.provisioning && next?.afterFlash.text && <p>{next.afterFlash.text} {next.afterFlash.link && <a href={next.afterFlash.link.startsWith('/') ? sitePath(next.afterFlash.link) : next.afterFlash.link}>Open {next.name}</a>}</p>}
       {log.length > 0 && <details className="flasher-log"><summary>Details</summary><pre>{log.join('\n')}</pre></details>}
       {connectionMode === 'manual' && <p className="flasher-hint">Hold BOOT, tap RESET, then release BOOT before starting. If your ESP32-CAM has no BOOT button, connect GPIO0 to GND before resetting, then remove the connection after the action finishes and reset again.</p>}
     </section>
-    {showUsb && next?.provisioning && <UsbProvisioning port={port} project={next} onClose={() => setShowUsb(false)} onViewer={setViewerUrl} />}
+    {showUsb && next?.provisioning && <UsbProvisioning port={port} project={next} onClose={() => setShowUsb(false)} onViewer={setViewer} />}
   </main></div></div>;
 }

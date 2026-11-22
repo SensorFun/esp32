@@ -42,6 +42,11 @@ class QuietHandler(SimpleHTTPRequestHandler):
     def log_message(self, *_):
         pass
 
+    def translate_path(self, path):
+        # Like GitHub Pages: /projects/webrtc serves projects/webrtc.html.
+        local = super().translate_path(path)
+        return local + '.html' if not Path(local).exists() and Path(local + '.html').is_file() else local
+
 
 def run(args, cwd=ROOT, *, stage, **kwargs):
     result = subprocess.run(args, cwd=cwd, **kwargs)
@@ -129,7 +134,7 @@ def provision_in_browser(url, browser_path, port, ssid, wifi_password, camera_pa
           api.requestPort = async () => port;
           Object.defineProperty(navigator, 'serial', { value: api });
         """)
-        page.goto(url + '#/tools/flasher')
+        page.goto(url + 'tools/flasher')
         page.get_by_role('button', name='Select USB port').click()
         page.get_by_role('button', name='Provision', exact=True).click()
         popup = page.get_by_role('dialog', name='Provision WebRTC camera')
@@ -241,7 +246,7 @@ def test_provision_and_stream(board, wifi_credentials, tmp_path):
 
         print('Driving a real browser through the public signaling tunnel…', flush=True)
         run([sys.executable, str(ROOT / 'site/scripts/check-e2e.py'), '--browser', board['browser'],
-             '--url', f'http://127.0.0.1:{http_server.server_port}/#/projects/webrtc',
+             '--url', f'http://127.0.0.1:{http_server.server_port}/projects/webrtc',
              '--mac', camera_id, '--password-stdin'],
             stage='Remote WebRTC checks', input=camera_password + '\n', text=True)
         # Release USB before the persistence test resets the board and reads

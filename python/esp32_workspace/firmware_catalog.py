@@ -66,8 +66,8 @@ def load_firmware(root: Path, check_sources: bool = True) -> dict:
         after = entry.get('after_flash', {})
         if not isinstance(after, dict) or set(after) - {'text', 'link'} or any(not isinstance(value, str) for value in after.values()):
             raise ValueError(f'{path.name}: after_flash takes text and link strings')
-        if 'link' in after and not re.match(r'(#/|https://)', after['link']):
-            raise ValueError(f'{path.name}: after_flash.link must start with #/ or https://')
+        if 'link' in after and not re.match(r'(/(?!/)|https://)', after['link']):
+            raise ValueError(f'{path.name}: after_flash.link must be a site path such as /projects/webrtc, or start with https://')
         provisioning = entry.get('provisioning')
         if provisioning is not None:
             page = provisioning.get('page') if isinstance(provisioning, dict) else None

@@ -95,9 +95,11 @@ jobs:
         run: npm test
         working-directory: site
       - uses: actions/configure-pages@v5
+        id: pages
         if: github.event_name != 'pull_request'
+      # Path routes need the Pages base path ('' on the custom domain).
       - name: Build site
-        run: npm run build
+        run: npm run build -- --base "${{ steps.pages.outputs.base_path }}/"
         working-directory: site
       - name: Check bundled firmware
         run: node scripts/check-bundle.mjs dist --all-boards

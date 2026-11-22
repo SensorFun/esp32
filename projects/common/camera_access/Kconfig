@@ -1,3 +1,12 @@
 config CAMERA_REMOTE_ACCESS
     bool "Require a camera password for remote WebRTC viewers"
     default n
+
+config CAMERA_REMOTE_VIEWER_URL
+    string "Remote viewer address (the camera ID is appended)"
+    depends on CAMERA_REMOTE_ACCESS
+    default "https://esp32.sensorfun.net/projects/webrtc/"
+    help
+        After Wi-Fi setup, the setup page links to this address followed by
+        the camera ID (its Wi-Fi MAC), where the viewer enters the camera
+        password to connect from anywhere.

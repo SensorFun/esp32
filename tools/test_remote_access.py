@@ -42,7 +42,7 @@ def main():
             start = time.monotonic()
             update(console, password)
             print(f"Password setup completed ({camera['name']}): {time.monotonic() - start:.1f}s", flush=True)
-            command = [sys.executable, str(ROOT / 'site/scripts/check-e2e.py'), '--browser', args.browser, '--url', 'http://localhost:5173/#/projects/webrtc', '--mac', camera['id'].removeprefix('camera-'), '--password-stdin']
+            command = [sys.executable, str(ROOT / 'site/scripts/check-e2e.py'), '--browser', args.browser, '--url', 'http://localhost:5173/projects/webrtc', '--mac', camera['id'].removeprefix('camera-'), '--password-stdin']
             stop_drain = threading.Event()
             def drain_console():
                 while not stop_drain.is_set():

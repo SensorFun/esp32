@@ -38,7 +38,7 @@ export function UsbProvisioning({ port, project, onClose, onViewer }) {
         const mismatch = firmwareMismatch(project, session.firmware.project);
         if (mismatch) { setError(mismatch); await session.close(); return; }
         frame.current.usbFetch = usbSetupApi(session, {
-          onConnected: url => { viewer = url; onViewer(url); },
+          onConnected: (url, remote) => { viewer = url; onViewer({ local: url, remote }); },
           onFinish: () => {
             // Runs inside the click on the page's camera link, so the new tab is allowed.
             if (viewer) { const tab = window.open(viewer, '_blank'); if (tab) tab.opener = null; }

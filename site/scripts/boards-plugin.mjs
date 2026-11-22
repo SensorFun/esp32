@@ -46,7 +46,7 @@ export function readFirmwareCatalog(workspace, boards = readCatalog(workspace)) 
     if (!Array.isArray(selected) || selected.some(board => !ids.includes(board))) throw Error(`${file}: boards must be "all" or known board IDs`);
     if (entry.requires_frame_grabber === true) selected = selected.filter(board => boards.find(item => item.id === board).grabbers.length);
     const after = entry.after_flash ?? {};
-    if (after.link !== undefined && !/^(#\/|https:\/\/)/.test(after.link)) throw Error(`${file}: after_flash.link must start with #/ or https://`);
+    if (after.link !== undefined && !/^(\/(?!\/)|https:\/\/)/.test(after.link)) throw Error(`${file}: after_flash.link must be a site path such as /projects/webrtc, or start with https://`);
     let provisioning = null;
     if (entry.provisioning !== undefined) {
       const page = entry.provisioning?.page;

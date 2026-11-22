@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { createProof, deriveCameraAccess, normalizeMac, verifyServer } from './access.mjs';
 import { Signaling } from './signaling.mjs';
+import { base, currentRoute } from '../../routes.mjs';
 import { stunOnlyServers } from './ice.mjs';
 import { Icon } from '../../components/Icon';
 import '../../../../projects/common/camera_ui/settings.js';
@@ -14,16 +15,21 @@ function savedCamera() {
     return value ? formatMac(decodeURIComponent(value.slice(cameraCookie.length + 1))) : '';
   } catch { return ''; }
 }
+// The camera from a link such as /projects/webrtc/A1B2C3D4E5F6 (shown after Wi-Fi setup).
+function linkedCamera() {
+  const match = currentRoute().match(/^\/projects\/webrtc\/([^/]+)\/?$/);
+  try { return match ? formatMac(decodeURIComponent(match[1])) : ''; } catch { return ''; }
+}
 function rememberCamera(value) {
   try {
     const mac = value.trim() ? formatMac(value) : '';
-    const path = new URL('.', window.location.href).pathname;
+    const path = base;  // Site-wide, as when every page lived at the base with a #route.
     document.cookie = `${cameraCookie}=${encodeURIComponent(mac)}; Path=${path}; Max-Age=${mac ? 31536000 : 0}; SameSite=Lax${window.location.protocol === 'https:' ? '; Secure' : ''}`;
   } catch { /* Invalid input or blocked cookies must not prevent camera access. */ }
 }
 
 export function RemoteCamera({ onSessionState }) {
-  const [camera, setCamera] = useState(savedCamera);
+  const [camera, setCamera] = useState(() => linkedCamera() || savedCamera());
   useEffect(() => { rememberCamera(camera); }, [camera]);
   const [password, setPassword] = useState('');
   const [status, setStatus] = useState('');

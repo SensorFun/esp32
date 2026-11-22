@@ -9,11 +9,13 @@ const action = process.argv[2];
 if (!['build', 'dev', 'preview'].includes(action)) throw Error('Choose build, dev, or preview');
 const { values } = parseArgs({ args: process.argv.slice(3), options: {
   outDir: { type: 'string' },
+  base: { type: 'string' },
   'firmware-dir': { type: 'string' },
 } });
 const firmwareDir = values['firmware-dir'];
 if (firmwareDir !== undefined && action !== 'dev') throw Error('--firmware-dir is only available with npm run dev');
-if (action === 'build') await build(values.outDir ? { build: { outDir: values.outDir } } : {});
+if (values.base !== undefined && !/^\/([\w.-]+\/)*$/.test(values.base)) throw Error('--base must be a path such as / or /folder/');
+if (action === 'build') await build({ ...(values.base ? { base: values.base } : {}), ...(values.outDir ? { build: { outDir: values.outDir } } : {}) });
 else if (action === 'dev') {
   const plugins = [];
   if (firmwareDir !== undefined) {

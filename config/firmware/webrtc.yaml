@@ -11,4 +11,4 @@ provisioning:
   page: projects/common/provisioning/index.html
 after_flash:
   text: Set up Wi-Fi from the board's CAM_<MAC> setup network, then open the camera in WebRTC.
-  link: '#/projects/webrtc'
+  link: /projects/webrtc

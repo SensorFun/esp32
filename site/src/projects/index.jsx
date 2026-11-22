@@ -1,15 +1,8 @@
 import { WebRTCProject } from './webrtc/WebRTCProject';
 import { FlasherProject } from './flasher/FlasherProject';
+import { projects as projectData, tools as toolData } from './catalog.mjs';
 
-// Each project owns its layout and styles. Add new projects here.
-export const projects = [{
-  id: 'webrtc', name: 'WebRTC', category: 'Connected cameras', icon: 'camera',
-  description: 'A dedicated workspace for real-time cameras, device controls, and encrypted connections.',
-  component: WebRTCProject,
-}];
-
-export const tools = [{
-  id: 'flasher', name: 'Flasher', category: 'Tools', icon: 'chip',
-  description: 'Flash firmware you built to an ESP32 board over USB, right from the browser.',
-  component: FlasherProject,
-}];
+// Each project owns its layout and styles. Add new projects to catalog.mjs and here.
+const components = { webrtc: WebRTCProject, flasher: FlasherProject };
+export const projects = projectData.map(item => ({ ...item, component: components[item.id] }));
+export const tools = toolData.map(item => ({ ...item, component: components[item.id] }));

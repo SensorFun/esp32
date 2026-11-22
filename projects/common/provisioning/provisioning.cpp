@@ -131,6 +131,15 @@ esp_err_t page(httpd_req_t *request) {
     return httpd_resp_send(request, reinterpret_cast<const char *>(html_start), html_end - html_start - 1);
 }
 
+#if CONFIG_CAMERA_REMOTE_ACCESS
+// The remote viewer address for this camera, e.g. <viewer>/A1B2C3D4E5F6.
+std::string remote_url() {
+    char camera[13]{};
+    if (camera_access::mac_room(camera, sizeof(camera)) != ESP_OK) return "";
+    return std::string(CONFIG_CAMERA_REMOTE_VIEWER_URL) + camera;
+}
+#endif
+
 // Lists nearby networks as a JSON array. The setup page and USB setup share it.
 esp_err_t scan_networks(std::string &json) {
     wifi_scan_config_t config{};
@@ -191,6 +200,7 @@ esp_err_t status(httpd_req_t *request) {
         std::string body = "{\"state\":\"connected\",\"ip\":" + provisioning::json_quote(address);
 #if CONFIG_CAMERA_REMOTE_ACCESS
         body += ",\"local_url\":" + provisioning::json_quote(std::string(secure_request(request) ? "https://" : "http://") + address + "/");
+        if (const std::string remote = remote_url(); !remote.empty()) body += ",\"remote_url\":" + provisioning::json_quote(remote);
 #endif
         body += "}";
         return json_response(request, "200 OK", body.c_str());
@@ -517,6 +527,9 @@ extern "C" void provisioning_usb_command(const char *command) {
             char address[16]{};
             std::snprintf(address, sizeof(address), IPSTR, IP2STR(&ip.ip));
             body += ",\"ip\":\"" + std::string(address) + "\"";
+#if CONFIG_CAMERA_REMOTE_ACCESS
+            if (const std::string remote = remote_url(); !remote.empty()) body += ",\"remote_url\":" + provisioning::json_quote(remote);
+#endif
         }
         body += "}\n";
         std::fputs(body.c_str(), stdout);

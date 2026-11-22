@@ -9,7 +9,8 @@ setup popup that opens afterwards, the way a first-time user would.
 3. The "Provision WebRTC camera" popup opens by itself and shows the firmware's
    own setup page. Choose the network, enter the Wi-Fi and camera passwords,
    and wait for "Connected".
-4. Check the reported local viewer answers over HTTPS, and that reopening the
+4. Check the page links the remote viewer for this camera's ID, the
+   reported local viewer answers over HTTPS, and that reopening the
    popup no longer asks for the camera password.
 5. Try a network that does not exist and check the camera returns to the
    saved one.
@@ -224,7 +225,7 @@ def test_browser_flash_then_usb_provision(board, wifi_credentials):
             browser = playwright.chromium.launch(executable_path=board['browser'], args=['--no-sandbox'])
             page = browser.new_page(viewport={'width': 390, 'height': 900})
             bridge.attach(page)
-            page.goto(site + '#/tools/flasher?project=webrtc')
+            page.goto(site + 'tools/flasher?project=webrtc')
 
             print('Flashing from the browser (settings cleared)…', flush=True)
             radio = page.locator(f'input[name=board][value="{board_id}"]')
@@ -278,6 +279,9 @@ def test_browser_flash_then_usb_provision(board, wifi_credentials):
             link = setup.locator('#local-viewer-link')
             expect(link).to_have_attribute('href', re.compile(r'^https://[\d.]+/$'))
             viewer = link.get_attribute('href')
+            remote = setup.locator('#remote-viewer-link')
+            expect(remote).to_have_attribute('href', re.compile(r'^https://esp32\.sensorfun\.net/projects/webrtc/[0-9A-F]{12}$'))
+            expect(page.get_by_role('link', name=remote.get_attribute('href'))).to_be_visible()
             expect(page.get_by_role('link', name=viewer)).to_be_visible()
             assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
             print('Camera joined Wi-Fi; checking the local viewer…', flush=True)

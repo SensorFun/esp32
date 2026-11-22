@@ -55,12 +55,12 @@ test('the firmware catalog resolves boards like the Python build list', () => {
   writeFileSync(path.join(root, 'config/boards/maker.yaml'),
     'board_a:\n  name: Board A\n  target: esp32s3\n  supported_frame_grabber: [ov]\nboard_b:\n  name: Board B\n  target: esp32\n');
   writeFileSync(path.join(root, 'config/firmware/webrtc.yaml'),
-    'name: WebRTC\ndescription: Camera firmware\nboards: all\nrequires_frame_grabber: true\nafter_flash:\n  text: Open it.\n  link: "#/projects/webrtc"\n');
+    'name: WebRTC\ndescription: Camera firmware\nboards: all\nrequires_frame_grabber: true\nafter_flash:\n  text: Open it.\n  link: /projects/webrtc\n');
   writeFileSync(path.join(root, 'config/firmware/blink.yaml'), 'name: Blink\ndescription: Blinks\nboards: [board_b]\n');
   const firmwares = readFirmwareCatalog(root);
   assert.deepEqual(firmwares.map(({ id, boards, afterFlash }) => ({ id, boards, afterFlash })), [
     { id: 'blink', boards: ['board_b'], afterFlash: { text: '', link: '' } },
-    { id: 'webrtc', boards: ['board_a'], afterFlash: { text: 'Open it.', link: '#/projects/webrtc' } },
+    { id: 'webrtc', boards: ['board_a'], afterFlash: { text: 'Open it.', link: '/projects/webrtc' } },
   ]);
   writeFileSync(path.join(root, 'config/firmware/blink.yaml'), 'name: Blink\ndescription: Blinks\nboards: [missing]\n');
   assert.throws(() => readFirmwareCatalog(root), /known board IDs/);

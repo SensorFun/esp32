@@ -49,16 +49,20 @@ builds `site/dist`, and publishes that directory to GitHub Pages on changes to
 The signaling endpoint is built in; no repository signaling URL variable or
 secret is required.
 
-Routes use the URL hash, so refreshing or sharing a URL works on static hosting
-without server rewrite rules. Asset URLs are relative, supporting both
-repository subpaths and custom-domain roots:
+Routes are plain paths. The build writes a copy of `index.html` as
+`<route>.html` for every route in `src/projects/catalog.mjs` (GitHub Pages
+serves `projects/webrtc.html` at `/projects/webrtc`), plus `404.html`, so
+refreshing or sharing a URL works on static hosting without rewrite rules. Assets use absolute URLs
+from the site root; CI passes the GitHub Pages base path with
+`npm run build -- --base /folder/` when the site is served from a subfolder.
 
-- `/#/` — ESP32 project list
-- `/#/projects/webrtc` — WebRTC camera workspace
-- `/#/tools/flasher` — browser firmware flasher (`?project=<id>` selects a project)
+- `/` — ESP32 project list
+- `/projects/webrtc` — WebRTC camera workspace
+- `/tools/flasher` — browser firmware flasher (`?project=<id>` selects a project)
 
-Other hashes show a page-not-found screen with links to the project list and to
-SensorFun.
+Other paths show a page-not-found screen with links to the project list and to
+SensorFun. To add a project,
+add it to `src/projects/catalog.mjs` and its component to `src/projects/index.jsx`.
 
 ## Add a project
 
@@ -107,10 +111,10 @@ encrypted WebRTC.
 
 ## Flasher
 
-`/#/tools/flasher` writes firmware to a board over USB entirely in the
+`/tools/flasher` writes firmware to a board over USB entirely in the
 browser, using Web Serial and Espressif's [esptool-js](https://github.com/espressif/esptool-js).
 It needs Chrome or Edge on a computer, over HTTPS or localhost; other browsers
-see an explanation instead. The older `/#/projects/flasher` address still works.
+see an explanation instead.
 
 What it offers comes from two catalogs, read at build time by
 `scripts/boards-plugin.mjs`, so adding an entry needs no site changes:
@@ -120,7 +124,7 @@ What it offers comes from two catalogs, read at build time by
 - `config/boards/*.yaml`: each board's `name` and `image`.
 
 Packages come from `build/firmware/<project>/<board>/`, produced by
-`tools/firmware_artifacts.py` locally and in CI. `#/tools/flasher?project=<id>`
+`tools/firmware_artifacts.py` locally and in CI. `/tools/flasher?project=<id>`
 opens one project directly, so a project page can link to its firmware.
 
 1. **Firmware**: pick a project under **Firmware source**, then its board
@@ -183,7 +187,7 @@ python3 tools/firmware_artifacts.py --ci             # exactly as CI: fresh buil
 python3 tools/firmware_artifacts.py                  # reuse your build/<project>/<board> folders
 python3 tools/firmware_artifacts.py --project webrtc --board esp32s3n16r8_goouuu_cam
 python3 tools/firmware_artifacts.py --package-only   # package existing builds without building
-cd site && npm run dev                               # http://127.0.0.1:5173/#/tools/flasher
+cd site && npm run dev                               # http://127.0.0.1:5173/tools/flasher
 npm run build && node scripts/check-bundle.mjs dist --all-boards   # CI's bundle check
 ```
 

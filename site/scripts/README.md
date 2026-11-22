@@ -42,7 +42,7 @@ production build can be exercised through SensorFun:
 ```sh
 python3 site/scripts/check-e2e.py \
   --browser /path/to/chromium \
-  --url 'http://localhost:5173/#/projects/webrtc' \
+  --url 'http://localhost:5173/projects/webrtc' \
   --mac '<camera-mac>'
 ```
 

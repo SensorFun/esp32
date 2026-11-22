@@ -48,7 +48,7 @@ with sync_playwright() as p:
         expect(page.get_by_role('heading', name='ESP32 projects', exact=True)).to_be_visible()
         page.go_back()
         expect(page.get_by_label('Camera MAC address', exact=True)).to_be_visible()
-        page.goto(args.url.split('#')[0] + '#/missing')
+        page.goto(urljoin(args.url.split('#')[0], 'missing'))
         expect(page.get_by_role('heading', name='Page not found', exact=True)).to_be_visible()
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         page.get_by_role('link', name='ESP32 projects', exact=True).click()
@@ -115,7 +115,7 @@ with sync_playwright() as p:
       window.allowedPorts = () => ports.map(port => port.getInfo().usbVendorId);
       Object.defineProperty(window, 'showDirectoryPicker', { value: undefined });
     })();'''
-    flasher_url = args.url.split('#')[0] + '#/tools/flasher'
+    flasher_url = urljoin(args.url.split('#')[0], 'tools/flasher')
     for width in (320, 390, 768, 1440):
         context = browser.new_context(viewport={'width': width, 'height': 1000})
         context.add_init_script(fake_serial)
@@ -265,7 +265,7 @@ with sync_playwright() as p:
                 polls++;
                 const project = 'testBoardProject' in window ? window.testBoardProject : 'webrtc';
                 reply({status:true,project,result:polls < 3 ? 'pending' : failed ? 'restored' : 'saved',
-                       ...(polls >= 3 ? {ip:'192.0.2.1'} : {})});
+                       ...(polls >= 3 ? {ip:'192.0.2.1',remote_url:'https://esp32.sensorfun.net/projects/webrtc/A1B2C3D4E5F6'} : {})});
               } else if (command === 'sensorfan-usb wifi ssid=Test%2Bnetwork&password=&camera_password=' + 'x'.repeat(12)) {
                 reply({result:'pending'});
               } else if (command === 'sensorfan-usb wifi ssid=Missing&password=&camera_password=' + 'x'.repeat(12)) {
@@ -406,6 +406,11 @@ with sync_playwright() as p:
             setup.get_by_role('button', name='Save and connect').click()
             expect(setup.locator('#status')).to_have_text('Connected. Your settings are saved.')
             expect(setup.locator('#local-viewer-link')).to_have_attribute('href', 'https://192.0.2.1/')
+            remote = setup.locator('#remote-viewer-link')
+            expect(remote).to_have_attribute('href', 'https://esp32.sensorfun.net/projects/webrtc/A1B2C3D4E5F6')
+            expect(remote).to_have_attribute('target', '_blank')  # Never replaces the setup page.
+            assert remote.bounding_box()['height'] >= 44
+            expect(page.get_by_role('link', name='https://esp32.sensorfun.net/projects/webrtc/A1B2C3D4E5F6')).to_be_visible()
             expect(page.get_by_role('link', name='https://192.0.2.1/')).to_be_visible()
             setup.locator('#local-viewer-link').click()
             expect(popup).to_be_hidden()
@@ -602,7 +607,12 @@ with sync_playwright() as p:
         context = browser.new_context(viewport={'width': width, 'height': 900}, accept_downloads=True)
         page = context.new_page()
         page.on('pageerror', lambda error: errors.append(str(error)))
-        page.goto(args.url.split('#')[0] + '#/projects/webrtc')
+        # The remote link from Wi-Fi setup fills in the camera; only the password is left.
+        page.goto(urljoin(args.url.split('#')[0], 'projects/webrtc/a1b2c3d4e5f6'))
+        expect(page.get_by_label('Camera MAC address', exact=True)).to_have_value('A1:B2:C3:D4:E5:F6')
+        page.get_by_label('Camera password', exact=True).fill('x' * 12)
+        expect(page.get_by_role('button', name='Connect camera', exact=True)).to_be_enabled()
+        page.goto(urljoin(args.url.split('#')[0], 'projects/webrtc'))
         expect(page.get_by_role('heading', name='Remote camera', exact=True)).to_be_visible()
         check_motion(page, width)
         page.route('https://camera.test/**', serve_viewer)

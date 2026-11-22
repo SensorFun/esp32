@@ -26,11 +26,14 @@
 </form>
 <p id="status" role="status" aria-live="polite"></p>
 <section id="local-viewer" hidden><h2>Your local camera</h2><p>Tap the address to open your camera. If your device stays on setup Wi-Fi, switch back to the Wi-Fi you just selected and try the link again.</p><a id="local-viewer-link" style="display:block;min-height:44px;overflow-wrap:anywhere"></a><p><small>Keep this address for local viewing. Your browser may show a device certificate notice.</small></p></section>
+<section id="remote-viewer" hidden><h2>Watch from anywhere</h2><p>Open this address on any device and enter the camera password you chose. The camera address is filled in for you. If it does not open, switch back to your normal Wi-Fi first.</p><a id="remote-viewer-link" target="_blank" rel="noopener" style="display:block;min-height:44px;overflow-wrap:anywhere"></a></section>
 <script>
 const form=document.querySelector('#setup'),ssid=document.querySelector('#ssid'),manual=document.querySelector('#manual-ssid'),manualNetwork=document.querySelector('#manual-network'),password=document.querySelector('#password'),refresh=document.querySelector('#refresh'),save=document.querySelector('#save'),status=document.querySelector('#status');
 const cameraAccess=document.querySelector('#camera-access'),cameraPassword=document.querySelector('#camera-password');
 const localViewer=document.querySelector('#local-viewer'),localViewerLink=document.querySelector('#local-viewer-link');
-function showLocalViewer(data){localViewer.hidden=true;if(typeof data.ip!=='string'||!data.local_url)return;const parts=data.ip.split('.');if(parts.length!==4||parts.some(part=>!/^\d{1,3}$/.test(part)||Number(part)>255))return;if(![`http://${data.ip}/`,`https://${data.ip}/`].includes(data.local_url))return;localViewerLink.href=data.local_url;localViewerLink.textContent=data.local_url;localViewer.hidden=false;}
+const remoteViewer=document.querySelector('#remote-viewer'),remoteViewerLink=document.querySelector('#remote-viewer-link');
+function showRemoteViewer(data){remoteViewer.hidden=true;if(typeof data.remote_url!=='string'||!/^https:\/\/[^\s/]+\/\S*[0-9A-F]{12}$/.test(data.remote_url))return;remoteViewerLink.href=data.remote_url;remoteViewerLink.textContent=data.remote_url;remoteViewer.hidden=false;}
+function showLocalViewer(data){showRemoteViewer(data);localViewer.hidden=true;if(typeof data.ip!=='string'||!data.local_url)return;const parts=data.ip.split('.');if(parts.length!==4||parts.some(part=>!/^\d{1,3}$/.test(part)||Number(part)>255))return;if(![`http://${data.ip}/`,`https://${data.ip}/`].includes(data.local_url))return;localViewerLink.href=data.local_url;localViewerLink.textContent=data.local_url;localViewer.hidden=false;}
 let openingCamera=false;
 localViewerLink.addEventListener('click',async event=>{
     if(event.ctrlKey||event.metaKey||event.shiftKey||event.altKey)return;

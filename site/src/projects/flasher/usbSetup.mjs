@@ -101,7 +101,7 @@ const json = (status, body) => new Response(JSON.stringify(body), { status, head
 
 // Answers the setup page's requests (see projects/common/provisioning/index.html)
 // with the same JSON the setup access point returns. onConnected receives the
-// local viewer address; onFinish runs when the page's "open camera" link is used.
+// local viewer address and the remote viewer address (if any); onFinish runs when the page's "open camera" link is used.
 export function usbSetupApi(session, { onConnected, onFinish }) {
   return async function request(path, options = {}) {
     const method = (options.method || 'GET').toUpperCase();
@@ -136,8 +136,9 @@ export function usbSetupApi(session, { onConnected, onFinish }) {
       if (reply.result === 'pending' || (reply.result === 'saved' && !ipv4(reply.ip))) return json(200, { state: 'connecting' });
       if (reply.result === 'saved') {
         const url = `https://${reply.ip}/`;
-        onConnected?.(url);
-        return json(200, { state: 'connected', ip: reply.ip, local_url: url });
+        const remote = typeof reply.remote_url === 'string' && /^https:\/\/[^\s/]+\/\S*[0-9A-F]{12}$/.test(reply.remote_url) ? reply.remote_url : '';
+        onConnected?.(url, remote);
+        return json(200, { state: 'connected', ip: reply.ip, local_url: url, ...(remote ? { remote_url: remote } : {}) });
       }
       if (reply.result === 'restored') return json(409, { error: 'Could not join the new Wi-Fi network. The camera reconnected to its saved network.' });
       if (reply.result === 'storage_error') return json(500, { error: 'Could not save Wi-Fi settings; try again' });
