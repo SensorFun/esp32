@@ -216,12 +216,14 @@ function defineElements() {
       const description = this.description;
       this.shadowRoot.innerHTML = `<style>${STYLE}
         fieldset{border:1px solid #2a352c;border-radius:8px;padding:18px;margin:0 0 18px;min-width:0}legend{padding:0 6px;color:#c5ed9f;font-weight:600}
-        .fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,250px),1fr));gap:16px}
-        label{display:flex;flex-direction:column;gap:6px;min-width:0}label small{color:#8fa585;font-size:12px;line-height:1.4}label small.limit{color:#c9b47c}
+        .fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,20rem),1fr));gap:16px}
+        label{min-width:0}label small{color:#8fa585;font-size:12px;line-height:1.4}label small.limit{color:#c9b47c}
         .with-unit{display:flex;align-items:center;gap:8px}.with-unit span{color:#9fb293;white-space:nowrap}
-        label.counter{display:grid;grid-template-columns:minmax(0,1fr) auto;column-gap:12px;row-gap:4px;align-items:center}label.counter>small{grid-column:1/-1}label.counter .title{overflow-wrap:anywhere}
+        label.field-row{display:grid;grid-template-columns:minmax(0,1fr) auto;column-gap:12px;row-gap:4px;align-items:center;align-content:start}
+        label.field-row>small{grid-column:1/-1}label.field-row .title{overflow-wrap:anywhere}
+        label.select-row{grid-template-columns:auto minmax(0,1fr)}
         label.counter input{width:88px;flex:none;text-align:right;font-variant-numeric:tabular-nums}label.counter .with-unit span{min-width:4.5ch}
-        label.toggle{flex-direction:row;flex-wrap:wrap;align-items:center;gap:10px;min-height:44px}label.toggle input{width:24px;height:24px;min-height:0;margin:0;accent-color:#00d4cb;flex:none}
+        label.toggle{display:flex;flex-wrap:wrap;align-items:center;gap:10px;min-height:44px}label.toggle input{width:24px;height:24px;min-height:0;margin:0;accent-color:#00d4cb;flex:none}
         label.toggle small{flex-basis:100%;padding-left:34px}.live{margin-bottom:6px}.card{margin:0 0 18px}
         :host([group=recording]){margin-bottom:18px}.groups.fields{margin-bottom:18px}
         #recording-warning{color:#ffd58a;margin:0}#recording-warning:not(:empty){background:#3a2a12;border:1px solid #8a6421;border-radius:6px;padding:10px 12px;margin-bottom:12px}
@@ -252,16 +254,17 @@ function defineElements() {
           const text = document.createElement('span'); text.className = 'title'; text.textContent = field.label;
           label.append(text);
           if (field.type === 'select') {
+            label.className = 'field-row select-row';
             control = document.createElement('select');
             field.options.forEach((option, index) => { const item = document.createElement('option'); item.value = String(index); item.textContent = field.name === 'method' && option.value === 'optical_flow' ? 'Optical flow' : option.label; control.append(item); });
             control.value = String(Math.max(0, field.options.findIndex(option => option.value === value)));
           } else {
             // Values are one to four characters: keep them on the label's line.
-            label.className = 'counter';
+            label.className = 'field-row counter';
             control = document.createElement('input'); control.type = 'number'; control.inputMode = 'decimal';
             control.min = field.min; control.max = field.max; control.step = field.step; control.value = value; control.required = true;
           }
-          if (field.unit) { const row = document.createElement('span'); row.className = 'with-unit'; const unit = document.createElement('span'); unit.textContent = field.unit; row.append(control, unit); label.append(row); } else label.append(control);
+          if (control.type === 'number' && field.unit) { const row = document.createElement('span'); row.className = 'with-unit'; const unit = document.createElement('span'); unit.textContent = field.unit; row.append(control, unit); label.append(row); } else label.append(control);
         }
         control.name = field.name;
         control.setAttribute('aria-label', field.label);

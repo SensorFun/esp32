@@ -377,6 +377,22 @@ with sync_playwright() as p:
         flow = panel.get_by_label('Minimum speed', exact=True)
         expect(flow).to_have_value('2.5')
         expect(panel.get_by_label('Detect motion', exact=True)).to_be_checked()
+        columns = panel.locator('.fields').evaluate(
+            "grid => getComputedStyle(grid).gridTemplateColumns.split(' ').length"
+        )
+        if width <= 390:
+            assert columns == 1
+        if width == 1440:
+            assert columns > 1
+        for name in ('Method', 'Cell size'):
+            dropdown = panel.get_by_role('combobox', name=name, exact=True)
+            label = dropdown.locator('..').locator('.title')
+            control_box, label_box = dropdown.bounding_box(), label.bounding_box()
+            assert control_box['x'] >= label_box['x'] + label_box['width']
+            assert abs(control_box['y'] + control_box['height'] / 2 - label_box['y'] - label_box['height'] / 2) <= 1
+            assert control_box['height'] >= 44 and control_box['x'] + control_box['width'] <= width
+            if width <= 600:
+                assert dropdown.evaluate('(select) => parseFloat(getComputedStyle(select).fontSize) >= 16')
         if width <= 600:
             assert flow.evaluate('(input)=>parseFloat(getComputedStyle(input).fontSize)>=16')
         assert panel.locator('label.toggle').first.bounding_box()['height'] >= 44
