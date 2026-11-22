@@ -87,9 +87,9 @@ status; failures return errors. Both viewers use the same settings component at
 writing flash. **Save** validates and stores the complete configuration in the
 board's NVS. Save and Reset buttons appear above and below the controls. Resolution, light
 timing, and supported numeric controls are restored after reboot. **Reset to
-Default** applies and saves the firmware's YAML/driver defaults. Invalid stored
-configurations fall back to defaults. Writes occur only on Save or Reset, not
-on keystrokes or periodic status refreshes. Legacy `set` commands remain volatile.
+Default** applies the firmware's YAML/driver defaults to the running camera.
+Select **Save** to store those defaults in NVS. A restart before saving loads the
+last saved settings. Invalid stored configurations fall back to defaults.
 
 `timing_profile` offers **High light**, **Mid light (balanced)**, and **Low light**
 on both cameras. High restores the driver's resolution-specific native timing;

@@ -199,7 +199,7 @@ static bool validate_values(const cJSON *values) {
     }
     return true;
 }
-// Writes only what differs from the running sensor, so Save and Reset do not
+// Writes only what differs from the running sensor, so Save does not
 // disturb the stream with redundant register or clock changes. The timing
 // baseline stays valid: it is re-read after every driver reset of CLKRC.
 static bool apply_values(const cJSON *values) {
@@ -297,6 +297,14 @@ cJSON *camera_settings() {
     }
     return reply;
 }
+static esp_err_t restart_camera_at_defaults() {
+    camera_frames_pause();
+    esp_err_t err = esp_camera_deinit();
+    if (err == ESP_OK) err = camera_start(false);
+    camera_frames_resume();
+    return err;
+}
+
 esp_err_t camera_recover() {
     constexpr size_t count = sizeof(controls) / sizeof(controls[0]);
     int values[count]{};
@@ -308,10 +316,7 @@ esp_err_t camera_recover() {
         enabled[i] = supported(controls[i]);
         if (enabled[i]) values[i] = controls[i].get(sensor);
     }
-    camera_frames_pause();
-    esp_err_t err = esp_camera_deinit();
-    if (err == ESP_OK) err = camera_start(false);
-    camera_frames_resume();
+    const esp_err_t err = restart_camera_at_defaults();
     if (err != ESP_OK) return err;
     if (sensor->id.PID != expected_sensor) return ESP_ERR_INVALID_STATE;
     if (!set_resolution(size)) return ESP_FAIL;
@@ -328,18 +333,26 @@ cJSON *camera_command(const cJSON *request) {
     const auto *op = cJSON_GetObjectItemCaseSensitive(request, "op");
     if (cJSON_IsString(op) && !strcmp(op->valuestring, "get")) return camera_settings();
     if (cJSON_IsString(op) && (!strcmp(op->valuestring, "apply") || !strcmp(op->valuestring, "reset_defaults"))) {
-        cJSON *defaults = !strcmp(op->valuestring, "reset_defaults") ? cJSON_Parse(factory_settings.c_str()) : nullptr;
-        const cJSON *values = defaults ? defaults : cJSON_GetObjectItemCaseSensitive(request, "settings");
+        const bool reset = !strcmp(op->valuestring, "reset_defaults");
+        cJSON *defaults = reset ? cJSON_Parse(factory_settings.c_str()) : nullptr;
+        const cJSON *values = reset ? defaults : cJSON_GetObjectItemCaseSensitive(request, "settings");
         const char *error = "Invalid camera settings";
         if (validate_values(values)) {
             cJSON *previous = settings_values();
-            if (apply_values(values)) {
-                if (store_values(values) == ESP_OK) {
+            // Driver status tracks requested values and cannot describe all
+            // runtime sensor registers. Reset via the same init path as boot.
+            const bool applied = reset ? restart_camera_at_defaults() == ESP_OK : apply_values(values);
+            if (applied) {
+                if (reset || store_values(values) == ESP_OK) {
                     cJSON_Delete(previous); cJSON_Delete(defaults);
-                    cJSON *reply = camera_settings(); cJSON_AddBoolToObject(reply, "saved", true); return reply;
+                    cJSON *reply = camera_settings();
+                    cJSON_AddBoolToObject(reply, reset ? "reset" : "saved", true);
+                    return reply;
                 }
                 error = "Could not save settings; previous settings restored";
             } else error = "Sensor rejected settings; previous settings restored";
+            // A failed reinitialization can leave the sensor handle invalid.
+            if (reset && !applied) ESP_ERROR_CHECK(restart_camera_at_defaults());
             ESP_ERROR_CHECK(apply_values(previous) ? ESP_OK : ESP_FAIL);
             cJSON_Delete(previous);
         }

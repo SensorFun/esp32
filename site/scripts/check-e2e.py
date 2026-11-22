@@ -126,7 +126,7 @@ window.RTCPeerConnection=class extends NativePeer{
         assert not any('192.168.' in url or '/api/session' in url for url in requests), requests
         print('PASS: direct public WebSocket signaling, live JPEG, supported camera controls, no board HTTP requests; STUN only, no relay candidates')
         page.get_by_role('button', name='Reset to Default', exact=True).last.click()
-        expect(page.get_by_role('status').filter(has_text='Settings saved on camera.')).to_be_visible(timeout=20000)
+        expect(page.get_by_role('status').filter(has_text='Defaults applied.')).to_be_visible(timeout=20000)
         reset_settings = page.locator('.remote-settings').evaluate('(panel)=>panel.value')
         if reset_settings['resolution'] != original_settings['resolution']:
             page.get_by_role('combobox', name='Resolution', exact=True).select_option(str(original_settings['resolution']))

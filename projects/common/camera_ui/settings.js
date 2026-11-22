@@ -3,9 +3,10 @@ class CameraSettings extends HTMLElement {
   constructor() { super(); this.attachShadow({ mode: 'open' }); }
   set settings(value) {
     this.value = value;
-    if (this.dirty && !value.saved) return;
+    if (this.dirty && !value.saved && !value.reset) return;
     this.dirty = false; this.pending = false;
-    this.render(value.saved ? 'Settings saved on camera.' : 'Changes take effect immediately. Select Save to keep them after reboot.');
+    this.render(value.reset ? 'Defaults applied. Select Save to keep them after reboot.' :
+      value.saved ? 'Settings saved on camera.' : 'Changes take effect immediately. Select Save to keep them after reboot.');
   }
   set error(message) {
     this.shadowRoot.querySelectorAll('button').forEach(button => { button.disabled = false; });
@@ -20,6 +21,7 @@ class CameraSettings extends HTMLElement {
       section{background:#17201a;border:1px solid #2a352c;border-radius:8px;padding:24px;min-width:0}
       h2{font-size:20px;font-weight:500;margin:0 0 20px}.fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));gap:16px}
       label{display:flex;flex-direction:column;gap:7px;min-width:0}label.counter{flex-direction:row;align-items:center;justify-content:space-between;gap:12px;align-self:end}label.counter span{min-width:0;overflow-wrap:anywhere}label.counter input{width:88px;flex:none;text-align:right;font-variant-numeric:tabular-nums}input,select,button{font:inherit;min-height:44px;border-radius:6px;padding:10px;border:1px solid #415335}
+      label.select-row{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:12px}
       input,select{background:#0d180e;color:#d8e8cb;width:100%;min-width:0}input:disabled{opacity:.45}
       .actions{display:flex;flex-wrap:wrap;gap:12px;margin-top:24px}.actions:first-child{margin:0 0 24px}button{cursor:pointer;background:#00d4cb;color:#07302c;font-weight:600}button:last-child{background:transparent;color:#d8e8cb}button:disabled{opacity:.5;cursor:wait}
       [role=status]{margin:16px 0 0;line-height:1.6;color:#b7c9ab}input:focus-visible,select:focus-visible,button:focus-visible{outline:2px solid #00d4cb;outline-offset:3px}
@@ -32,6 +34,7 @@ class CameraSettings extends HTMLElement {
       const text = document.createElement('span'); text.textContent = title;
       // Number fields hold one to four digits: keep them on the label's line.
       if (control.type === 'number') label.className = 'counter';
+      if (control.tagName === 'SELECT') label.className = 'select-row';
       control.name = name; control.setAttribute('aria-label', title);
       label.append(text, control); fields.append(label);
       control.addEventListener('input', () => {
@@ -61,7 +64,7 @@ class CameraSettings extends HTMLElement {
       this.pending = true; this.dirty = true;
       this.shadowRoot.querySelectorAll('button').forEach(button => { button.disabled = true; });
       this.shadowRoot.querySelectorAll('input,select').forEach(input => { input.dataset.wasDisabled = String(input.disabled); input.disabled = true; });
-      this.shadowRoot.querySelector('[role=status]').textContent = 'Saving on camera…';
+      this.shadowRoot.querySelector('[role=status]').textContent = detail.op === 'reset_defaults' ? 'Applying defaults…' : 'Saving on camera…';
       this.dispatchEvent(new CustomEvent('camera-command', { detail, bubbles: true, composed: true }));
     };
     this.shadowRoot.querySelector('form').onsubmit = event => {

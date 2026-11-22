@@ -7,7 +7,7 @@ with a disposable random camera password (the same tool and protocol a user
 would use), confirm the board reaches the default public signaling server,
 then drive a real browser against a local static build of the site to
 confirm it streams, that live setting changes reach the camera, and that
-Save ("apply") and Reset to Default persist on the camera. No Wi-Fi
+Save ("apply") persists on the camera while Reset to Default changes only live settings. No Wi-Fi
 credentials are stored on disk; the random camera password lives only in
 this process's memory.
 
@@ -174,7 +174,7 @@ def test_provision_and_stream(board, wifi_credentials, tmp_path):
         print('Testing randomized settings across board restarts…', flush=True)
         run([sys.executable, 'tools/test_camera_settings.py', '--url', local_url,
              '--port', port, '--browser', board['browser'], '--rounds', '3'], stage='Randomized settings persistence checks')
-        print('PASS: fresh flash + provision + streaming + randomized Save/Reset persistence across reboots', flush=True)
+        print('PASS: fresh flash, provisioning, streaming, live reset and saved settings across reboots', flush=True)
     except Exception:
         print('USB diagnostics:', flush=True)
         for line in diagnostics:

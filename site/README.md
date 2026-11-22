@@ -72,9 +72,9 @@ Both viewers offer a sensor-specific Resolution selector: all driver sizes up to
 1600×1200 for OV2640 and 2048×1536 for OV3660, starting at 160×120.
 Both viewers reuse `projects/common/camera_ui/settings.js`. Setting changes take
 effect immediately. Select **Save** to keep them in the camera's nonvolatile
-storage. Saved settings are restored after reboot. **Reset to Default** applies and saves the configured
-sensor defaults, including 320×240 resolution. Unsaved changes are lost on reboot;
-resolution changes retain the other camera controls and light timing profile.
+storage. **Reset to Default** applies the firmware's sensor defaults, including
+320×240 resolution. A reboot loads the last saved settings. Resolution changes
+retain the other camera controls and light timing profile.
 The website remembers the last valid camera MAC in a cookie for one year and
 prefills it on return. Clearing the MAC field removes that cookie. Camera
 passwords and authentication keys are never stored in it.

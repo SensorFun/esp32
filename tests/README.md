@@ -14,7 +14,7 @@ The built-in SensorFun signaling service must be reachable.
 Each configured device gets its own worker. The workers run concurrently through
 firmware build, USB flash, fresh provisioning, public-signaling streaming and
 controls, three HTTPS reboot/reconnect cycles, and three randomized Save/reboot
-rounds plus unsaved-change and Reset-to-Default persistence checks. Operations
+rounds plus reboot checks for unsaved changes, live reset and saved defaults. Operations
 on an individual board remain sequential. A failure on one board does not cancel
 the other board; the launcher exits unsuccessfully if any board fails.
 Each run prints the path to its full log and JUnit report under ignored

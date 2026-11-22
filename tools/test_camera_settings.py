@@ -1,4 +1,4 @@
-"""Capture settings or verify live changes and durable Save/Reset on a USB camera.
+"""Capture settings or verify live changes, live reset and durable saves on a USB camera.
 
 Settings snapshots contain no Wi-Fi credentials, passwords, or camera images.
 """
@@ -153,10 +153,22 @@ with sync_playwright() as p, ExitStack() as serial_handles:
                 print(f'PASS: randomized round {iteration + 1}/{args.rounds}: randomized settings survived reboot', flush=True)
             page.evaluate('window.snapshot=null')
             page.get_by_role('button', name='Reset to Default', exact=True).last.click()
-            wait_js(page, "window.snapshot?.saved===true", timeout=20000)
+            wait_js(page, "window.snapshot?.reset===true && window.snapshot?.saved!==true", timeout=20000)
             defaults = values(page.evaluate('window.snapshot'))
+            page.evaluate("""() => {
+                window.framesAfterReset = 0;
+                document.querySelector('#preview').addEventListener('load', () => window.framesAfterReset++);
+            }""")
+            wait_js(page, 'window.framesAfterReset >= 2', timeout=20000)
             close(page); reboot(); page = connect()
-            assert values(page.evaluate('window.snapshot')) == defaults, 'Defaults did not survive reboot'
+            assert values(page.evaluate('window.snapshot')) == expected, 'Reset overwrote the saved settings'
+            page.get_by_role('button', name='Reset to Default', exact=True).first.click()
+            wait_js(page, "window.snapshot?.reset===true", timeout=20000)
+            assert values(page.evaluate('window.snapshot')) == defaults
+            page.get_by_role('button', name='Save', exact=True).first.click()
+            wait_js(page, "window.snapshot?.saved===true", timeout=20000)
+            close(page); reboot(); page = connect()
+            assert values(page.evaluate('window.snapshot')) == defaults, 'Saved defaults did not survive reboot'
         finally:
             # A failed command can leave the channel unusable. Reboot before
             # cleanup so restoration is independent of the failing session.
@@ -168,5 +180,5 @@ with sync_playwright() as p, ExitStack() as serial_handles:
             close(page); reboot(); page = connect()
             assert values(page.evaluate('window.snapshot')) == original, 'Original settings were not restored'
             close(page)
-        print('PASS: random Save/reboot, unsaved reboot, Reset/reboot, both action rows, mobile panel, original settings restored.')
+        print('PASS: randomized saves, live defaults, reset without saving, saved defaults across reboot, original settings restored.')
     browser.close()
