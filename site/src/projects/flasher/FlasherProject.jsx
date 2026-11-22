@@ -294,7 +294,7 @@ export function FlasherProject() {
       <button type="button" className="button rtc-secondary" disabled={!supported || busy} onClick={selectPort}><Icon name="plus" size={16} />Select USB port</button>
     </section>
 
-    <section className="rtc-panel flasher-step" data-label="Flash & Provision" hidden>
+    <section className="rtc-panel flasher-step" data-label="Flash" hidden>
       <div className="flasher-options">
         <label htmlFor="flash-baud">Speed</label>
         <select id="flash-baud" value={connectionMode === 'manual' ? 115200 : baud} disabled={busy || connectionMode === 'manual'} onChange={event => setBaud(Number(event.target.value))}>{bauds.map(value => <option key={value} value={value}>{value.toLocaleString()} baud</option>)}</select>
@@ -316,8 +316,8 @@ export function FlasherProject() {
       {supported && next?.provisioning && <button type="button" className="button rtc-secondary flasher-provision" disabled={!port || busy} onClick={() => setShowUsb(true)}>Provision</button>}
       {state !== 'idle' && !resetMode && <div className="flasher-progress" data-state={state}><progress max="1" value={progress} aria-label="Flashing progress" /><span>{Math.round(progress * 100)}%</span></div>}
       <p role="status" className="flasher-status" data-testid="flash-status">{status}</p>
-      {viewer && <p className="flasher-viewer">Camera on Wi-Fi: <a href={viewer.local} target="_blank" rel="noreferrer">{viewer.local}</a></p>}
-      {viewer?.remote && <p className="flasher-viewer">Watch from anywhere: <a href={viewer.remote} target="_blank" rel="noreferrer">{viewer.remote}</a></p>}
+      {viewer && <p className="flasher-viewer">View locally: <a href={viewer.local} target="_blank" rel="noreferrer">{viewer.local}</a></p>}
+      {viewer?.remote && <p className="flasher-viewer">View on internet: <a href={viewer.remote} target="_blank" rel="noreferrer">{viewer.remote}</a></p>}
       {state === 'done' && !next?.provisioning && next?.afterFlash.text && <p>{next.afterFlash.text} {next.afterFlash.link && <a href={next.afterFlash.link.startsWith('/') ? sitePath(next.afterFlash.link) : next.afterFlash.link}>Open {next.name}</a>}</p>}
       {log.length > 0 && <details className="flasher-log"><summary>Details</summary><pre>{log.join('\n')}</pre></details>}
       {connectionMode === 'manual' && <p className="flasher-hint">Hold BOOT, tap RESET, then release BOOT before starting. If your ESP32-CAM has no BOOT button, connect GPIO0 to GND before resetting, then remove the connection after the action finishes and reset again.</p>}

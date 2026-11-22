@@ -115,7 +115,7 @@ int main() {
         harness = r'''
 const vm=require('node:vm'),assert=require('node:assert/strict');
 const elements={};
-for(const id of ['setup','ssid','manual-ssid','manual-network','password','camera-access','camera-password','refresh','save','status','local-viewer','local-viewer-link']) {
+for(const id of ['setup','ssid','manual-ssid','manual-network','password','camera-access','camera-password','refresh','save','status','local-viewer','local-viewer-link','remote-viewer','remote-viewer-link']) {
     elements[id]={value:'',disabled:false,textContent:'',children:[],handlers:{},
         addEventListener(name,fn){this.handlers[name]=fn;},
         replaceChildren(){this.children=[];},append(child){this.children.push(child);}};

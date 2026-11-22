@@ -67,7 +67,7 @@
 
 .flasher-source{display:grid;gap:8px;margin:18px 0;font-size:16px}.flasher-source select{min-height:44px;font:inherit;padding:10px;max-width:100%;min-width:0;background:#0d180e;color:#d8e8cb;border:1px solid #415335;border-radius:6px}
 .flasher-provision{margin:8px 0 0 8px}
-.flasher-viewer a{color:#c5ed9f;overflow-wrap:anywhere;display:inline-block;min-height:44px;line-height:44px}
+.flasher-viewer a{color:#c5ed9f;overflow-wrap:anywhere;display:inline-block;min-height:44px;max-width:100%;align-content:center;vertical-align:middle}
 .flasher-provisioning{width:min(480px,calc(100vw - 32px));max-width:none;max-height:calc(100dvh - 32px);padding:0;border:1px solid var(--rtc-line);border-radius:10px;background:var(--rtc-panel);color:#e4eadd;overflow:hidden}
 .flasher-provisioning[open]{display:flex;flex-direction:column}
 .flasher-provisioning::backdrop{background:#000a}

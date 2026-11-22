@@ -137,7 +137,7 @@ def provision_in_browser(url, browser_path, port, ssid, wifi_password, camera_pa
         page.goto(url + 'tools/flasher')
         page.get_by_role('tab', name='USB Port', exact=True).click()
         page.get_by_role('button', name='Select USB port').click()
-        page.get_by_role('tab', name='Flash & Provision', exact=True).click()
+        page.get_by_role('tab', name='Flash', exact=True).click()
         page.get_by_role('button', name='Provision', exact=True).click()
         popup = page.get_by_role('dialog', name='Provision WebRTC camera')
         setup = page.frame_locator('.flasher-provisioning iframe')

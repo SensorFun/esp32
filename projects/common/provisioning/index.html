@@ -5,6 +5,7 @@
 <title>Wi-Fi setup</title>
 <style>
 :root{font:16px system-ui,sans-serif;color:#172535;background:#eef2f6}body{max-width:420px;margin:8vh auto;padding:24px;background:white;border-radius:16px}h1{font-size:1.6rem}label{display:block;margin:20px 0 7px}input,select,button{min-height:44px;font:inherit;box-sizing:border-box;padding:12px;border:1px solid #b7c3cf;border-radius:8px}input,select{width:100%}.row{display:flex;gap:8px}.row select{min-width:0}button{cursor:pointer;background:#174bc4;color:white;border:0}button:disabled{opacity:.55;cursor:wait}#save{width:100%;margin-top:24px}#status{min-height:3em;overflow-wrap:anywhere}small{color:#526173}[hidden]{display:none}
+.viewer-link a{display:inline-block;min-height:44px;max-width:100%;align-content:center;vertical-align:middle;overflow-wrap:anywhere}
 </style>
 <h1>Connect to Wi-Fi</h1>
 <p>Select your Wi-Fi network.</p>
@@ -25,8 +26,8 @@
 <button id="save" type="submit">Save and connect</button>
 </form>
 <p id="status" role="status" aria-live="polite"></p>
-<section id="local-viewer" hidden><h2>Your local camera</h2><p>Tap the address to open your camera. If your device stays on setup Wi-Fi, switch back to the Wi-Fi you just selected and try the link again.</p><a id="local-viewer-link" style="display:block;min-height:44px;overflow-wrap:anywhere"></a><p><small>Keep this address for local viewing. Your browser may show a device certificate notice.</small></p></section>
-<section id="remote-viewer" hidden><h2>Watch from anywhere</h2><p>Open this address on any device and enter the camera password you chose. The camera address is filled in for you. If it does not open, switch back to your normal Wi-Fi first.</p><a id="remote-viewer-link" target="_blank" rel="noopener" style="display:block;min-height:44px;overflow-wrap:anywhere"></a></section>
+<p class="viewer-link" id="local-viewer" hidden>View locally: <a id="local-viewer-link"></a></p>
+<p class="viewer-link" id="remote-viewer" hidden>View on internet: <a id="remote-viewer-link" target="_blank" rel="noopener"></a></p>
 <script>
 const form=document.querySelector('#setup'),ssid=document.querySelector('#ssid'),manual=document.querySelector('#manual-ssid'),manualNetwork=document.querySelector('#manual-network'),password=document.querySelector('#password'),refresh=document.querySelector('#refresh'),save=document.querySelector('#save'),status=document.querySelector('#status');
 const cameraAccess=document.querySelector('#camera-access'),cameraPassword=document.querySelector('#camera-password');

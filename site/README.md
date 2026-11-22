@@ -147,7 +147,7 @@ opens one project directly, so a project page can link to its firmware.
    USB, CP210x, CH340, FTDI, Prolific). Selecting another port replaces it and
    forgets the previous one. A single port allowed on an earlier visit is
    selected again automatically while it is connected.
-3. **Flash & Provision**: choose **Clear settings**, **Flash firmware**, or both. The action
+3. **Flash**: choose **Clear settings**, **Flash firmware**, or both. The action
    button updates to match. Clearing settings alone needs only the USB port.
    Selecting both verifies the chip, clears NVS, then writes and verifies
    the selected firmware. Flashing alone skips the NVS erase. Full flash

@@ -131,14 +131,14 @@ with sync_playwright() as p:
         expect(page.get_by_role('heading', name='Flash firmware', exact=True)).to_be_visible()
         expect(page.get_by_text('This browser cannot flash boards')).to_have_count(0)
         tabs = page.get_by_role('tablist', name='Flasher setup')
-        expect(tabs.get_by_role('tab')).to_have_text(['Firmware', 'USB Port', 'Flash & Provision'])
+        expect(tabs.get_by_role('tab')).to_have_text(['Firmware', 'USB Port', 'Flash'])
         expect(page.get_by_role('tabpanel')).to_have_count(1)
         boxes = [tab.bounding_box() for tab in tabs.get_by_role('tab').all()]
         assert all(box['y'] == boxes[0]['y'] and box['height'] >= 44 for box in boxes)
         assert boxes[0]['x'] < boxes[1]['x'] < boxes[2]['x']
         tabs.get_by_role('tab', name='Firmware').press('End')
-        expect(page.get_by_role('tabpanel', name='Flash & Provision')).to_be_visible()
-        tabs.get_by_role('tab', name='Flash & Provision').press('Home')
+        expect(page.get_by_role('tabpanel', name='Flash')).to_be_visible()
+        tabs.get_by_role('tab', name='Flash').press('Home')
         expect(page.get_by_role('tabpanel', name='Firmware')).to_be_visible()
         # Every catalog board appears with its name and a loaded image.
         cards = page.locator('.flasher-board')
@@ -161,7 +161,7 @@ with sync_playwright() as p:
         expect(selected).to_contain_text('Silicon Labs CP210x (10c4:ea60)')
         expect(selected).to_contain_text('ESP32 programmer')
         assert page.get_by_role('button', name='Select USB port', exact=True).bounding_box()['height'] >= 44
-        flasher_tab(page, 'Flash & Provision')
+        flasher_tab(page, 'Flash')
         flash = page.get_by_role('button', name=re.compile(r'^Flash firmware(?: \(keep settings\))?$'))
         expect(flash).to_be_disabled()
         # Hosted firmware: choose a board card.
@@ -174,7 +174,7 @@ with sync_playwright() as p:
         expect(summary).to_contain_text('abc123def456')
         expect(summary.locator('table')).to_have_count(0)
         assert cards.first.bounding_box()['height'] >= 44
-        flasher_tab(page, 'Flash & Provision')
+        flasher_tab(page, 'Flash')
         expect(flash).to_be_enabled()
         assert flash.bounding_box()['height'] >= 44
         if width <= 600:
@@ -195,7 +195,7 @@ with sync_playwright() as p:
         expect(summary).to_contain_text('0x10000')
         expect(summary).to_contain_text('ESP32-S3')
         expect(page.locator('.flasher-board')).to_have_count(0)
-        flasher_tab(page, 'Flash & Provision')
+        flasher_tab(page, 'Flash')
         expect(flash).to_be_enabled()
         flasher_tab(page, 'Firmware')
         page.get_by_label('Firmware file').set_input_files(str(uploads / 'merged.bin'))
@@ -204,7 +204,7 @@ with sync_playwright() as p:
         page.get_by_label('Firmware file').set_input_files(str(uploads / 'notes.bin'))
         expect(page.get_by_role('alert')).to_contain_text('notes.bin is not an ESP32 firmware image')
         expect(summary).to_have_count(0)
-        flasher_tab(page, 'Flash & Provision')
+        flasher_tab(page, 'Flash')
         expect(flash).to_be_disabled()
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         context.close()
@@ -258,7 +258,7 @@ with sync_playwright() as p:
     expect(page.get_by_text('This browser cannot flash boards')).to_be_visible()
     flasher_tab(page, 'USB Port')
     expect(page.get_by_role('button', name='Select USB port', exact=True)).to_be_disabled()
-    flasher_tab(page, 'Flash & Provision')
+    flasher_tab(page, 'Flash')
     expect(page.get_by_role('button', name='Flash firmware (keep settings)', exact=True)).to_be_disabled()
     context.close()
 
@@ -340,7 +340,7 @@ with sync_playwright() as p:
         page.evaluate(await_patch, {'url': sdk_url, 'table': base64.b64encode(table).decode(),
                                    'digest': list(hashlib.md5(table).digest()),
                                    'erased': hashlib.md5(b'\xff' * 0x5000).hexdigest()})
-        flasher_tab(page, 'Flash & Provision')
+        flasher_tab(page, 'Flash')
         write_firmware = page.get_by_role('checkbox', name='Flash firmware', exact=True)
         clear_settings = page.get_by_role('checkbox', name=re.compile('^Clear settings'))
         expect(write_firmware).to_be_checked()
@@ -358,7 +358,7 @@ with sync_playwright() as p:
         expect(page.get_by_label('Firmware source', exact=True)).to_be_disabled()
         flasher_tab(page, 'USB Port')
         expect(page.get_by_role('button', name='Select USB port', exact=True)).to_be_disabled()
-        flasher_tab(page, 'Flash & Provision')
+        flasher_tab(page, 'Flash')
         page.evaluate('window.nvsContinue()')
         expect(page.get_by_test_id('flash-status')).to_contain_text('Cancelled. No settings erased.')
         assert page.evaluate('window.nvsErases') == []
@@ -400,7 +400,7 @@ with sync_playwright() as p:
             flasher_tab(page, 'Firmware')
             page.get_by_label('Firmware source', exact=True).select_option('upload')
             page.get_by_label('Firmware file').set_input_files(str(uploads / 'webrtc.bin'))
-            flasher_tab(page, 'Flash & Provision')
+            flasher_tab(page, 'Flash')
             expect(combined).to_be_enabled()
             page.once('dialog', lambda dialog: dialog.accept())
             combined.click()
@@ -437,14 +437,22 @@ with sync_playwright() as p:
             setup.locator('#camera-password').fill('x' * 12)
             setup.get_by_role('button', name='Save and connect').click()
             expect(setup.locator('#status')).to_have_text('Connected. Your settings are saved.')
-            expect(setup.locator('#local-viewer-link')).to_have_attribute('href', 'https://192.0.2.1/')
-            remote = setup.locator('#remote-viewer-link')
-            expect(remote).to_have_attribute('href', 'https://esp32.sensorfun.net/projects/webrtc/A1B2C3D4E5F6')
-            expect(remote).to_have_attribute('target', '_blank')  # Never replaces the setup page.
-            assert remote.bounding_box()['height'] >= 44
-            expect(page.get_by_role('link', name='https://esp32.sensorfun.net/projects/webrtc/A1B2C3D4E5F6')).to_be_visible()
-            expect(page.get_by_role('link', name='https://192.0.2.1/')).to_be_visible()
-            setup.locator('#local-viewer-link').click()
+            local_link = setup.locator('#local-viewer-link')
+            expect(local_link).to_have_attribute('href', 'https://192.0.2.1/')
+            remote_link = setup.locator('#remote-viewer-link')
+            remote_url = 'https://esp32.sensorfun.net/projects/webrtc/A1B2C3D4E5F6'
+            expect(remote_link).to_have_attribute('href', remote_url)
+            expect(remote_link).to_have_attribute('target', '_blank')
+            labels = ['View locally: https://192.0.2.1/', f'View on internet: {remote_url}']
+            expect(setup.locator('.viewer-link')).to_have_text(labels)
+            expect(page.locator('.flasher-viewer')).to_have_text(labels)
+            for width in (320, 390, 768, 1440):
+                page.set_viewport_size({'width': width, 'height': 800})
+                assert setup.locator('html').evaluate('root => root.scrollWidth <= root.clientWidth')
+                assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+                assert local_link.bounding_box()['height'] >= 44
+                assert remote_link.bounding_box()['height'] >= 44
+            local_link.click()
             expect(popup).to_be_hidden()
             assert page.evaluate('window.openedUrl') == 'https://192.0.2.1/'
             page.get_by_role('button', name='Provision', exact=True).click()
@@ -472,11 +480,11 @@ with sync_playwright() as p:
             # Provisioning follows the selected project; uploads without a known project have none.
             flasher_tab(page, 'Firmware')
             page.get_by_label('Firmware source', exact=True).select_option('upload')
-            flasher_tab(page, 'Flash & Provision')
+            flasher_tab(page, 'Flash')
             expect(provision).to_have_count(0)
             flasher_tab(page, 'Firmware')
             page.get_by_label('Firmware source', exact=True).select_option('webrtc')
-            flasher_tab(page, 'Flash & Provision')
+            flasher_tab(page, 'Flash')
             expect(provision).to_be_visible()
         context.close()
 

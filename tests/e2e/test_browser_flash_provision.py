@@ -234,7 +234,7 @@ def test_browser_flash_then_usb_provision(board, wifi_credentials):
             expect(page.get_by_test_id('firmware-summary')).to_contain_text('Local build')
             page.get_by_role('tab', name='USB Port', exact=True).click()
             expect(page.get_by_test_id('selected-port')).to_be_visible()
-            page.get_by_role('tab', name='Flash & Provision', exact=True).click()
+            page.get_by_role('tab', name='Flash', exact=True).click()
             page.get_by_label('Speed', exact=True).select_option('460800')
             page.get_by_role('checkbox', name=re.compile('^Clear settings')).check()
             page.once('dialog', lambda dialog: dialog.accept())
