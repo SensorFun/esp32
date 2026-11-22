@@ -6,6 +6,7 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 build/
+/drive-downloads/
 dist/
 .pytest_cache/
 projects/*/sdkconfig
