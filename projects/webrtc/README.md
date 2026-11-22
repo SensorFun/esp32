@@ -91,7 +91,7 @@ Default** applies the firmware's YAML/driver defaults to the running camera.
 Select **Save** to store those defaults in NVS. A restart before saving loads the
 last saved settings. Invalid stored configurations fall back to defaults.
 
-`timing_profile` offers **High light**, **Mid light (balanced)**, and **Low light**
+`timing_profile` offers **High light**, **Mid light**, and **Low light**
 on both cameras. High restores the driver's resolution-specific native timing;
 Mid uses a 2x line period. Low uses 3x for OV3660 (within its 13-bit HTS
 limit) and 4x for OV2640. OV3660 changes HTS (`0x380c/0x380d`),
@@ -101,8 +101,7 @@ previous setting. Longer line periods allow longer exposure but reduce the
 sensor's maximum frame rate.
 
 The profile names match the server. The OV5647/P4's absolute HTS/VTS values are
-sensor-specific and are not copied to these sensors. Both sensor YAML files
-can select `high_light`, `balanced`, or `low_light` as a startup default.
+sensor-specific. The shared OV profile defaults to **Mid light** (`mid_light`).
 
 The stream is hardware JPEG, initially 320x240 unless saved settings select
 another resolution. Streaming has no fixed FPS cap. Frames are split into

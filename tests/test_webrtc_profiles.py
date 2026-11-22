@@ -30,7 +30,7 @@ class CameraProfileTests(unittest.TestCase):
         result, content = self.generate({})
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('defaults_ov[]', content)
-        self.assertIn('{"timing_profile", 0}', content)
+        self.assertIn('{"timing_profile", 1}', content)
         self.assertIn('s->set_whitebal(s, v)', content)
 
     def test_unknown_or_invalid_control_rejected(self):
@@ -39,8 +39,8 @@ class CameraProfileTests(unittest.TestCase):
                 result, _ = self.generate(override)
                 self.assertNotEqual(result.returncode, 0)
 
-    def test_mid_and_low_defaults(self):
-        for name, index in [('balanced', 1), ('low_light', 2)]:
+    def test_supported_timing_defaults(self):
+        for name, index in [('high_light', 0), ('mid_light', 1), ('low_light', 2)]:
             with self.subTest(profile=name):
                 result, content = self.generate({'timing_profile': name})
                 self.assertEqual(result.returncode, 0, result.stderr)
@@ -53,7 +53,7 @@ class CameraProfileTests(unittest.TestCase):
         self.assertIn('{"contrast", 0}', gc)
         self.assertNotIn('timing_profile', gc)
         self.assertNotIn('jpeg_quality', gc)
-        for override in ({'jpeg_quality': 12}, {'brightness': 0}, {'timing_profile': 'balanced'}, {'sharpness': -3}, {'sharpness': 3}, {'name': 'wrong'}):
+        for override in ({'jpeg_quality': 12}, {'brightness': 0}, {'timing_profile': 'mid_light'}, {'sharpness': -3}, {'sharpness': 3}, {'name': 'wrong'}):
             with self.subTest(override=override):
                 result, _ = self.generate(override, 'gc')
                 self.assertNotEqual(result.returncode, 0)

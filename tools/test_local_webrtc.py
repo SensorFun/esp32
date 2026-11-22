@@ -169,11 +169,12 @@ def main():
         page.evaluate("window.lastResponse=null;command({op:'get'})")
         wait_js(page, "window.lastResponse?.type==='settings'")
         initial = page.evaluate('window.lastResponse')
-        assert initial['timing_profiles'] == ['high_light', 'balanced', 'low_light']
-        assert initial['timing_profile'] == 'high_light'
-        baseline = initial['timing_register']
+        assert initial['timing_profiles'] == ['high_light', 'mid_light', 'low_light']
+        page.evaluate("window.lastResponse=null;command({op:'set',name:'timing_profile',value:'high_light'})")
+        wait_js(page, "window.lastResponse?.timing_profile==='high_light'")
+        baseline = page.evaluate('window.lastResponse.timing_register')
         readbacks = []
-        for profile, factor in [('balanced', 2), ('low_light', 3 if initial['sensor'] == 'ov3660' else 4), ('high_light', 1)]:
+        for profile, factor in [('mid_light', 2), ('low_light', 3 if initial['sensor'] == 'ov3660' else 4), ('high_light', 1)]:
             page.evaluate('window.lastResponse=null')
             page.get_by_role('combobox', name='Light timing', exact=True).select_option(profile)
             wait_js(page, 'window.lastResponse !== null')
@@ -187,6 +188,8 @@ def main():
             for _ in range(3):
                 previous = page.locator('#preview').get_attribute('src')
                 wait_js(page, "src=>document.querySelector('#preview').src!==src && document.querySelector('#preview').naturalWidth>0", arg=previous)
+        page.evaluate("value=>{window.lastResponse=null;command({op:'set',name:'timing_profile',value});}", initial['timing_profile'])
+        wait_js(page, "value=>window.lastResponse?.timing_profile===value", arg=initial['timing_profile'])
         print('Timing profiles changed real registers; live frames continued:', readbacks)
         page.evaluate("window.lastResponse=null;command({op:'set',name:'timing_profile',value:'invalid'})")
         wait_js(page, "window.lastResponse && window.lastResponse.type==='error'")

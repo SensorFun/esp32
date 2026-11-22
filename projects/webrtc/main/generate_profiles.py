@@ -33,7 +33,7 @@ for family in ('ov', 'gc'):
         gc_controls = {'contrast', 'saturation', 'sharpness', 'colorbar', 'horizontal_mirror', 'vertical_flip', 'automatic_white_balance', 'white_balance_mode', 'automatic_gain', 'agc_gain', 'automatic_exposure', 'aec_value', 'ae_level'}
         if set(profile) - gc_controls - {'name'}:
             raise ValueError('Unsupported GC0308 control')
-    timing_names = ('high_light', 'balanced', 'low_light')
+    timing_names = ('high_light', 'mid_light', 'low_light')
     if profile.get('timing_profile') not in (None, *timing_names):
         raise ValueError('Unknown timing profile')
     unknown = set(profile) - {x[0] for x in controls} - {'name', 'timing_profile'}

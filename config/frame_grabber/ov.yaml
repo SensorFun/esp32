@@ -1,6 +1,6 @@
 name: ov
 # Shared OV defaults; firmware detects the sensor and skips unsupported controls.
-timing_profile: high_light
+timing_profile: mid_light
 brightness: 0
 contrast: 0
 saturation: 0
