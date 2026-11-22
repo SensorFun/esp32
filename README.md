@@ -23,25 +23,6 @@ shared components.
 - `config/`: Hydra firmware build and flash configuration; `config/firmware/` lists flashable firmware.
 - `tools/`: configuration-driven firmware build and flash entry points.
 
-## Download a Google Drive folder
-
-Copy the folder's share link from Drive, then run this on the server with `uv`
-installed:
-
-```sh
-tools/fetch_drive_folder.sh 'https://drive.google.com/drive/folders/FOLDER_ID'
-```
-
-To use a fixed folder on this machine, put its folder ID in
-`.secrets/drive_folder_id` and run `tools/fetch_drive_folder.sh` with no arguments.
-It downloads into `drive-downloads/` at the repo root. Git ignores both paths.
-
-The folder must allow link viewers to download its contents. When you pass a link,
-the tool downloads files and subfolders under `build/google-drive/`, which Git ignores. Pass a
-destination as the second argument to choose the output directory. Rerunning
-resumes interrupted downloads and skips files already downloaded. Use a fresh
-destination to download replacement versions of files with the same name.
-
 ## Local use
 
 Install ESP-IDF v6.1 and source its `export.sh`, then run from this directory:

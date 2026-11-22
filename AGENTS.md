@@ -13,3 +13,6 @@ Always consider mobile usability when creating or changing websites. Use respons
 Never copy source code into Docker images. Mount source code read-only, and mount only the folders each container needs.
 
 Never expose or publish container ports: do not use Dockerfile `EXPOSE`, Compose `ports`, or Docker `-p`/`--publish`. Use Docker networks for communication between containers.
+
+# git
+Do not automatically push any code
