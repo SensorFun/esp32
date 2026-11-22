@@ -61,7 +61,11 @@ class FirmwareCatalogTests(unittest.TestCase):
                                 ({'private_settings': ['SECRET']}, 'private_settings'),
                                 ({'requires_frame_grabber': 'yes'}, 'requires_frame_grabber'),
                                 ({'after_flash': {'link': 'javascript:alert(1)'}}, 'after_flash.link'),
-                                ({'after_flash': {'color': 'red'}}, 'after_flash takes')):
+                                ({'after_flash': {'color': 'red'}}, 'after_flash takes'),
+                                ({'provisioning': {'page': '../secrets.html'}}, 'provisioning takes'),
+                                ({'provisioning': {'page': 'projects/camera/setup.txt'}}, 'provisioning takes'),
+                                ({'provisioning': {'page': 'projects/camera/setup.html', 'api': 'x'}}, 'provisioning takes'),
+                                ({'provisioning': {'page': 'projects/camera/missing.html'}}, 'does not exist')):
             with self.subTest(change=change):
                 original = dict(self.entries['camera'])
                 self.entries['camera'].update(change)
@@ -70,6 +74,15 @@ class FirmwareCatalogTests(unittest.TestCase):
                     load_firmware(self.root)
                 self.entries['camera'] = original
                 self.save()
+
+    def test_provisioning_page(self):
+        (self.root / 'projects/camera/setup.html').write_text('<!doctype html>')
+        self.entries['camera']['provisioning'] = {'page': 'projects/camera/setup.html'}
+        self.save()
+        catalog = load_firmware(self.root)
+        self.assertEqual(catalog['camera']['provisioning'], {'page': 'projects/camera/setup.html'})
+        self.assertIsNone(catalog['blink']['provisioning'])
+        self.assertEqual(load_firmware(ROOT)['webrtc']['provisioning'], {'page': 'projects/common/provisioning/index.html'})
 
     def test_firmware_needs_a_project_folder_unless_skipped(self):
         (self.root / 'projects/blink/CMakeLists.txt').unlink()

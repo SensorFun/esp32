@@ -21,6 +21,7 @@ _terminal = None
 def pytest_configure(config):
     global _terminal
     _terminal = config.pluginmanager.getplugin('terminalreporter')
+    config.addinivalue_line('markers', 'xdist_group(name): run on the worker that owns this board')
 
 
 def pytest_runtest_logreport(report):
@@ -95,6 +96,15 @@ def pytest_generate_tests(metafunc):
     if len({p['board'] for p in params}) != len(params):
         raise pytest.UsageError('Devices must have distinct board build directories')
     metafunc.parametrize("board", params, ids=devices, indirect=True)
+
+
+def pytest_collection_modifyitems(items):
+    # Tests for one board share its USB port, so they run on one xdist worker
+    # (the launcher uses --dist loadgroup); different boards still run in parallel.
+    for item in items:
+        callspec = getattr(item, 'callspec', None)
+        if callspec and 'board' in callspec.params:
+            item.add_marker(pytest.mark.xdist_group(callspec.params['board']['device']))
 
 
 @pytest.fixture

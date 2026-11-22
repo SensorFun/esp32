@@ -14,6 +14,9 @@ bool provisioning_is_ready(void);
 // USB console and setup page submit through the same validation/queue.
 esp_err_t provisioning_submit_credentials(const char *ssid, const char *password);
 esp_err_t provisioning_submit_credentials_with_camera(const char *ssid, const char *password, const char *camera_password);
+// USB setup commands (status, scan, wifi, password). Replies are printed as
+// SENSORFUN_USB <json> lines for the local serial client.
+void provisioning_usb_command(const char *command);
 
 #ifdef __cplusplus
 }

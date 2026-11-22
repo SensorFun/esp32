@@ -16,7 +16,8 @@
     {
       "label": "Run Website Locally",
       "type": "shell",
-      "command": "npm run dev",
+      "command": "npm",
+      "args": ["run", "dev", "--", "--firmware-dir", "${workspaceFolder}/build"],
       "options": {
         "cwd": "${workspaceFolder}/site"
       },

@@ -6,6 +6,7 @@ import { Icon } from '../../components/Icon';
 import { boards, firmwares } from 'virtual:board-catalog';
 import { checkLayout, chipId, chipName, inspectImage, isEsp32Port, md5, parseFlasherArgs, portLabel } from './plan.mjs';
 import { resetNvs } from './nvs.mjs';
+import { UsbProvisioning } from './UsbProvisioning';
 
 const decoder = new TextDecoder();
 const bauds = [115200, 230400, 460800, 921600];
@@ -17,6 +18,19 @@ function hostedRoot(project, board) {
     return response.ok ? new Uint8Array(await response.arrayBuffer()) : null;
   } };
 }
+// esptool-js 0.7's HardReset only releases RTS and never asserts it, so the
+// board stayed in the flasher stub after "Board restarted". This is Python
+// esptool's sequence: IO0 high (DTR off), then pulse EN low with RTS.
+const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
+const hardReset = (transport, usingUsbOtg) => ({
+  async reset() {
+    await transport.setDTR(false);
+    await transport.setRTS(true);
+    await pause(usingUsbOtg ? 200 : 100);
+    await transport.setRTS(false);
+    if (usingUsbOtg) await pause(200);
+  },
+});
 const builtDate = seconds => new Date(seconds * 1000).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
 
 // One .bin chosen by the user; it stays in this browser and goes only to the board.
@@ -75,9 +89,12 @@ export function FlasherProject() {
   const [progress, setProgress] = useState(0);
   const [status, setStatus] = useState('');
   const [log, setLog] = useState([]);
+  const [showUsb, setShowUsb] = useState(false);
+  const [viewerUrl, setViewerUrl] = useState('');
   const fileInput = useRef(null);
   const resetMode = state.startsWith('reset');
-  const busy = state === 'flashing' || state === 'resetting';
+  const flashBusy = state === 'flashing' || state === 'resetting';
+  const busy = flashBusy || showUsb;
   const load = useRef(0);
 
   useEffect(() => {
@@ -134,7 +151,7 @@ export function FlasherProject() {
       // Forget the previous board's port so only the selected board stays allowed.
       if (port && port !== chosen) { try { await port.forget?.(); } catch { /* Already gone. */ } }
       setPort(chosen);
-      if (port !== chosen) { setState('idle'); setStatus(''); setLog([]); setProgress(0); }
+      if (port !== chosen) { setState('idle'); setStatus(''); setLog([]); setProgress(0); setShowUsb(false); setViewerUrl(''); }
     } catch (error) { if (error.name !== 'NotFoundError') setStatus(error.message); }
   }
 
@@ -147,17 +164,29 @@ export function FlasherProject() {
     const push = text => { lines.push(text); if (lines.length > 500) lines.shift(); setLog([...lines]); };
     const terminal = { clean() { lines.length = 0; setLog([]); }, writeLine(text) { push(partial + text); partial = ''; }, write(text) { partial += text; } };
     let transport, loader, connected = false, cleared = false;
+    let plan = firmware;
     let resultState = writeFirmware ? 'error' : 'reset-error';
     let message;
     try {
+      if (writeFirmware && info?.local) {
+        setStatus('Loading the latest local firmware…');
+        const [latest, manifest] = await Promise.all([
+          loadFirmware(hostedRoot(project, selectedBoard)),
+          fetch('firmware/index.json', { cache: 'no-cache' }).then(response => response.json()),
+        ]);
+        plan = latest;
+        setFirmware(latest);
+        setPackages(manifest);
+        setStatus('Connecting to the board…');
+      }
       const { ESPLoader, Transport } = await import('esptool-js');
       transport = new Transport(port, false);
       const manual = connectionMode === 'manual';
-      loader = new ESPLoader({ transport, baudrate: manual ? 115200 : baud, romBaudrate: 115200, terminal });
-      const description = await loader.main(manual ? 'no_reset' : firmware?.before ?? 'default_reset');
+      loader = new ESPLoader({ transport, baudrate: manual ? 115200 : baud, romBaudrate: 115200, terminal, resetConstructors: { hardReset } });
+      const description = await loader.main(manual ? 'no_reset' : plan?.before ?? 'default_reset');
       connected = true;
-      if (writeFirmware && chipId(loader.chip.CHIP_NAME) !== firmware.chip) {
-        throw Error(`This firmware is for ${chipName(firmware.chip)}, but the board is ${description}. Nothing changed.`);
+      if (writeFirmware && chipId(loader.chip.CHIP_NAME) !== plan.chip) {
+        throw Error(`This firmware is for ${chipName(plan.chip)}, but the board is ${description}. Nothing changed.`);
       }
       if (clearSettings) {
         const partition = await resetNvs(loader, { tableAddress, partitionName, status: setStatus,
@@ -174,11 +203,11 @@ export function FlasherProject() {
       }
       if (writeFirmware) {
         setStatus('Writing firmware…');
-        const total = firmware.files.reduce((sum, file) => sum + file.data.length, 0);
-        const before = firmware.files.map((_, index) => firmware.files.slice(0, index).reduce((sum, file) => sum + file.data.length, 0));
+        const total = plan.files.reduce((sum, file) => sum + file.data.length, 0);
+        const before = plan.files.map((_, index) => plan.files.slice(0, index).reduce((sum, file) => sum + file.data.length, 0));
         await loader.writeFlash({
-          fileArray: firmware.files.map(file => ({ data: file.data, address: file.address })),
-          flashMode: firmware.flashMode, flashFreq: firmware.flashFreq, flashSize: firmware.flashSize,
+          fileArray: plan.files.map(file => ({ data: file.data, address: file.address })),
+          flashMode: plan.flashMode, flashFreq: plan.flashFreq, flashSize: plan.flashSize,
           eraseAll: false, compress: true, calculateMD5Hash: md5,
           reportProgress: (index, written, size) => setProgress((before[index] + (size ? written / size : 1) * firmware.files[index].data.length) / total),
         });
@@ -201,7 +230,7 @@ export function FlasherProject() {
       if (connected) {
         setStatus('Restarting the board…');
         try {
-          await loader.after(resultState === 'done' ? firmware.after : 'hard_reset');
+          await loader.after(resultState === 'done' ? plan.after : 'hard_reset');
           if (resultState === 'done' || resultState === 'reset-done') message += ' Board restarted.';
         } catch {
           message += ' Press RESET to restart the board.';
@@ -210,6 +239,7 @@ export function FlasherProject() {
       if (partial) push(partial);
       try { await transport?.disconnect(); } catch { /* The port may already be closed. */ }
       setState(resultState); setStatus(message);
+      if (resultState === 'done' && (firmware.upload ? firmware.firmware : offered)?.provisioning) setShowUsb(true);
     }
   }
 
@@ -234,7 +264,7 @@ export function FlasherProject() {
       <fieldset className="flasher-boards" disabled={busy}><legend className="flasher-hidden">Board</legend>{offeredBoards.map(board => {
         const available = packages?.[project]?.[board.id];
         return <label key={board.id} className="flasher-board" data-available={available ? 'true' : 'false'}>
-          <input type="radio" name="board" checked={boardId === board.id} disabled={!available} onChange={() => selectBoard(board)} />
+          <input type="radio" name="board" value={board.id} checked={boardId === board.id} disabled={!available} onChange={() => selectBoard(board)} />
           {board.image ? <img src={board.image} alt="" /> : <span className="flasher-board-blank" aria-hidden="true"><Icon name="chip" size={28} /></span>}
           <span className="flasher-board-text"><strong>{board.name}</strong><small>{chipName(chipId(board.target))} · {packages === null ? 'Checking firmware…' : available ? 'Firmware ready' : 'No firmware yet'}</small></span>
         </label>;
@@ -249,9 +279,9 @@ export function FlasherProject() {
       </div>}
       {firmwareError && <p className="flasher-error" role="alert">{firmwareError}</p>}
       {firmware && <div className="flasher-firmware" data-testid="firmware-summary">
-        <dl>{selectedBoard && <div><dt>Board</dt><dd>{selectedBoard.name}</dd></div>}{upload && <div><dt>File</dt><dd>{firmware.label}</dd></div>}<div><dt>Chip</dt><dd>{chipName(firmware.chip)}</dd></div>{upload && <div><dt>Type</dt><dd>{upload.kind === 'app' ? `App image${upload.project ? ` · ${upload.project}` : ''}${upload.version ? ` ${upload.version}` : ''}` : 'Full flash image'}</dd></div>}{info && <div><dt>Built</dt><dd>{builtDate(info.built)} · {info.commit}</dd></div>}<div><dt>Flash</dt><dd>{upload ? "Board's current settings" : `${firmware.flashSize} · ${firmware.flashMode.toUpperCase()} · ${firmware.flashFreq}`}</dd></div></dl>
+        <dl>{selectedBoard && <div><dt>Board</dt><dd>{selectedBoard.name}</dd></div>}{upload && <div><dt>File</dt><dd>{firmware.label}</dd></div>}<div><dt>Chip</dt><dd>{chipName(firmware.chip)}</dd></div>{upload && <div><dt>Type</dt><dd>{upload.kind === 'app' ? `App image${upload.project ? ` · ${upload.project}` : ''}${upload.version ? ` ${upload.version}` : ''}` : 'Full flash image'}</dd></div>}{info && <div><dt>Built</dt><dd>{builtDate(info.built)} · {info.local ? 'Local build' : info.commit}</dd></div>}<div><dt>Flash</dt><dd>{upload ? "Board's current settings" : `${firmware.flashSize} · ${firmware.flashMode.toUpperCase()} · ${firmware.flashFreq}`}</dd></div></dl>
         {upload?.kind === 'app' && <p className="flasher-note">The board must already have a bootloader and partition table with an app at 0x{upload.address.toString(16)}, for example from flashing one of the boards above once.</p>}
-        {info && <a className="button rtc-secondary" href={`firmware/${project}/${boardId}/firmware.bin`} download={`${project}-${boardId}.bin`}>Download firmware file</a>}
+        {info && !info.local && <a className="button rtc-secondary" href={`firmware/${project}/${boardId}/firmware.bin`} download={`${project}-${boardId}.bin`}>Download firmware file</a>}
         {upload?.kind === 'full' && <p className="flasher-note">A complete flash image replaces existing firmware and settings, including saved Wi-Fi credentials.</p>}
       </div>}
     </section>
@@ -282,12 +312,15 @@ export function FlasherProject() {
           <label>NVS partition name (optional)<input value={partitionName} disabled={busy} maxLength={16} placeholder="Auto-detect" autoComplete="off" onChange={event => setPartitionName(event.target.value)} /></label>
         </details>
       )}
-      <button type="button" className="button rtc-primary flasher-go" disabled={!ready} onClick={applyFlashActions}>{busy ? 'Working…' : actionLabel}</button>
+      <button type="button" className="button rtc-primary flasher-go" disabled={!ready} onClick={applyFlashActions}>{flashBusy ? 'Working…' : actionLabel}</button>
+      {supported && next?.provisioning && <button type="button" className="button rtc-secondary flasher-provision" disabled={!port || busy} onClick={() => setShowUsb(true)}>Provision</button>}
       {state !== 'idle' && !resetMode && <div className="flasher-progress" data-state={state}><progress max="1" value={progress} aria-label="Flashing progress" /><span>{Math.round(progress * 100)}%</span></div>}
       <p role="status" className="flasher-status" data-testid="flash-status">{status}</p>
-      {state === 'done' && next?.afterFlash.text && <p>{next.afterFlash.text} {next.afterFlash.link && <a href={next.afterFlash.link}>Open {next.name}</a>}</p>}
+      {viewerUrl && <p className="flasher-viewer">Camera on Wi-Fi: <a href={viewerUrl} target="_blank" rel="noreferrer">{viewerUrl}</a></p>}
+      {state === 'done' && !next?.provisioning && next?.afterFlash.text && <p>{next.afterFlash.text} {next.afterFlash.link && <a href={next.afterFlash.link}>Open {next.name}</a>}</p>}
       {log.length > 0 && <details className="flasher-log"><summary>Details</summary><pre>{log.join('\n')}</pre></details>}
       {connectionMode === 'manual' && <p className="flasher-hint">Hold BOOT, tap RESET, then release BOOT before starting. If your ESP32-CAM has no BOOT button, connect GPIO0 to GND before resetting, then remove the connection after the action finishes and reset again.</p>}
     </section>
+    {showUsb && next?.provisioning && <UsbProvisioning port={port} project={next} onClose={() => setShowUsb(false)} onViewer={setViewerUrl} />}
   </main></div></div>;
 }

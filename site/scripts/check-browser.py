@@ -246,8 +246,41 @@ with sync_playwright() as p:
     sdk_url = urljoin(args.url.split('#')[0], 'assets/' + sdk.name)
     for width in (320, 390, 768, 1440):
         context = browser.new_context(viewport={'width': width, 'height': 1000})
-        context.add_init_script("""Object.defineProperty(navigator,'serial',{value:{
-          getPorts:async()=>[{getInfo:()=>({usbVendorId:0x0403,usbProductId:0x6001})}],
+        context.add_init_script(r"""const testPort = {
+          getInfo:()=>({usbVendorId:0x0403,usbProductId:0x6001}),
+          async open(options) {
+            if (options.baudRate !== 115200) throw Error('Unexpected USB setup baud rate');
+            let output, polls = 0, failed = false;
+            const encode = new TextEncoder();
+            const reply = data => {
+              output.enqueue(encode.encode('Board diagnostic\nSENSOR'));
+              output.enqueue(encode.encode('FUN_USB ' + JSON.stringify(data) + '\r\n'));
+            };
+            this.readable = new ReadableStream({start(controller) { output = controller; }});
+            this.writable = new WritableStream({write(bytes) {
+              const command = new TextDecoder().decode(bytes).trim();
+              if (command === 'sensorfan-usb scan') {
+                reply({result:'scan',ssids:['Home','Test+network'],camera_password_required:true});
+              } else if (command === 'sensorfan-usb status') {
+                polls++;
+                const project = 'testBoardProject' in window ? window.testBoardProject : 'webrtc';
+                reply({status:true,project,result:polls < 3 ? 'pending' : failed ? 'restored' : 'saved',
+                       ...(polls >= 3 ? {ip:'192.0.2.1'} : {})});
+              } else if (command === 'sensorfan-usb wifi ssid=Test%2Bnetwork&password=&camera_password=' + 'x'.repeat(12)) {
+                reply({result:'pending'});
+              } else if (command === 'sensorfan-usb wifi ssid=Missing&password=&camera_password=' + 'x'.repeat(12)) {
+                failed = true;
+                reply({result:'pending'});
+              } else {
+                reply({result:'invalid'});
+              }
+            }});
+          },
+          async close() {},
+        };
+        window.open = url => { window.openedUrl = url; return null; };
+        Object.defineProperty(navigator,'serial',{value:{
+          getPorts:async()=>[testPort],
           addEventListener(){},removeEventListener(){},
         }});""")
         page = context.new_page()
@@ -313,7 +346,7 @@ with sync_playwright() as p:
         assert page.evaluate('window.nvsCloses') == 2
         page.get_by_text('Advanced options', exact=True).click()
         assert page.get_by_label('Partition table address', exact=True).bounding_box()['height'] >= 44
-        assert reset.bounding_box()['height'] >= 44
+        assert reset.evaluate('button => button.offsetHeight') >= 44
         assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
         if width == 1440:
             page.evaluate('window.requireManualBoot=true')
@@ -343,12 +376,67 @@ with sync_playwright() as p:
             page.evaluate('window.nvsContinue()')
             expect(page.get_by_test_id('flash-status')).to_contain_text('Settings cleared. Firmware written and verified.')
             assert page.evaluate('window.operations') == ['erase', 'erase', 'flash']
+            # Wi-Fi setup opens after a WebRTC flash; closing it frees the port.
+            page.get_by_role('dialog', name='Provision WebRTC camera').get_by_role('button', name='Close').click()
+            expect(page.get_by_role('dialog', name='Provision WebRTC camera')).to_be_hidden()
             clear_settings.uncheck()
             page.get_by_role('button', name='Flash firmware (keep settings)', exact=True).click()
             page.wait_for_function('window.nvsConnections===5')
             page.evaluate('window.nvsContinue()')
             expect(page.get_by_test_id('flash-status')).to_have_text('Firmware written and verified. Board restarted.')
             assert page.evaluate('window.operations') == ['erase', 'erase', 'flash', 'flash']
+            # The popup runs the firmware's own setup page over USB.
+            popup = page.get_by_role('dialog', name='Provision WebRTC camera')
+            expect(popup).to_be_visible()  # Opens automatically after flashing.
+            setup = page.frame_locator('.flasher-provisioning iframe')
+            expect(setup.locator('#status')).to_have_text('Choose your network from the list.')
+            assert setup.locator('#camera-access').is_visible()
+            for setup_width in (320, 390, 768, 1440):
+                page.set_viewport_size({'width': setup_width, 'height': 800})
+                assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+                box = popup.bounding_box()
+                assert box['x'] >= 0 and box['x'] + box['width'] <= setup_width and box['y'] + box['height'] <= 800
+                assert popup.get_by_role('button', name='Close').bounding_box()['height'] >= 44
+                for field in ('#ssid', '#password', '#save'):
+                    assert setup.locator(field).bounding_box()['height'] >= 44
+                assert setup.locator('#password').evaluate('input => parseFloat(getComputedStyle(input).fontSize) >= 16')
+                assert setup.locator('html').evaluate('root => root.scrollWidth <= root.clientWidth')
+            setup.locator('#ssid').select_option(label='Test+network')
+            setup.locator('#camera-password').fill('x' * 12)
+            setup.get_by_role('button', name='Save and connect').click()
+            expect(setup.locator('#status')).to_have_text('Connected. Your settings are saved.')
+            expect(setup.locator('#local-viewer-link')).to_have_attribute('href', 'https://192.0.2.1/')
+            expect(page.get_by_role('link', name='https://192.0.2.1/')).to_be_visible()
+            setup.locator('#local-viewer-link').click()
+            expect(popup).to_be_hidden()
+            assert page.evaluate('window.openedUrl') == 'https://192.0.2.1/'
+            page.get_by_role('button', name='Provision', exact=True).click()
+            expect(setup.locator('#status')).to_have_text('Choose your network from the list.')
+            setup.locator('#ssid').select_option(label='Other network…')
+            setup.locator('#manual-ssid').fill('Missing')
+            setup.locator('#camera-password').fill('x' * 12)
+            setup.get_by_role('button', name='Save and connect').click()
+            expect(setup.locator('#status')).to_contain_text('reconnected to its saved network')
+            assert setup.locator('#save').is_enabled()
+            popup.get_by_role('button', name='Close').click()
+            expect(popup).to_be_hidden()
+            assert page.get_by_role('button', name='Provision', exact=True).is_enabled()
+            # The board must run the project being provisioned.
+            provision = page.get_by_role('button', name='Provision', exact=True)
+            for reported, message in (('blink', 'This board runs blink firmware, but WebRTC camera is selected.'),
+                                      (None, "This board's firmware does not say which project it runs.")):
+                page.evaluate('value => { window.testBoardProject = value ?? undefined; }', reported)
+                provision.click()
+                expect(popup.get_by_role('alert')).to_contain_text(message)
+                expect(popup.locator('iframe')).to_be_hidden()
+                popup.get_by_role('button', name='Close').click()
+                expect(popup).to_be_hidden()
+            page.evaluate('delete window.testBoardProject')
+            # Provisioning follows the selected project; uploads without a known project have none.
+            page.get_by_label('Firmware source', exact=True).select_option('upload')
+            expect(provision).to_have_count(0)
+            page.get_by_label('Firmware source', exact=True).select_option('webrtc')
+            expect(provision).to_be_visible()
         context.close()
 
     # Motion detection and recordings: the shared camera_ui elements on the

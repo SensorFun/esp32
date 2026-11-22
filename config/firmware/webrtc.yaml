@@ -6,6 +6,9 @@ boards: all
 requires_frame_grabber: true
 # A build with any of these set is private: served by the local dev server only.
 private_settings: [CONFIG_CAMERA_SIGNALING_API_SECRET]
+# Setup page for the flasher's Provision popup; see config/firmware/README.md.
+provisioning:
+  page: projects/common/provisioning/index.html
 after_flash:
   text: Set up Wi-Fi from the board's CAM_<MAC> setup network, then open the camera in WebRTC.
   link: '#/projects/webrtc'

@@ -46,6 +46,9 @@ int main() {
     assert(parse_credentials("ssid=Example&password=&camera_password=synthetic-test-vector", result, &camera_password));
     assert(camera_password == "synthetic-test-vector");
     assert(!parse_credentials("ssid=Example&password=", result, &camera_password));
+    camera_password.clear();
+    assert(parse_credentials("ssid=Example&password=", result, &camera_password, false));
+    assert(camera_password.empty());
     assert(!parse_credentials("ssid=Example&password=&camera_password=short", result, &camera_password));
     assert(!parse_credentials("ssid=Example&password=&camera_password=synthetic-test-vector&camera_password=duplicate", result, &camera_password));
     assert(!parse_credentials("ssid=Example&password=&camera_password=abc%00defghijkl", result, &camera_password));

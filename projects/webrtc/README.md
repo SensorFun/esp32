@@ -30,6 +30,20 @@ within 4 MB flash on both boards. S3 uses octal PSRAM; ESP32-CAM uses quad PSRAM
 
 ## Provision and connect
 
+In the browser flasher, select the USB port and flash the WebRTC firmware.
+When the board restarts, the **Provision WebRTC camera** popup opens. It shows
+the same setup page as the camera's setup hotspot, but talks to the board over
+USB, so the computer can stay on its usual Wi-Fi. Choose the network and enter
+the camera password; the page then shows the local viewer link. To move an
+existing board to another network, select WebRTC camera and the board's port,
+then choose **Provision** next to the flash button. The popup first checks
+that the board runs the WebRTC firmware. A board that already has a camera
+password keeps it, and the page does not ask for it again. If the board cannot
+join the new network, it reconnects to the saved one. On boards that need
+manual bootloader mode, release BOOT and reset before using USB setup.
+
+The camera's setup hotspot and USB command-line tools are also available.
+
 1. Open the USB console at 115200 baud. Without saved Wi-Fi credentials, the
    board starts an open `CAM_<MAC>` setup network and prints its HTTPS
    certificate SHA256 fingerprint. Joining the setup Wi-Fi needs no password.

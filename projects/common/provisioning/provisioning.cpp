@@ -1,4 +1,5 @@
 #include "provisioning.h"
+#include "esp_app_desc.h"
 #if CONFIG_PROVISIONING_SECURE
 #include "esp_https_server.h"
 #include "tls_identity.h"
@@ -32,7 +33,7 @@
 
 namespace {
 using provisioning::Credentials;
-struct SetupRequest { Credentials wifi; char camera_password[97]{}; };
+struct SetupRequest { Credentials wifi; char camera_password[97]{}; bool usb = false; };
 constexpr char TAG[] = "provisioning";
 constexpr char NVS_NAMESPACE[] = "wifi_setup";
 constexpr char NVS_KEY[] = "credentials";
@@ -41,6 +42,7 @@ constexpr uint32_t CONNECT_TIMEOUT_MS = 20000;
 enum class State { starting, connecting, provisioning, connected, storage_error };
 std::atomic<State> state{State::starting};
 std::atomic<bool> submitting{false};
+std::atomic<const char *> usb_result{"idle"};
 std::atomic<TickType_t> handoff_at{0};
 EventGroupHandle_t events = nullptr;
 QueueHandle_t requests = nullptr;
@@ -129,23 +131,16 @@ esp_err_t page(httpd_req_t *request) {
     return httpd_resp_send(request, reinterpret_cast<const char *>(html_start), html_end - html_start - 1);
 }
 
-esp_err_t scan(httpd_req_t *request) {
-    if (!setup_request(request)) return json_response(request, "403 Forbidden", "{\"error\":\"Use setup Wi-Fi\"}");
-    if (state.load() != State::provisioning || submitting.load()) {
-        return json_response(request, "409 Conflict", "{\"error\":\"Wait for the connection attempt to finish\"}");
-    }
+// Lists nearby networks as a JSON array. The setup page and USB setup share it.
+esp_err_t scan_networks(std::string &json) {
     wifi_scan_config_t config{};
     config.show_hidden = true;
     esp_err_t err = esp_wifi_scan_start(&config, true);
-    if (err != ESP_OK) return json_response(request, "503 Service Unavailable", "{\"error\":\"Scan unavailable; try again\"}");
+    if (err != ESP_OK) return err;
     uint16_t count = 0;
     err = esp_wifi_scan_get_ap_num(&count);
-    if (err != ESP_OK) {
-        esp_wifi_clear_ap_list();
-        return json_response(request, "503 Service Unavailable", "{\"error\":\"Scan failed\"}");
-    }
     std::vector<std::string> names;
-    for (uint16_t i = 0; i < count; ++i) {
+    for (uint16_t i = 0; err == ESP_OK && i < count; ++i) {
         wifi_ap_record_t record{};
         err = esp_wifi_scan_get_ap_record(&record);
         if (err != ESP_OK) break;
@@ -154,16 +149,31 @@ esp_err_t scan(httpd_req_t *request) {
         if (!name.empty() && std::find(names.begin(), names.end(), name) == names.end()) names.push_back(name);
     }
     esp_wifi_clear_ap_list();
-    if (err != ESP_OK) return json_response(request, "503 Service Unavailable", "{\"error\":\"Scan failed\"}");
-    std::string body = "{\"ssids\":[";
+    if (err != ESP_OK) return err;
+    json = "[";
     for (size_t i = 0; i < names.size(); ++i) {
-        if (i) body += ',';
-        body += provisioning::json_quote(names[i]);
+        if (i) json += ',';
+        json += provisioning::json_quote(names[i]);
     }
+    json += ']';
+    return ESP_OK;
+}
+
+esp_err_t scan(httpd_req_t *request) {
+    if (!setup_request(request)) return json_response(request, "403 Forbidden", "{\"error\":\"Use setup Wi-Fi\"}");
+    if (state.load() != State::provisioning || submitting.load()) {
+        return json_response(request, "409 Conflict", "{\"error\":\"Wait for the connection attempt to finish\"}");
+    }
+    std::string networks;
+    const esp_err_t err = scan_networks(networks);
+    if (err == ESP_ERR_WIFI_STATE || err == ESP_ERR_WIFI_TIMEOUT)
+        return json_response(request, "503 Service Unavailable", "{\"error\":\"Scan unavailable; try again\"}");
+    if (err != ESP_OK) return json_response(request, "503 Service Unavailable", "{\"error\":\"Scan failed\"}");
+    std::string body = "{\"ssids\":" + networks;
 #if CONFIG_CAMERA_REMOTE_ACCESS
-    body += "],\"camera_password_required\":true}";
+    body += ",\"camera_password_required\":true}";
 #else
-    body += "],\"camera_password_required\":false}";
+    body += ",\"camera_password_required\":false}";
 #endif
     return json_response(request, "200 OK", body.c_str());
 }
@@ -318,7 +328,12 @@ void start_setup() {
 
 void apply_credentials(const Credentials &credentials) {
     esp_wifi_scan_stop();
-    esp_wifi_disconnect();
+    const bool connected = xEventGroupGetBits(events) & CONNECTED;
+    state = State::connecting;
+    xEventGroupClearBits(events, CONNECTED | DISCONNECTED);
+    if (esp_wifi_disconnect() == ESP_OK && connected) {
+        xEventGroupWaitBits(events, DISCONNECTED, pdTRUE, pdTRUE, pdMS_TO_TICKS(1000));
+    }
     wifi_config_t config{};
     std::memcpy(config.sta.ssid, credentials.ssid, std::strlen(credentials.ssid));
     std::memcpy(config.sta.password, credentials.password, std::strlen(credentials.password));
@@ -326,7 +341,6 @@ void apply_credentials(const Credentials &credentials) {
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &config));
     std::memset(config.sta.password, 0, sizeof(config.sta.password));
     xEventGroupClearBits(events, CONNECTED | DISCONNECTED);
-    state = State::connecting;
     esp_wifi_connect();
 }
 
@@ -334,6 +348,7 @@ void supervisor(void *) {
     Credentials pending{};
     char pending_camera_password[97]{};
     bool save_pending = false;
+    bool usb_pending = false, restoring = false;
     TickType_t started = xTaskGetTickCount(), last_attempt = started, close_ap = 0;
     if (load_credentials(pending) == ESP_OK) {
         apply_credentials(pending);
@@ -344,11 +359,12 @@ void supervisor(void *) {
         if (xQueueReceive(requests, &next, pdMS_TO_TICKS(100)) == pdTRUE) {
             pending = next.wifi;
             memcpy(pending_camera_password, next.camera_password, sizeof(pending_camera_password));
+            usb_pending = next.usb;
             wipe(next);
             save_pending = true;
             apply_credentials(pending);
             started = last_attempt = xTaskGetTickCount();
-            submitting = false;
+            if (!usb_pending) submitting = false;
         }
         const TickType_t now = xTaskGetTickCount();
         const State current = state.load();
@@ -357,7 +373,7 @@ void supervisor(void *) {
             if (bits & CONNECTED) {
                 esp_err_t saved = ESP_OK;
 #if CONFIG_CAMERA_REMOTE_ACCESS
-                if (save_pending) saved = camera_access::set_password(pending_camera_password);
+                if (save_pending && pending_camera_password[0]) saved = camera_access::set_password(pending_camera_password);
 #endif
                 if (saved == ESP_OK && save_pending) saved = save_credentials(pending);
                 if (saved != ESP_OK) {
@@ -369,6 +385,12 @@ void supervisor(void *) {
                     ESP_LOGI(TAG, "Wi-Fi connected; settings ready");
                     close_ap = xTaskGetTickCount();
                 }
+                if (usb_pending) {
+                    if (saved == ESP_OK) handoff_at = xTaskGetTickCount();
+                    usb_result = saved != ESP_OK ? "storage_error" : restoring ? "restored" : "saved";
+                    restoring = usb_pending = false;
+                    submitting = false;
+                }
                 save_pending = false;
                 wipe(pending);
                 wipe(pending_camera_password);
@@ -377,8 +399,21 @@ void supervisor(void *) {
                 save_pending = false;
                 wipe(pending);
                 wipe(pending_camera_password);
+                // The saved network is untouched until a new network gets an IP.
+                if (usb_pending && !restoring && load_credentials(pending) == ESP_OK) {
+                    restoring = true;
+                    apply_credentials(pending);
+                    wipe(pending);
+                    started = last_attempt = now;
+                    continue;
+                }
                 ESP_LOGW(TAG, "Wi-Fi connection unavailable; opening setup");
                 start_setup();
+                if (usb_pending) {
+                    usb_result = "failed";
+                    restoring = usb_pending = false;
+                    submitting = false;
+                }
             } else if ((bits & DISCONNECTED) && now - last_attempt >= pdMS_TO_TICKS(1000)) {
                 xEventGroupClearBits(events, DISCONNECTED);
                 esp_wifi_connect();
@@ -455,10 +490,94 @@ extern "C" esp_err_t provisioning_submit_credentials_with_camera(const char *ssi
         if (strlen(camera_password) > 96) return ESP_ERR_INVALID_ARG;
         memcpy(setup.camera_password, camera_password, strlen(camera_password));
     }
-    const bool queued = xQueueSend(requests, &setup, 0) == pdTRUE;
+    const bool acquired = !submitting.exchange(true);
+    const bool queued = acquired && xQueueSend(requests, &setup, 0) == pdTRUE;
+    if (acquired && !queued) submitting = false;
     wipe(setup);
     return queued ? ESP_OK : ESP_ERR_INVALID_STATE;
 }
 extern "C" esp_err_t provisioning_submit_credentials(const char *ssid, const char *password) {
     return provisioning_submit_credentials_with_camera(ssid, password, nullptr);
+}
+
+extern "C" void provisioning_usb_command(const char *command) {
+    const std::string_view input(command);
+    auto reply = [](const char *result) {
+        std::printf("SENSORFUN_USB {\"result\":\"%s\"}\n", result);
+    };
+    if (input == "status") {
+        // `project` is the firmware's CMake project name, so the flasher can
+        // check the board runs the project it is provisioning for.
+        std::string body = "SENSORFUN_USB {\"status\":true,\"project\":" +
+            provisioning::json_quote(esp_app_get_description()->project_name) +
+            ",\"result\":\"" + usb_result.load() + "\"";
+        esp_netif_ip_info_t ip{};
+        if (station_netif && provisioning_is_ready() &&
+            esp_netif_get_ip_info(station_netif, &ip) == ESP_OK && ip.ip.addr) {
+            char address[16]{};
+            std::snprintf(address, sizeof(address), IPSTR, IP2STR(&ip.ip));
+            body += ",\"ip\":\"" + std::string(address) + "\"";
+        }
+        body += "}\n";
+        std::fputs(body.c_str(), stdout);
+        return;
+    }
+    if (!requests || state.load() == State::starting) { reply("busy"); return; }
+    if (submitting.exchange(true)) { reply("busy"); return; }
+    if (input == "scan") {
+        // Same list as the setup page. A camera password is only required
+        // while none is saved, so re-running setup keeps the current one.
+        std::string networks;
+        const esp_err_t err = state.load() == State::connecting ? ESP_ERR_INVALID_STATE : scan_networks(networks);
+        submitting = false;
+        if (err != ESP_OK) { reply(err == ESP_ERR_INVALID_STATE ? "busy" : "scan_failed"); return; }
+#if CONFIG_CAMERA_REMOTE_ACCESS
+        camera_access::Record record;
+        const bool required = camera_access::load(record) != ESP_OK;
+        wipe(record);
+#else
+        const bool required = false;
+#endif
+        std::printf("SENSORFUN_USB {\"result\":\"scan\",\"ssids\":%s,\"camera_password_required\":%s}\n",
+                    networks.c_str(), required ? "true" : "false");
+        return;
+    }
+    const char *result = "invalid";
+    if (input.starts_with("wifi ") && state.load() != State::connecting) {
+        SetupRequest setup{};
+        std::string camera_password;
+#if CONFIG_CAMERA_REMOTE_ACCESS
+        camera_access::Record record;
+        const bool require_camera = camera_access::load(record) != ESP_OK;
+        wipe(record);
+        const bool valid = provisioning::parse_credentials(input.substr(5), setup.wifi, &camera_password, require_camera);
+#else
+        const bool valid = provisioning::parse_credentials(input.substr(5), setup.wifi);
+#endif
+        if (valid) {
+            memcpy(setup.camera_password, camera_password.data(), camera_password.size());
+            setup.usb = true;
+            usb_result = "pending";
+            if (xQueueSend(requests, &setup, 0) == pdTRUE) result = "pending";
+            else { usb_result = "idle"; result = "busy"; }
+        }
+        wipe(setup);
+        if (!camera_password.empty()) {
+            volatile char *secret = camera_password.data();
+            for (size_t i = 0; i < camera_password.size(); ++i) secret[i] = 0;
+        }
+    } else if (input.starts_with("wifi ")) {
+        result = "busy";
+    }
+#if CONFIG_CAMERA_REMOTE_ACCESS
+    else if (input.starts_with("password ")) {
+        std::string password;
+        if (provisioning::form_decode(input.substr(9), password) && camera_access::valid_password(password.c_str())) {
+            result = camera_access::set_password(password.c_str()) == ESP_OK ? "saved" : "storage_error";
+        }
+        camera_access::wipe(password.data(), password.size());
+    }
+#endif
+    if (std::strcmp(result, "pending") != 0) submitting = false;
+    reply(result);
 }

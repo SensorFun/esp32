@@ -17,6 +17,19 @@ npm run dev
 Use the local address printed by Vite. Node 18, 20, or 22+ is supported; the deployment
 workflow uses Node 22. The site uses `wss://signalserver.sensorfun.net/viewer`; no secret is needed to build the site.
 
+The VS Code **Run Website Locally** task passes the workspace's ESP-IDF build
+directory to the flasher. To run the same command from `site/`:
+
+```sh
+npm run dev -- --firmware-dir ../build
+```
+
+Build firmware for the desired board first. The flasher reads
+`build/<project>/<board>/flasher_args.json` and its binaries directly and
+reloads the files at the start of each flash. Refresh the page to list newly
+built boards. This option is available only on the loopback dev server.
+GitHub Pages uses the CI packages described below.
+
 ```sh
 npm run build
 npm run preview

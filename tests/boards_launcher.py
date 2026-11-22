@@ -89,7 +89,7 @@ def main():
     if len(set(boards)) != len(boards):
         parser.error('Parallel devices must have distinct board build directories')
     command = [sys.executable, '-m', 'pytest', 'tests/e2e', '-v', '--tb=short',
-               '-n', str(len(devices)), '--dist', 'load']
+               '-n', str(len(devices)), '--dist', 'loadgroup']
     for device in devices:
         command += ['--board-device', device]
     if args.collect_only:

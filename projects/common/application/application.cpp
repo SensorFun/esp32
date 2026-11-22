@@ -124,13 +124,15 @@ void Application::enter_setup() {
 
 void Application::serial_worker(void *context) {
     auto &app = *static_cast<Application *>(context);
-    char line[97]{};
 #if CONFIG_PROVISIONING_SECURE
+    char line[768]{};
     char ssid[33]{};
 #if CONFIG_CAMERA_REMOTE_ACCESS
     char wifi_password[65]{};
 #endif
     int provisioning_input = 0;
+#else
+    char line[97]{};
 #endif
     size_t length = 0;
     bool overflow = false, last_was_cr = false;
@@ -146,7 +148,9 @@ void Application::serial_worker(void *context) {
         last_was_cr = ch == '\r';
         if (ch == '\n' || ch == '\r') {
 #if CONFIG_PROVISIONING_SECURE
-            if (provisioning_input == 1) {
+            if (provisioning_input == 0 && !overflow && std::strncmp(line, "sensorfan-usb ", 14) == 0) {
+                provisioning_usb_command(line + 14);
+            } else if (provisioning_input == 1) {
                 if (!overflow && length > 0 && length <= 32) {
                     memcpy(ssid, line, length); provisioning_input = 2;
                     ESP_LOGI(TAG, "USB provisioning: password (input is not echoed)");
@@ -186,8 +190,10 @@ void Application::serial_worker(void *context) {
             for (size_t i = 0; i < sizeof(line); ++i) secret[i] = 0;
             length = 0;
             overflow = false;
-        } else if (length < sizeof(line) - 1) line[length++] = static_cast<char>(ch);
-        else overflow = true;
+        } else {
+            if (length < sizeof(line) - 1) line[length++] = static_cast<char>(ch);
+            else overflow = true;
+        }
     }
 }
 }

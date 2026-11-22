@@ -8,6 +8,9 @@ import { parse } from 'yaml';
 
 const virtualId = 'virtual:board-catalog';
 const resolvedId = '\0' + virtualId;
+// One module per project's provisioning page, so each page is its own chunk.
+// (A plain `page.html?raw` import is served as HTML by the dev server.)
+const pagePrefix = 'virtual:provisioning-page/';
 const idPattern = /^[A-Za-z0-9_-]+$/;
 const types = { '.json': 'application/json', '.bin': 'application/octet-stream' };
 
@@ -44,7 +47,17 @@ export function readFirmwareCatalog(workspace, boards = readCatalog(workspace)) 
     if (entry.requires_frame_grabber === true) selected = selected.filter(board => boards.find(item => item.id === board).grabbers.length);
     const after = entry.after_flash ?? {};
     if (after.link !== undefined && !/^(#\/|https:\/\/)/.test(after.link)) throw Error(`${file}: after_flash.link must start with #/ or https://`);
-    return { id, name: entry.name, description: entry.description, boards: [...new Set(selected)].sort(), afterFlash: { text: after.text ?? '', link: after.link ?? '' }, file: path.join(folder, file) };
+    let provisioning = null;
+    if (entry.provisioning !== undefined) {
+      const page = entry.provisioning?.page;
+      const resolved = typeof page === 'string' ? path.resolve(workspace, page) : '';
+      if (Object.keys(entry.provisioning ?? {}).join() !== 'page' || typeof page !== 'string' || !page.startsWith('projects/') || !page.endsWith('.html')
+        || !resolved.startsWith(path.join(workspace, 'projects') + path.sep) || !existsSync(resolved)) {
+        throw Error(`${file}: provisioning.page must be an existing .html file under projects/`);
+      }
+      provisioning = { page: resolved };
+    }
+    return { id, name: entry.name, description: entry.description, boards: [...new Set(selected)].sort(), afterFlash: { text: after.text ?? '', link: after.link ?? '' }, provisioning, file: path.join(folder, file) };
   });
 }
 
@@ -76,16 +89,31 @@ export function packageFiles(folder) {
 function catalogModule(boards, firmwares) {
   const imports = boards.map((board, index) => board.image ? `import image${index} from ${JSON.stringify(board.image)};` : '').join('\n');
   const items = boards.map((board, index) => `{ id: ${JSON.stringify(board.id)}, name: ${JSON.stringify(board.name)}, target: ${JSON.stringify(board.target)}, image: ${board.image ? `image${index}` : 'null'} }`);
-  const projects = firmwares.map(({ id, name, description, boards: ids, afterFlash }) => ({ id, name, description, boards: ids, afterFlash }));
-  return `${imports}\nexport const boards = [${items.join(', ')}];\nexport const firmwares = ${JSON.stringify(projects)};\n`;
+  // Each project's provisioning page is its own chunk, loaded when the popup opens.
+  const projects = firmwares.map(({ id, name, description, boards: ids, afterFlash, provisioning }) => {
+    const fields = JSON.stringify({ id, name, description, boards: ids, afterFlash }).slice(0, -1);
+    const page = provisioning ? `{ page: () => import(${JSON.stringify(pagePrefix + id)}).then(module => module.default) }` : 'null';
+    return `${fields},"provisioning":${page}}`;
+  });
+  return `${imports}\nexport const boards = [${items.join(', ')}];\nexport const firmwares = [${projects.join(', ')}];\n`;
 }
 
 export function boardsPlugin(workspace) {
   const firmwareRoot = path.join(workspace, 'build/firmware');
   return {
     name: 'board-catalog',
-    resolveId(id) { return id === virtualId ? resolvedId : null; },
+    resolveId(id) {
+      if (id === virtualId) return resolvedId;
+      return id.startsWith(pagePrefix) ? '\0' + id : null;
+    },
     load(id) {
+      if (id.startsWith('\0' + pagePrefix)) {
+        const project = id.slice(1 + pagePrefix.length);
+        const page = readFirmwareCatalog(workspace).find(firmware => firmware.id === project)?.provisioning?.page;
+        if (!page) throw Error(`No provisioning page for ${project}`);
+        this.addWatchFile(page);
+        return `export default ${JSON.stringify(readFileSync(page, 'utf8'))};`;
+      }
       if (id !== resolvedId) return null;
       const boards = readCatalog(workspace);
       const firmwares = readFirmwareCatalog(workspace, boards);

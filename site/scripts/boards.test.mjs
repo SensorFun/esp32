@@ -1,11 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, renameSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { packageFiles, readCatalog, readFirmware, readFirmwareCatalog } from './boards-plugin.mjs';
 import { checkBundle } from './check-bundle.mjs';
+import { localFirmwarePlugin } from './local-firmware.mjs';
 
 const workspace = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -24,7 +25,7 @@ function fakePackage(root, board, chip, { isPrivate = false, selectionBoard = bo
   const folder = path.join(root, 'firmware/webrtc', board);
   mkdirSync(path.join(folder, 'bootloader'), { recursive: true });
   const files = { '0x0': 'bootloader/bootloader.bin', '0x10000': 'webrtc.bin' };
-  writeFileSync(path.join(folder, 'flasher_args.json'), JSON.stringify({ flash_settings: { flash_mode: 'dio', flash_size: '4MB', flash_freq: '80m' }, flash_files: files, extra_esptool_args: { chip, before: 'default-reset', after: 'hard-reset' } }));
+  writeFileSync(path.join(folder, 'flasher_args.json'), JSON.stringify({ flash_settings: { flash_mode: 'dio', flash_size: '4MB', flash_freq: '80m' }, flash_files: files, app: { offset: '0x10000', file: 'webrtc.bin' }, extra_esptool_args: { chip, before: 'default-reset', after: 'hard-reset' } }));
   writeFileSync(path.join(folder, 'firmware_selection.json'), JSON.stringify({ board: selectionBoard, frame_grabber: 'ov' }));
   writeFileSync(path.join(folder, 'build.json'), JSON.stringify({ project: 'webrtc', board, commit: 'abc', built: 1, private: isPrivate }));
   for (const file of Object.values(files)) writeFileSync(path.join(folder, file), Buffer.alloc(1024));
@@ -65,6 +66,14 @@ test('the firmware catalog resolves boards like the Python build list', () => {
   assert.throws(() => readFirmwareCatalog(root), /known board IDs/);
   writeFileSync(path.join(root, 'config/firmware/blink.yaml'), 'name: Blink\ndescription: Blinks\nboards: all\nafter_flash:\n  link: "javascript:alert(1)"\n');
   assert.throws(() => readFirmwareCatalog(root), /after_flash.link/);
+  mkdirSync(path.join(root, 'projects/blink'), { recursive: true });
+  writeFileSync(path.join(root, 'projects/blink/setup.html'), '<!doctype html>');
+  writeFileSync(path.join(root, 'config/firmware/blink.yaml'), 'name: Blink\ndescription: Blinks\nboards: all\nprovisioning:\n  page: projects/blink/setup.html\n');
+  assert.equal(readFirmwareCatalog(root).find(item => item.id === 'blink').provisioning.page, path.join(root, 'projects/blink/setup.html'));
+  for (const page of ['../outside.html', 'projects/blink/missing.html', 'projects/blink/setup.txt']) {
+    writeFileSync(path.join(root, 'config/firmware/blink.yaml'), `name: Blink\ndescription: Blinks\nboards: all\nprovisioning:\n  page: ${page}\n`);
+    assert.throws(() => readFirmwareCatalog(root), /provisioning.page/);
+  }
 });
 
 test('the real firmware catalog offers WebRTC for catalog boards', () => {
@@ -102,4 +111,45 @@ test('bundle check finds missing, private, mismatched, and incomplete packages',
   fakePackage(dist, 'board_b', 'esp32');
   writeFileSync(path.join(dist, 'firmware/webrtc/board_b/flasher_args.json'), JSON.stringify({ flash_settings: {}, flash_files: { '0x0': 'missing.bin' }, extra_esptool_args: { chip: 'esp32' } }));
   assert.match(checkBundle(dist, root).problems.join(), /missing missing.bin/);
+});
+
+test('the local flasher reads raw builds and limits access to their flash files', () => {
+  const root = fakeWorkspace();
+  const builds = path.join(root, 'build');
+  const staged = fakePackage(builds, 'board_a', 'esp32s3');
+  fakePackage(builds, 'board_b', 'esp32');
+  const folder = path.join(builds, 'webrtc/board_a');
+  mkdirSync(path.dirname(folder), { recursive: true });
+  renameSync(staged, folder);
+  writeFileSync(path.join(folder, 'sdkconfig'), 'local build config');
+  const plugin = localFirmwarePlugin(root, builds);
+  assert.equal(plugin.apply, 'serve');
+  let serve;
+  plugin.configureServer({ middlewares: { use(route, handler) {
+    assert.equal(route, '/firmware/');
+    serve = handler;
+  } } });
+  const request = (url, headers = {}) => {
+    const response = { headers: {}, setHeader(key, value) { this.headers[key] = value; }, end(body) { this.body = body; } };
+    serve({ method: 'GET', url, headers: { host: '127.0.0.1:5173', ...headers } }, response);
+    return response;
+  };
+  const manifest = JSON.parse(request('/index.json').body);
+  assert.deepEqual(Object.keys(manifest.webrtc), ['board_a']);
+  assert.equal(manifest.webrtc.board_a.local, true);
+  const app = '/webrtc/board_a/webrtc.bin';
+  assert.equal(request(app).body.length, 1024);
+  writeFileSync(path.join(folder, 'webrtc.bin'), 'rebuilt');
+  const refreshed = request(app);
+  assert.equal(refreshed.body.toString(), 'rebuilt');
+  assert.equal(refreshed.headers['Cache-Control'], 'no-store');
+  for (const name of ['sdkconfig', 'firmware.bin', 'build.json', '../../sdkconfig']) {
+    assert.equal(request(`/webrtc/board_a/${name}`).statusCode, 404);
+  }
+  assert.equal(request(app, { host: 'example.test:5173' }).statusCode, 403);
+  assert.equal(request(app, { origin: 'https://example.test' }).statusCode, 403);
+  const bootloader = path.join(folder, 'bootloader');
+  renameSync(bootloader, path.join(root, 'outside'));
+  symlinkSync(path.join(root, 'outside'), bootloader, 'dir');
+  assert.equal(request(app).statusCode, 404);
 });

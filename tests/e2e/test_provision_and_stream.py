@@ -2,9 +2,9 @@
 public signaling tunnel from a locally served copy of the website.
 
 This is the full first-run path end to end: build + flash the firmware,
-`wifi-reset` any previous provisioning, provision fresh over the USB console
-with a disposable random camera password (the same tool and protocol a user
-would use), confirm the board reaches the default public signaling server,
+`wifi-reset` any previous provisioning, provision fresh through the browser
+over USB, verify Wi-Fi recovery and camera password changes, confirm the
+board reaches the default public signaling server,
 then drive a real browser against a local static build of the site to
 confirm it streams, that live setting changes reach the camera, and that
 Save ("apply") persists on the camera while Reset to Default changes only live settings. No Wi-Fi
@@ -31,6 +31,7 @@ from threading import Event, Thread
 import time
 
 import serial
+from playwright.sync_api import expect, sync_playwright
 
 from conftest import Secret
 
@@ -84,9 +85,91 @@ def reset_to_setup(port):
         console.close()
 
 
-def provision(port, ssid, wifi_password, camera_password):
-    run([sys.executable, 'tools/provision.py', '--port', port, '--camera-password', '--credentials-stdin'],
-        stage='USB provisioning', input=f'{ssid}\n{wifi_password}\n{camera_password}\n', text=True)
+def provision_in_browser(url, browser_path, port, ssid, wifi_password, camera_password):
+    # Bridge Chromium's Web Serial boundary to real hardware without interacting
+    # with the native chooser. The production flasher and firmware exchange bytes.
+    with serial.Serial(baudrate=115200, timeout=.15) as console, sync_playwright() as playwright:
+        console.port = port
+        console.dtr = console.rts = False
+        browser = playwright.chromium.launch(executable_path=browser_path, args=['--no-sandbox'])
+        page = browser.new_page(viewport={'width': 390, 'height': 900})
+
+        def open_port():
+            console.open()
+            console.reset_input_buffer()
+
+        page.expose_function('testSerialOpen', open_port)
+        page.expose_function('testSerialRead', lambda: list(console.read(4096)) if console.is_open else [])
+        page.expose_function('testSerialWrite', lambda data: console.write(bytes(data)))
+        page.expose_function('testSerialClose', console.close)
+        page.add_init_script("""
+          const port = {
+            getInfo: () => ({}),
+            async open() {
+              await testSerialOpen();
+              let reading = true;
+              this.readable = new ReadableStream({
+                async pull(controller) {
+                  while (reading) {
+                    const bytes = await testSerialRead();
+                    if (bytes.length && reading) {
+                      controller.enqueue(Uint8Array.from(bytes));
+                      break;
+                    }
+                  }
+                },
+                cancel() { reading = false; },
+              });
+              this.writable = new WritableStream({ write: bytes => testSerialWrite([...bytes]) });
+            },
+            close: () => testSerialClose(),
+          };
+          const api = new EventTarget();
+          api.getPorts = async () => [];
+          api.requestPort = async () => port;
+          Object.defineProperty(navigator, 'serial', { value: api });
+        """)
+        page.goto(url + '#/tools/flasher')
+        page.get_by_role('button', name='Select USB port').click()
+        page.get_by_role('button', name='Provision', exact=True).click()
+        popup = page.get_by_role('dialog', name='Provision WebRTC camera')
+        setup = page.frame_locator('.flasher-provisioning iframe')
+        status = setup.locator('#status')
+
+        def open_setup():
+            if not popup.is_visible():
+                page.get_by_role('button', name='Provision', exact=True).click()
+            expect(status).to_have_text(re.compile(r'Choose your network|No networks found'), timeout=90000)
+
+        def connect(network, password, camera=None):
+            # The firmware's own setup page; values are set without logging them.
+            setup.locator('#ssid').select_option('manual')
+            setup.locator('#manual-ssid').evaluate('(input, value) => { input.value = value; }', network)
+            setup.locator('#password').evaluate('(input, value) => { input.value = value; }', password)
+            assert setup.locator('#camera-access').is_visible() == (camera is not None)
+            if camera is not None:
+                setup.locator('#camera-password').evaluate('(input, value) => { input.value = value; }', camera)
+            setup.get_by_role('button', name='Save and connect').click()
+
+        def close_setup():
+            popup.get_by_role('button', name='Close').click()
+            expect(popup).to_be_hidden()
+
+        open_setup()
+        connect(ssid, wifi_password, camera_password)
+        expect(status).to_have_text('Connected. Your settings are saved.', timeout=195000)
+        expect(setup.locator('#local-viewer-link')).to_have_attribute('href', re.compile(r'^https://[\d.]+/$'))
+        assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+        close_setup()
+        open_setup()  # The saved camera password is kept; the page no longer asks for it.
+        connect(ssid, wifi_password)
+        expect(status).to_have_text('Connected. Your settings are saved.', timeout=60000)
+        close_setup()
+        open_setup()
+        connect('missing-' + secrets.token_hex(8), '')
+        expect(status).to_contain_text('reconnected to its saved network', timeout=60000)
+        close_setup()
+        browser.close()
 
 
 def discover(port, lines):
@@ -124,15 +207,21 @@ def test_provision_and_stream(board, wifi_credentials, tmp_path):
 
     print('Resetting any previous provisioning…', flush=True)
     reset_to_setup(port)
-    print('Provisioning with a fresh random camera password…', flush=True)
-    provision(port, wifi_ssid, wifi_password, camera_password)
-
     http_server = None
     console = None
     diagnostics = deque(maxlen=50)
     stop = Event()
     reader = None
     try:
+        site_output = tmp_path / 'site-dist'
+        print('Building the website against the public signaling server…', flush=True)
+        run(['npm', 'run', 'build', '--', '--outDir', str(site_output)],
+            cwd=ROOT / 'site', stage='Website build')
+        http_server = ThreadingHTTPServer(('127.0.0.1', 0), partial(QuietHandler, directory=str(site_output)))
+        Thread(target=http_server.serve_forever, daemon=True).start()
+        site_url = f'http://127.0.0.1:{http_server.server_port}/'
+        print('Testing browser USB provisioning, Wi-Fi recovery and password changes…', flush=True)
+        provision_in_browser(site_url, board['browser'], port, wifi_ssid, wifi_password, camera_password)
         print('Waiting for the camera to reach the public signaling server…', flush=True)
         camera_id, local_url, console = discover(port, diagnostics)
         print('Provisioned camera ID:', camera_id, flush=True)
@@ -150,13 +239,6 @@ def test_provision_and_stream(board, wifi_credentials, tmp_path):
         reader = Thread(target=drain, daemon=True)
         reader.start()
 
-        site_output = tmp_path / 'site-dist'
-        print('Building the website against the public signaling server…', flush=True)
-        run(['npm', 'run', 'build', '--', '--outDir', str(site_output)],
-            cwd=ROOT / 'site', stage='Website build')
-
-        http_server = ThreadingHTTPServer(('127.0.0.1', 0), partial(QuietHandler, directory=str(site_output)))
-        Thread(target=http_server.serve_forever, daemon=True).start()
         print('Driving a real browser through the public signaling tunnel…', flush=True)
         run([sys.executable, str(ROOT / 'site/scripts/check-e2e.py'), '--browser', board['browser'],
              '--url', f'http://127.0.0.1:{http_server.server_port}/#/projects/webrtc',

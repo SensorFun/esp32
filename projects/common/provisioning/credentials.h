@@ -50,7 +50,7 @@ inline bool form_decode(std::string_view value, std::string &out) {
     return true;
 }
 
-inline bool parse_credentials(std::string_view body, Credentials &out, std::string *camera_password = nullptr) {
+inline bool parse_credentials(std::string_view body, Credentials &out, std::string *camera_password = nullptr, bool require_camera = true) {
     std::string ssid, password;
     bool have_ssid = false, have_password = false, have_camera = false;
     while (!body.empty()) {
@@ -73,7 +73,8 @@ inline bool parse_credentials(std::string_view body, Credentials &out, std::stri
         body.remove_prefix(end + 1);
     }
     if (!have_ssid || !have_password || !valid_credentials(ssid, password)) return false;
-    if (camera_password && (!have_camera || camera_password->size() < 12 || camera_password->size() > 96)) return false;
+    if (camera_password && ((require_camera && !have_camera) ||
+        (have_camera && (camera_password->size() < 12 || camera_password->size() > 96)))) return false;
     out = {};
     std::memcpy(out.ssid, ssid.data(), ssid.size());
     std::memcpy(out.password, password.data(), password.size());

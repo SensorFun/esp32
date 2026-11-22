@@ -39,7 +39,7 @@ def load_firmware(root: Path, check_sources: bool = True) -> dict:
             raise ValueError(f'{path.name}: no firmware project projects/{project}')
         if not isinstance(entry, dict):
             raise ValueError(f'{path.name}: expected a mapping')
-        unknown = set(entry) - {'name', 'description', 'boards', 'requires_frame_grabber', 'private_settings', 'after_flash'}
+        unknown = set(entry) - {'name', 'description', 'boards', 'requires_frame_grabber', 'private_settings', 'after_flash', 'provisioning'}
         if unknown:
             raise ValueError(f'{path.name}: unknown fields {sorted(unknown)}')
         for field in ('name', 'description'):
@@ -68,8 +68,16 @@ def load_firmware(root: Path, check_sources: bool = True) -> dict:
             raise ValueError(f'{path.name}: after_flash takes text and link strings')
         if 'link' in after and not re.match(r'(#/|https://)', after['link']):
             raise ValueError(f'{path.name}: after_flash.link must start with #/ or https://')
+        provisioning = entry.get('provisioning')
+        if provisioning is not None:
+            page = provisioning.get('page') if isinstance(provisioning, dict) else None
+            if (not isinstance(page, str) or set(provisioning) != {'page'} or not page.startswith('projects/')
+                    or not page.endswith('.html') or '..' in Path(page).parts or '\\' in page):
+                raise ValueError(f'{path.name}: provisioning takes a page path under projects/ ending in .html')
+            if check_sources and not (root / page).is_file():
+                raise ValueError(f'{path.name}: provisioning page {page} does not exist')
         catalog[project] = {'name': entry['name'], 'description': entry['description'], 'boards': sorted(selected),
-                            'private_settings': private, 'after_flash': after}
+                            'private_settings': private, 'after_flash': after, 'provisioning': provisioning}
     return catalog
 
 
