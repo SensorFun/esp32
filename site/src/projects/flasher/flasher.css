@@ -4,7 +4,6 @@
 .flasher-warning{border-color:#6b5a2e;background:#211d12}
 .flasher-warning h2{color:#e6cf8e}
 .flasher code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:13px;color:#c5d5bd;overflow-wrap:anywhere}
-.flasher-number{display:inline-grid;place-items:center;width:28px;height:28px;border-radius:50%;background:#123b38;color:#00d4cb;font-family:monospace;font-size:14px}
 .flasher .button{min-height:44px;font-size:14px;padding:10px 18px}
 .flasher .rtc-primary{background:#00d4cb;color:#07302c}
 .flasher .rtc-primary:hover:not(:disabled){background:#63e9df}

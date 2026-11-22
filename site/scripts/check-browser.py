@@ -116,6 +116,10 @@ with sync_playwright() as p:
       Object.defineProperty(window, 'showDirectoryPicker', { value: undefined });
     })();'''
     flasher_url = urljoin(args.url.split('#')[0], 'tools/flasher')
+
+    def flasher_tab(page, name):
+        page.get_by_role('tab', name=name, exact=True).click()
+
     for width in (320, 390, 768, 1440):
         context = browser.new_context(viewport={'width': width, 'height': 1000})
         context.add_init_script(fake_serial)
@@ -126,6 +130,16 @@ with sync_playwright() as p:
         expect(page).to_have_title('Flasher · ESP32 · SensorFun')
         expect(page.get_by_role('heading', name='Flash firmware', exact=True)).to_be_visible()
         expect(page.get_by_text('This browser cannot flash boards')).to_have_count(0)
+        tabs = page.get_by_role('tablist', name='Flasher setup')
+        expect(tabs.get_by_role('tab')).to_have_text(['Firmware', 'USB Port', 'Flash & Provision'])
+        expect(page.get_by_role('tabpanel')).to_have_count(1)
+        boxes = [tab.bounding_box() for tab in tabs.get_by_role('tab').all()]
+        assert all(box['y'] == boxes[0]['y'] and box['height'] >= 44 for box in boxes)
+        assert boxes[0]['x'] < boxes[1]['x'] < boxes[2]['x']
+        tabs.get_by_role('tab', name='Firmware').press('End')
+        expect(page.get_by_role('tabpanel', name='Flash & Provision')).to_be_visible()
+        tabs.get_by_role('tab', name='Flash & Provision').press('Home')
+        expect(page.get_by_role('tabpanel', name='Firmware')).to_be_visible()
         # Every catalog board appears with its name and a loaded image.
         cards = page.locator('.flasher-board')
         expect(cards).to_have_count(len(catalog))
@@ -138,6 +152,7 @@ with sync_playwright() as p:
         expect(goouuu).to_be_disabled()
         expect(cards.filter(has_text=catalog[missing]['name'])).to_contain_text('No firmware yet')
         # One board: Select USB port picks a single port; there is no list to add to.
+        flasher_tab(page, 'USB Port')
         selected = page.get_by_test_id('selected-port')
         expect(selected).to_have_count(0)
         expect(page.get_by_role('button', name='Add USB port', exact=True)).to_have_count(0)
@@ -145,9 +160,12 @@ with sync_playwright() as p:
         page.get_by_role('button', name='Select USB port', exact=True).click()
         expect(selected).to_contain_text('Silicon Labs CP210x (10c4:ea60)')
         expect(selected).to_contain_text('ESP32 programmer')
+        assert page.get_by_role('button', name='Select USB port', exact=True).bounding_box()['height'] >= 44
+        flasher_tab(page, 'Flash & Provision')
         flash = page.get_by_role('button', name=re.compile(r'^Flash firmware(?: \(keep settings\))?$'))
         expect(flash).to_be_disabled()
         # Hosted firmware: choose a board card.
+        flasher_tab(page, 'Firmware')
         s3 = catalog['esp32s3n16r8_espressif_cam']['name']
         page.get_by_role('radio', name=re.compile('^' + re.escape(s3))).check()
         summary = page.get_by_test_id('firmware-summary')
@@ -155,10 +173,10 @@ with sync_playwright() as p:
         expect(summary).to_contain_text('ESP32-S3')
         expect(summary).to_contain_text('abc123def456')
         expect(summary.locator('table')).to_have_count(0)
-        expect(flash).to_be_enabled()
-        for name in ('Select USB port', 'Flash firmware (keep settings)'):
-            assert page.get_by_role('button', name=name, exact=True).bounding_box()['height'] >= 44
         assert cards.first.bounding_box()['height'] >= 44
+        flasher_tab(page, 'Flash & Provision')
+        expect(flash).to_be_enabled()
+        assert flash.bounding_box()['height'] >= 44
         if width <= 600:
             assert page.get_by_label('Speed').evaluate('(select)=>parseFloat(getComputedStyle(select).fontSize)>=16')
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
@@ -167,6 +185,7 @@ with sync_playwright() as p:
         expect(page.get_by_test_id('flash-status')).not_to_be_empty()
         expect(flash).to_be_enabled()
         # Upload one firmware file instead of a board package.
+        flasher_tab(page, 'Firmware')
         page.get_by_label('Firmware source', exact=True).select_option('upload')
         upload = page.get_by_role('button', name='Upload firmware file', exact=True)
         assert upload.bounding_box()['height'] >= 44
@@ -176,13 +195,16 @@ with sync_playwright() as p:
         expect(summary).to_contain_text('0x10000')
         expect(summary).to_contain_text('ESP32-S3')
         expect(page.locator('.flasher-board')).to_have_count(0)
+        flasher_tab(page, 'Flash & Provision')
         expect(flash).to_be_enabled()
+        flasher_tab(page, 'Firmware')
         page.get_by_label('Firmware file').set_input_files(str(uploads / 'merged.bin'))
         expect(summary).to_contain_text('Full flash image')
         expect(summary).to_contain_text('ESP32')
         page.get_by_label('Firmware file').set_input_files(str(uploads / 'notes.bin'))
         expect(page.get_by_role('alert')).to_contain_text('notes.bin is not an ESP32 firmware image')
         expect(summary).to_have_count(0)
+        flasher_tab(page, 'Flash & Provision')
         expect(flash).to_be_disabled()
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         context.close()
@@ -211,6 +233,7 @@ with sync_playwright() as p:
     expect(summary).to_contain_text('App image · webrtc 1.2.3')
     expect(summary).to_contain_text('0x20000')
     # Selecting another board replaces the port and forgets the previous one.
+    flasher_tab(page, 'USB Port')
     page.get_by_role('button', name='Select USB port', exact=True).click()
     expect(page.get_by_test_id('selected-port')).to_contain_text('Silicon Labs CP210x (10c4:ea60)')
     page.get_by_role('button', name='Select USB port', exact=True).click()
@@ -225,6 +248,7 @@ with sync_playwright() as p:
     context.add_init_script("Object.defineProperty(navigator, 'serial', { value: { getPorts: async () => [{ getInfo: () => ({ usbVendorId: 0x1a86, usbProductId: 0x55d3 }) }], requestPort: async () => { throw new DOMException('none', 'NotFoundError'); }, addEventListener() {}, removeEventListener() {} } });")
     page = context.new_page()
     page.goto(flasher_url)
+    flasher_tab(page, 'USB Port')
     expect(page.get_by_test_id('selected-port')).to_contain_text('WCH CH340 (1a86:55d3)')
     context.close()
     context = browser.new_context()
@@ -232,7 +256,9 @@ with sync_playwright() as p:
     page = context.new_page()
     page.goto(flasher_url)
     expect(page.get_by_text('This browser cannot flash boards')).to_be_visible()
+    flasher_tab(page, 'USB Port')
     expect(page.get_by_role('button', name='Select USB port', exact=True)).to_be_disabled()
+    flasher_tab(page, 'Flash & Provision')
     expect(page.get_by_role('button', name='Flash firmware (keep settings)', exact=True)).to_be_disabled()
     context.close()
 
@@ -314,6 +340,7 @@ with sync_playwright() as p:
         page.evaluate(await_patch, {'url': sdk_url, 'table': base64.b64encode(table).decode(),
                                    'digest': list(hashlib.md5(table).digest()),
                                    'erased': hashlib.md5(b'\xff' * 0x5000).hexdigest()})
+        flasher_tab(page, 'Flash & Provision')
         write_firmware = page.get_by_role('checkbox', name='Flash firmware', exact=True)
         clear_settings = page.get_by_role('checkbox', name=re.compile('^Clear settings'))
         expect(write_firmware).to_be_checked()
@@ -327,8 +354,11 @@ with sync_playwright() as p:
         page.once('dialog', lambda dialog: dialog.dismiss())
         reset.click()
         page.wait_for_function('window.nvsConnections===1')
+        flasher_tab(page, 'Firmware')
         expect(page.get_by_label('Firmware source', exact=True)).to_be_disabled()
+        flasher_tab(page, 'USB Port')
         expect(page.get_by_role('button', name='Select USB port', exact=True)).to_be_disabled()
+        flasher_tab(page, 'Flash & Provision')
         page.evaluate('window.nvsContinue()')
         expect(page.get_by_test_id('flash-status')).to_contain_text('Cancelled. No settings erased.')
         assert page.evaluate('window.nvsErases') == []
@@ -367,8 +397,10 @@ with sync_playwright() as p:
             write_firmware.check()
             combined = page.get_by_role('button', name='Clear settings and flash', exact=True)
             expect(combined).to_be_disabled()
+            flasher_tab(page, 'Firmware')
             page.get_by_label('Firmware source', exact=True).select_option('upload')
             page.get_by_label('Firmware file').set_input_files(str(uploads / 'webrtc.bin'))
+            flasher_tab(page, 'Flash & Provision')
             expect(combined).to_be_enabled()
             page.once('dialog', lambda dialog: dialog.accept())
             combined.click()
@@ -438,9 +470,13 @@ with sync_playwright() as p:
                 expect(popup).to_be_hidden()
             page.evaluate('delete window.testBoardProject')
             # Provisioning follows the selected project; uploads without a known project have none.
+            flasher_tab(page, 'Firmware')
             page.get_by_label('Firmware source', exact=True).select_option('upload')
+            flasher_tab(page, 'Flash & Provision')
             expect(provision).to_have_count(0)
+            flasher_tab(page, 'Firmware')
             page.get_by_label('Firmware source', exact=True).select_option('webrtc')
+            flasher_tab(page, 'Flash & Provision')
             expect(provision).to_be_visible()
         context.close()
 

@@ -92,9 +92,12 @@ class CameraTabs extends HTMLElement {
         button{flex:1 1 150px;min-width:0;min-height:48px;padding:12px 14px;border:1px solid #415335;border-radius:7px;background:#172418;color:#bdcbb3;font:inherit;font-size:16px;cursor:pointer}
         button[aria-selected=true]{background:#c5ed9f;color:#203316;border-color:#c5ed9f}
         button:focus-visible{outline:3px solid #91cbea;outline-offset:2px}
+        :host([data-layout=horizontal]) nav{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(0,1fr)}
+        :host([data-layout=horizontal]) button{padding:8px 4px;text-wrap:balance}
         ::slotted([hidden]){display:none!important}
       </style><nav role="tablist" aria-label="Camera controls"></nav><slot></slot>`;
       const nav = this.shadowRoot.querySelector('nav');
+      if (this.dataset.label) nav.setAttribute('aria-label', this.dataset.label);
       const select = index => panels.forEach((panel, i) => {
         panel.hidden = i !== index;
         nav.children[i].setAttribute('aria-selected', String(i === index));
@@ -105,7 +108,7 @@ class CameraTabs extends HTMLElement {
         button.type = 'button'; button.textContent = panel.dataset.label;
         button.id = `${prefix}-tab-${index}`; button.setAttribute('role', 'tab');
         panel.id = `${prefix}-panel-${index}`; panel.setAttribute('role', 'tabpanel');
-        panel.setAttribute('aria-labelledby', button.id); button.setAttribute('aria-controls', panel.id);
+        panel.setAttribute('aria-label', button.textContent); button.setAttribute('aria-controls', panel.id);
         button.onclick = () => select(index);
         button.onkeydown = event => {
           let next;

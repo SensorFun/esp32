@@ -8,6 +8,7 @@ import { checkLayout, chipId, chipName, inspectImage, isEsp32Port, md5, parseFla
 import { resetNvs } from './nvs.mjs';
 import { sitePath } from '../../routes.mjs';
 import { UsbProvisioning } from './UsbProvisioning';
+import '../../../../projects/common/camera_ui/settings.js';
 
 const decoder = new TextDecoder();
 const bauds = [115200, 230400, 460800, 921600];
@@ -258,8 +259,8 @@ export function FlasherProject() {
     <div className="sensorfan-intro"><h1>Flash firmware</h1><p>Flash firmware or reset NVS settings over USB, entirely in this browser. To flash, choose a board or upload your own firmware file. Firmware goes only from this page to the board; it is never sent to a server.</p></div>
     {!supported && <div className="rtc-panel flasher-warning" role="alert"><h2>This browser cannot flash boards</h2><p>Flashing uses Web Serial. Open this page in Chrome or Edge on a computer, over HTTPS or localhost.</p></div>}
 
-    <section className="rtc-panel flasher-step" aria-labelledby="firmware-title">
-      <div className="panel-title"><span className="flasher-number">1</span><h2 id="firmware-title">Firmware</h2></div>
+    <sensorfan-camera-tabs data-label="Flasher setup" data-layout="horizontal">
+    <section className="rtc-panel flasher-step" data-label="Firmware">
       <div className="flasher-source"><label htmlFor="firmware-source">Firmware source</label><select id="firmware-source" disabled={busy} value={project} onChange={event => { setProject(event.target.value); window.history.replaceState(null, '', `?project=${event.target.value}`); setBoardId(''); load.current++; setFirmware(null); setFirmwareError(''); setState('idle'); setStatus(''); }}>{firmwares.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}<option value="upload">Upload your firmware</option></select></div>
       {offered && <><p>{offered.description} Choose your board below.</p>
       <fieldset className="flasher-boards" disabled={busy}><legend className="flasher-hidden">Board</legend>{offeredBoards.map(board => {
@@ -287,15 +288,13 @@ export function FlasherProject() {
       </div>}
     </section>
 
-    <section className="rtc-panel flasher-step" aria-labelledby="port-title">
-      <div className="panel-title"><span className="flasher-number">2</span><h2 id="port-title">USB port</h2></div>
+    <section className="rtc-panel flasher-step" data-label="USB Port" hidden>
       <p>Connect one board by USB, then select its port in the browser's list.</p>
       {port && <p className="flasher-selected-port" data-testid="selected-port"><Icon name="chip" size={16} /><span><strong>{portLabel(portInfo)}</strong>{isEsp32Port(portInfo) && <small>ESP32 programmer</small>}</span></p>}
       <button type="button" className="button rtc-secondary" disabled={!supported || busy} onClick={selectPort}><Icon name="plus" size={16} />Select USB port</button>
     </section>
 
-    <section className="rtc-panel flasher-step" aria-labelledby="flash-title">
-      <div className="panel-title"><span className="flasher-number">3</span><h2 id="flash-title">Flash</h2></div>
+    <section className="rtc-panel flasher-step" data-label="Flash & Provision" hidden>
       <div className="flasher-options">
         <label htmlFor="flash-baud">Speed</label>
         <select id="flash-baud" value={connectionMode === 'manual' ? 115200 : baud} disabled={busy || connectionMode === 'manual'} onChange={event => setBaud(Number(event.target.value))}>{bauds.map(value => <option key={value} value={value}>{value.toLocaleString()} baud</option>)}</select>
@@ -322,7 +321,8 @@ export function FlasherProject() {
       {state === 'done' && !next?.provisioning && next?.afterFlash.text && <p>{next.afterFlash.text} {next.afterFlash.link && <a href={next.afterFlash.link.startsWith('/') ? sitePath(next.afterFlash.link) : next.afterFlash.link}>Open {next.name}</a>}</p>}
       {log.length > 0 && <details className="flasher-log"><summary>Details</summary><pre>{log.join('\n')}</pre></details>}
       {connectionMode === 'manual' && <p className="flasher-hint">Hold BOOT, tap RESET, then release BOOT before starting. If your ESP32-CAM has no BOOT button, connect GPIO0 to GND before resetting, then remove the connection after the action finishes and reset again.</p>}
+      {showUsb && next?.provisioning && <UsbProvisioning port={port} project={next} onClose={() => setShowUsb(false)} onViewer={setViewer} />}
     </section>
-    {showUsb && next?.provisioning && <UsbProvisioning port={port} project={next} onClose={() => setShowUsb(false)} onViewer={setViewer} />}
+    </sensorfan-camera-tabs>
   </main></div></div>;
 }

@@ -142,16 +142,17 @@ opens one project directly, so a project page can link to its firmware.
      padding) and replaces everything.
 
    Other files are rejected. Uploaded files keep the board's flash settings.
-2. **Select USB port**: flash one board at a time. The browser's chooser lists
+2. **USB Port**: use **Select USB port** to flash one board at a time. The browser's chooser lists
    every serial port; the page shows the selected one by USB vendor (Espressif
    USB, CP210x, CH340, FTDI, Prolific). Selecting another port replaces it and
    forgets the previous one. A single port allowed on an earlier visit is
    selected again automatically while it is connected.
-3. **Flash**: choose **Clear settings**, **Flash firmware**, or both. The action
+3. **Flash & Provision**: choose **Clear settings**, **Flash firmware**, or both. The action
    button updates to match. Clearing settings alone needs only the USB port.
    Selecting both verifies the chip, clears NVS, then writes and verifies
    the selected firmware. Flashing alone skips the NVS erase. Full flash
-   images can overwrite settings as part of the image itself.
+   images can overwrite settings as part of the image itself. For supported
+   firmware, use **Provision** in this tab to set up the board over USB.
 
 Clearing settings uses the ESP flash-loader stub in RAM. It reads the installed
 ESP-IDF partition table, asks for confirmation, and erases and verifies the
