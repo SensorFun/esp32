@@ -14,6 +14,7 @@ class DiagnosticsTests(unittest.TestCase):
     def test_history_bounds_cursors_and_payload(self):
         with tempfile.TemporaryDirectory() as directory:
             folder = Path(directory)
+            (folder / 'sdkconfig.h').write_text('#pragma once\n#define CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH 0\n')
             (folder / 'freertos').mkdir()
             (folder / 'freertos/FreeRTOS.h').write_text('#pragma once\nusing portMUX_TYPE = int;\n#define portMUX_INITIALIZER_UNLOCKED 0\n#define portENTER_CRITICAL(x) ((void)(x))\n#define portEXIT_CRITICAL(x) ((void)(x))\n')
             (folder / 'esp_timer.h').write_text('#pragma once\n#include <cstdint>\ninline int64_t esp_timer_get_time() { static int64_t t=0; return t+=1000; }\n')

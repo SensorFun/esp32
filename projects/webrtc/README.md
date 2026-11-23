@@ -406,8 +406,22 @@ payloads, images, or per-frame messages.
 The camera retains 48 entries in RAM; reboot clears this history. Entries contain
 uptime, severity, and a repeat count. Text is limited to 127 bytes. Each response
 contains at most four entries, with a firmware limit of one response every two
-seconds (under 1.5 KB per response). The viewer polls every 2.5 seconds only while
-the tab is visible and connected, retains 200 displayed lines, and reports gaps
+seconds (under 1.5 KB per response). The viewer polls every 2.5 seconds while
+the page is visible and connected, retains 200 displayed lines, and reports gaps
 when older entries have expired. Pending controls take priority over log replies.
-Logs travel directly over the encrypted camera data channel; this does not store
-camera logs on the signaling server or preserve a crash trace across reboot.
+Logs travel directly over the encrypted camera data channel; camera logs remain in the viewer.
+
+### Saved crash dumps
+
+Panic core dumps are saved to a 256 KB flash partition at `0x3c0000`.
+After reboot, Diagnostics reports dump validity, panic reason, crashed task,
+program counter, and the crashing firmware's ELF SHA256 when available.
+The latest dump remains until a later panic replaces it. Power loss and hard
+hangs may leave no dump, and an interrupted dump write can leave a corrupt dump.
+PSRAM contents are excluded by the ESP-IDF core dump implementation.
+
+For detailed analysis, preserve the matching `webrtc.elf` from the build and
+read the dump partition using esptool `read-flash 0x3c0000 0x40000 core.bin`.
+Use ESP-IDF's `idf.py coredump-info` or `idf.py coredump-debug` with the matching
+project build to decode task stacks. Dumps contain memory and should be treated
+as private diagnostic files.

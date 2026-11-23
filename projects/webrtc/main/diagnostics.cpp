@@ -1,5 +1,9 @@
 #include "diagnostics.h"
 #include "esp_timer.h"
+#include "sdkconfig.h"
+#if CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH
+#include "esp_core_dump.h"
+#endif
 #include "freertos/FreeRTOS.h"
 #include <cstdio>
 #include <cstring>
@@ -53,4 +57,30 @@ cJSON *diagnostic_logs(uint32_t after) {
         cJSON_AddItemToArray(list, item);
     }
     return reply;
+}
+
+void diagnostic_boot() {
+#if CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH
+    size_t address = 0, size = 0;
+    if (esp_core_dump_image_get(&address, &size) != ESP_OK) {
+        diagnostic_event("info", "Core dump enabled; no saved crash dump");
+        return;
+    }
+    if (esp_core_dump_image_check() != ESP_OK) {
+        diagnostic_event("error", "Saved core dump is incomplete or corrupt");
+        return;
+    }
+    char text[128];
+    snprintf(text, sizeof(text), "Saved core dump: %u bytes at flash 0x%x", unsigned(size), unsigned(address));
+    diagnostic_event("error", text);
+    char reason[128]{};
+    if (esp_core_dump_get_panic_reason(reason, sizeof(reason)) == ESP_OK) diagnostic_event("error", reason);
+    esp_core_dump_summary_t summary{};
+    if (esp_core_dump_get_summary(&summary) == ESP_OK) {
+        snprintf(text, sizeof(text), "Crash task %.16s; PC 0x%08x", summary.exc_task, unsigned(summary.exc_pc));
+        diagnostic_event("error", text);
+        snprintf(text, sizeof(text), "Crash firmware ELF SHA256: %.64s", reinterpret_cast<const char *>(summary.app_elf_sha256));
+        diagnostic_event("info", text);
+    }
+#endif
 }

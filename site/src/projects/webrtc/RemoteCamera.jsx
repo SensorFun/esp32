@@ -85,6 +85,7 @@ export function RemoteCamera({ onSessionState }) {
       session.socket?.close({ notifyPeer: true }); session.channel?.close(); session.peer?.close();
       if (session.url) URL.revokeObjectURL(session.url);
     }
+    logs.current?.recordBrowser(message);
     setState('idle'); setSettings(null); setTransport('—'); setFps(0); setStatus(message);
     for (const view of motionViews()) view.reset();
     if (image.current) image.current.removeAttribute('src');

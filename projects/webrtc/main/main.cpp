@@ -332,7 +332,7 @@ esp_err_t session(httpd_req_t *r) {
         msg.size = offer.size();
         ret = esp_peer_send_msg(peer, &msg);
     }
-    if (ret != 0) { ESP_LOGE(TAG, "Peer creation/SDP failed: %d", ret); close_peer(); return respond(r, "503 Service Unavailable", "{\"error\":\"Peer creation failed\"}"); }
+    if (ret != 0) { diagnostic_event("error", ("Peer creation failed: " + std::to_string(ret)).c_str()); ESP_LOGE(TAG, "Peer creation/SDP failed: %d", ret); close_peer(); return respond(r, "503 Service Unavailable", "{\"error\":\"Peer creation failed\"}"); }
     activity = esp_timer_get_time();
     return respond(r, "202 Accepted", "{}");
 }
@@ -380,7 +380,7 @@ void remote_events() {
                 msg.data = reinterpret_cast<uint8_t *>(event.data.data()); msg.size = event.data.size();
                 ret = esp_peer_send_msg(peer, &msg);
             }
-            if (ret) { ESP_LOGE(TAG, "Remote peer failed: %d", ret); close_peer(); }
+            if (ret) { diagnostic_event("error", ("Remote peer creation failed: " + std::to_string(ret)).c_str()); ESP_LOGE(TAG, "Remote peer failed: %d", ret); close_peer(); }
             activity = esp_timer_get_time();
         } else if (remote_peer && peer && (event.type == 1 || event.type == 2)) {
             esp_peer_msg_t msg{};
@@ -408,6 +408,7 @@ void start_server() {
         if (event->user_cb_state != HTTPD_SSL_USER_CB_SESS_ERROR) return;
         wifi_ap_record_t ap{};
         esp_wifi_sta_get_ap_info(&ap);
+        diagnostic_event("warning", "Local HTTPS handshake failed");
         ESP_LOGW(TAG, "HTTPS handshake failed: internal heap %u, largest %u, RSSI %d",
                  unsigned(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
                  unsigned(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)), int(ap.rssi));
@@ -440,6 +441,16 @@ void worker(common::Application &app) {
     char boot[80];
     snprintf(boot, sizeof(boot), "Application started; reset reason %d", int(esp_reset_reason()));
     diagnostic_event("info", boot);
+    switch (esp_reset_reason()) {
+    case ESP_RST_PANIC: diagnostic_event("error", "Previous boot ended in a panic"); break;
+    case ESP_RST_INT_WDT:
+    case ESP_RST_TASK_WDT:
+    case ESP_RST_WDT: diagnostic_event("error", "Previous boot ended in a watchdog reset"); break;
+    case ESP_RST_BROWNOUT: diagnostic_event("error", "Brownout reset: supply voltage dropped"); break;
+    case ESP_RST_POWERON: diagnostic_event("info", "Power-on reset"); break;
+    default: break;
+    }
+    diagnostic_boot();
     bool network_ready = false;
     bool camera_ready = false;
     camera_fb_t *fb = nullptr;
@@ -515,6 +526,7 @@ void worker(common::Application &app) {
             }
             if (peer && (failed || peer_auth.expired(now) || now - activity > PEER_IDLE_US)) {
                 if (fb) { camera_frame_return(fb); fb = nullptr; }
+                diagnostic_event("warning", failed ? "Peer transport failed" : peer_auth.expired(now) ? "Viewer authentication timed out" : "Viewer heartbeat timed out");
                 ESP_LOGW(TAG, "Closing camera peer: failed=%d idle_ms=%lld", failed, (now - activity) / 1000);
                 close_peer();
             }
@@ -527,7 +539,7 @@ void worker(common::Application &app) {
                     const cJSON *op = cJSON_GetObjectItemCaseSensitive(request, "op");
                     cJSON *reply = nullptr;
                     if (cJSON_IsString(op) && !strcmp(op->valuestring, "logs_get")) {
-                        if (now >= next_logs && replies.empty()) {
+                        if (now >= next_logs && replies.size() < 4) {
                             const cJSON *after = cJSON_GetObjectItemCaseSensitive(request, "after");
                             const double cursor = cJSON_IsNumber(after) ? after->valuedouble : 0;
                             send_text(diagnostic_logs(cursor >= 0 && cursor <= UINT32_MAX ? uint32_t(cursor) : 0));
@@ -562,6 +574,7 @@ void worker(common::Application &app) {
                 int ret = esp_peer_send_data(peer, &reply);
                 if (ret == 0) { replies.pop_front(); continue; }
                 if (ret != ESP_PEER_ERR_WOULD_BLOCK && ret != ESP_PEER_ERR_NO_MEM) {
+                    diagnostic_event("error", ("Control send failed: " + std::to_string(ret)).c_str());
                     ESP_LOGW(TAG, "Control send failed: result=%d bytes=%u", ret, unsigned(text.size()));
                     failed = true;
                 }
@@ -611,6 +624,7 @@ void worker(common::Application &app) {
                 static int64_t last_memory_report = 0;
                 if (now - last_memory_report > 10000000) {
                     last_memory_report = now;
+                    diagnostic_event("warning", "Video paused: insufficient internal RAM");
                     ESP_LOGW(TAG, "Video paused for internal memory: free=%u largest=%u",
                         unsigned(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
                         unsigned(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)));

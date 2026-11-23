@@ -62,7 +62,7 @@ function startFps(){
  fpsTimer=setInterval(()=>{const now=performance.now();$('fps').textContent=(displayedFrames*1000/(now-sampledAt)).toFixed(1)+' FPS';displayedFrames=0;sampledAt=now;},1000);
 }
 $('preview').onload=()=>{if(channel?.readyState==='open'&&objectURL&&$('preview').getAttribute('src')===objectURL)displayedFrames++;};
-function status(text){$('status').textContent=text;}
+function status(text){$('status').textContent=text;$('logs-panel').recordBrowser?.(text);}
 const motionViews=()=>[$('motion-panel'),$('recording-panel'),$('recordings'),$('overlay'),$('logs-panel')];
 Promise.all(['sensorfan-camera-settings','sensorfan-motion-settings','sensorfan-recordings','sensorfan-motion-overlay','sensorfan-camera-logs'].map(name=>customElements.whenDefined(name))).then(()=>{$('connect').disabled=false;});
 for(const id of ['settings-module','motion-module','logs-module'])$(id).addEventListener('error',()=>status('Camera controls could not load. Reload this page to retry.'));
