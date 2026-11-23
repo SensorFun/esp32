@@ -32,7 +32,6 @@ static bool stream_images = true;
 // leaving `sensor` dangling, so nothing may touch the sensor until then.
 static bool sensor_ready = false;
 static bool capture_idle;
-static int64_t capture_idle_retry;
 static constexpr char stream_setting[] = "stream_images";
 static esp_err_t restore_settings();
 static cJSON *settings_values(bool streaming = stream_images);
@@ -43,33 +42,21 @@ static void set_stream_images(bool enabled) {
     stream_images = enabled;
 }
 
+// Pausing capture never writes sensor registers, on any sensor. Standby
+// writes (OV2640 COM2, OV3660 SYSTEM_CTROL0, GC0308 output gating) can leave
+// the SCCB bus hung: on the OV2640 the write timed out and every frame and
+// probe after it failed until sensor power was cut. Idle only stops taking
+// frames; the driver keeps capturing into its latest-frame buffers. Resuming
+// drops a frame captured while idle so the next one is current.
 bool camera_capture_idle(bool idle) {
     if (capture_idle == idle) return true;
-    const int64_t now = esp_timer_get_time();
-    if (now < capture_idle_retry) return false;
-    camera_frames_pause();
-    if (!idle && esp_camera_available_frames()) {
-        if (auto *stale = esp_camera_fb_get()) esp_camera_fb_return(stale);
+    if (!idle) {
+        camera_frames_pause();
+        if (esp_camera_available_frames()) {
+            if (auto *stale = esp_camera_fb_get()) esp_camera_fb_return(stale);
+        }
+        camera_frames_resume();
     }
-    int err;
-    if (sensor->id.PID == OV2640_PID) {
-        // COM2 standby suspends the sensor's image pipeline, including JPEG.
-        err = sensor->set_reg(sensor, 0x109, 0x10, idle ? 0x10 : 0);
-    } else if (sensor->id.PID == OV3660_PID) {
-        // SYSTEM_CTROL0 software standby leaves the register state intact.
-        err = sensor->set_reg(sensor, 0x3008, 0x40, idle ? 0x40 : 0);
-    } else {
-        // GC0308 has no JPEG engine. Gate its parallel data and sync output.
-        err = sensor->set_reg(sensor, 0xfe, 0xff, 0);
-        if (!err) err = sensor->set_reg(sensor, 0x25, 0x0f, idle ? 0 : 0x0f);
-    }
-    camera_frames_resume();
-    if (err) {
-        capture_idle_retry = now + 1000000;
-        ESP_LOGW("camera", "Could not %s sensor capture: %d", idle ? "pause" : "resume", err);
-        return false;
-    }
-    capture_idle_retry = 0;
     capture_idle = idle;
     return true;
 }
@@ -140,7 +127,6 @@ esp_err_t camera_start(bool restore_saved) {
     active_config = cfg;
     sensor = esp_camera_sensor_get();
     capture_idle = false;
-    capture_idle_retry = 0;
     if (sensor->id.PID == OV2640_PID) {
         sensor_name = "ov2640";
     } else if (sensor->id.PID == OV3660_PID) {

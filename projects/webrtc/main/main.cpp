@@ -888,7 +888,10 @@ void worker(common::Application &app) {
                     // retain the connection and all current user settings.
                     diagnostic_event("warning", "Restarting stalled camera capture");
                     ESP_LOGW(TAG, "Restarting stalled camera capture");
-                    const esp_err_t recovered = camera_recover();
+                    // Cut sensor power on the first attempt too: a stalled
+                    // OV2640 usually has a hung SCCB bus, and without power
+                    // the driver probes it for ~30 s, blocking the worker.
+                    const esp_err_t recovered = camera_recover(true);
                     capture_stalled_since = 0;
                     if (recovered == ESP_OK) {
                         diagnostic_event("info", "Camera capture recovery succeeded");
