@@ -35,7 +35,7 @@ jobs:
           python-version: '3.12'
       # Install the workspace package as the README instructs, so tools run from any directory.
       - run: python -m pip install -e '.[flash]' pytest
-      - run: python -m pytest tests --ignore=tests/e2e -q
+      - run: python -m pytest tests --ignore=tests/webrtc/e2e -q
 
   boards:
     runs-on: ubuntu-latest

@@ -509,7 +509,7 @@ with sync_playwright() as p:
     # Motion detection and recordings: the shared camera_ui elements on the
     # React WebRTC page and on the board's own viewer page, answered by a
     # simulated camera (motion-harness.js); no board or WebRTC connection.
-    harness = (Path(__file__).parent / 'motion-harness.js').read_text()
+    harness = (Path(__file__).resolve().parents[2] / 'tests/webrtc/motion-harness.js').read_text()
     camera_ui = workspace / 'projects/common/camera_ui'
     viewer_csp = "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src blob:; frame-ancestors 'none'; base-uri 'none'"
 

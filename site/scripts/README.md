@@ -20,13 +20,13 @@ Disconnect other viewers first: each camera supports one viewer at a time.
 ## Board tests
 
 ```sh
-tests/boards_test.sh
+tests/webrtc/boards_test.sh
 ```
 
 This builds, flashes and provisions each configured board in parallel, then
 checks remote streaming, live controls, randomized settings persistence across
 reboots, and local HTTPS reconnects. It replaces provisioning and uses disposable
-camera passwords; see [board tests](../../tests/README.md) for details.
+camera passwords; see [board tests](../../tests/webrtc/README.md) for details.
 
 ## Browser checks
 
@@ -40,7 +40,7 @@ synthetic test fixtures. For an already provisioned camera, a locally served
 production build can be exercised through SensorFun:
 
 ```sh
-python3 site/scripts/check-e2e.py \
+python3 tests/webrtc/manual/check-e2e.py \
   --browser /path/to/chromium \
   --url 'http://localhost:5173/projects/webrtc' \
   --mac '<camera-mac>'

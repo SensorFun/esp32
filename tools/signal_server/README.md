@@ -48,7 +48,7 @@ client addresses. Docker rotates up to five 10 MB log files.
 
 ```sh
 docker build -t esp32-signaling:local tools/signal_server
-node --test tools/signal_server/test.mjs
+node --test tests/webrtc/signaling/run.mjs
 npm test --prefix site
 ```
 
@@ -59,8 +59,8 @@ membership, offer/answer and ICE forwarding, cleanup, and protocol violations.
 Hardware checks use the built-in service:
 
 ```sh
-tests/boards_test.sh
+tests/webrtc/boards_test.sh
 ```
 
-See [board tests](../../tests/README.md) for provisioning, streaming, randomized
+See [board tests](../../tests/webrtc/README.md) for provisioning, streaming, randomized
 settings persistence and reboot coverage.

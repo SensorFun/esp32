@@ -249,5 +249,5 @@ changes. Supply a command or `--build`.
 Run host tests without ESP-IDF or hardware:
 
 ```sh
-PYTHONPATH=python python3 -m unittest discover -s tests
+PYTHONPATH=python python3 -m pytest tests --ignore=tests/webrtc/e2e
 ```

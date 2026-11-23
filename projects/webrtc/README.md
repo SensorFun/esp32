@@ -210,7 +210,7 @@ rate is an upper limit, not a guarantee when the CPU is saturated.
 Hardware regression (restores starting camera/motion settings):
 
 ```sh
-.venv/bin/python tools/test_settings_stability.py --port /dev/ttyUSB1 --browser /path/to/chromium --rounds 2
+.venv/bin/python tests/webrtc/manual/check_settings_stability.py --port /dev/ttyUSB1 --browser /path/to/chromium --rounds 2
 ```
 
 These local tools prompt for the camera password, or read one stdin line with
@@ -221,7 +221,7 @@ frame progress, the same live channel, and USB watchdog/reset diagnostics.
 Long-running local connection regression (does not request a board reset or change settings):
 
 ```sh
-.venv/bin/python tools/test_stream_stability.py --url https://<camera-address>/ --port /dev/ttyUSB1 --browser /path/to/chromium --seconds 180 --reconnects 2
+.venv/bin/python tests/webrtc/manual/check_stream_stability.py --url https://<camera-address>/ --port /dev/ttyUSB1 --browser /path/to/chromium --seconds 180 --reconnects 2
 ```
 
 It checks continuous JPEG and settings replies, HTTPS responsiveness during
@@ -305,7 +305,7 @@ Install Playwright in the host environment and its Chromium browser. After
 provisioning, run:
 
 ```sh
-python tools/test_local_webrtc.py --port /dev/ttyUSB0 --browser /path/to/chromium
+python tests/webrtc/manual/check_local_webrtc.py --port /dev/ttyUSB0 --browser /path/to/chromium
 ```
 
 The test resets the board, reads its ephemeral identity over USB, compares the
@@ -317,8 +317,8 @@ exercises sensor controls and invalid values, inspects
 DTLS connection statistics, and reconnects. It writes no credentials or camera
 images. Keep serial monitors closed while flashing or running either USB tool.
 
-The full hardware E2E suite (`python -m pytest tests/e2e -v -s`) also runs
-`tools/test_https_reconnect.py` and `tools/test_camera_settings.py` after its
+The full hardware E2E suite (`python -m pytest tests/webrtc/e2e -v -s`) also runs
+`tests/webrtc/manual/check_https_reconnect.py` and `tests/webrtc/manual/check_camera_settings.py` after its
 public-signaling browser checks, passing the run's camera password on stdin. The HTTPS test checks HTML, the shared settings
 module, parallel requests, settings and video after repeated hardware resets.
 On the first boot it also checks the camera password: plain HTTP is closed, a
