@@ -84,27 +84,39 @@ stale room slot after reprovisioning.
 
 ## Camera controls
 
-OV devices use `config/frame_grabber/ov.yaml`; the S3-WROOM device uses
-`config/frame_grabber/gc.yaml` for GC0308. Each device selects
-`config/lens/general.yaml` (currently without overrides). Sensor PID detection
-selects the defaults and capture path at runtime. GC0308 captures YUV422 and
-encodes JPEG in software (esp_new_jpeg, quality 60, with frame2jpg as fallback), with a
-maximum resolution of VGA. An encoder task on CPU0 keeps one JPEG ready while the worker
-sends the previous one, and two raw buffers let the sensor capture meanwhile. Unsupported sensor
-controls are disabled, and OV light timing is omitted from its settings panel.
-CMake generates initial values from both YAML files and rejects unknown controls
-and invalid ranges. `gc.yaml` rejects controls absent from the GC0308 driver.
-GC gain defaults to 10 (hardware global gain 0x15, near the driver default
-0x14); the OV value of 0 would write zero global gain on this sensor.
-All numeric settings in the current YAML profiles have sensor-driver mappings.
-The viewer also exposes the other common image/exposure/white-balance controls.
-OV2640 sharpness and denoise are disabled because its driver does not implement
-them. Settings are validated on the device and acknowledged with the sensor
-status; failures return errors. Both viewers use the same settings component at
-`projects/common/camera_ui/settings.js`. Edits take effect immediately without
+Each sensor has its own profile in `config/frame_grabber/sensors/`:
+`ov2640.yaml`, `ov3660.yaml` and `gc0308.yaml`. The frame grabber families
+`ov.yaml` and `gc.yaml` only list their sensors. Each device also selects
+`config/lens/general.yaml` (currently without overrides). The firmware embeds
+all three profiles and picks one by sensor PID at runtime, so the settings panel
+always shows the installed sensor's controls and nothing else. GC0308 captures
+YUV422 and encodes JPEG in software (esp_new_jpeg, quality 60, with frame2jpg as
+fallback), with a maximum resolution of VGA. An encoder task on CPU0 keeps one
+JPEG ready while the worker sends the previous one, and two raw buffers let the
+sensor capture meanwhile. OV light timing is omitted from its settings panel.
+
+A profile gives every control a default and its allowed values, taken from the
+pinned esp32-camera driver and matching Espressif's CameraWebServer limits:
+`switch: true` (shown as an On/Off switch), `options` (a list of values, with
+labels such as Sunny/Cloudy or 2x-128x) or `range` (a number field, used only
+for controls with many values: JPEG quality, AGC gain, AEC value and the
+OV3660's raw gain ceiling). Several OV3660 ranges are wider than the OV2640's
+(brightness/contrast -3 to 3, saturation -4 to 4, AE level -5 to 5, AGC gain
+0-64, AEC value 0-1536); its gain ceiling is a raw register value with the
+driver's reset value 248 as the default, not the OV2640's 2x-128x scale.
+CMake generates the tables from the YAML and rejects unknown controls,
+malformed value sets and defaults outside them. GC gain defaults to 10
+(hardware global gain 0x15, near the driver default 0x14); 0 would write zero
+global gain on this sensor. The OV2640 driver implements neither sharpness nor
+denoise, and the GC0308 driver no brightness or sensor JPEG quality, so their
+profiles omit them. The camera reports each control's kind, range and labels;
+it accepts only listed values. Settings are acknowledged with the sensor
+status; failures return errors. The board's page, the website and the firmware
+use one settings component, `projects/common/camera_ui/settings.js`: the
+firmware embeds it for the local viewer and the website imports it. Edits take effect immediately without
 writing flash. **Save** validates and stores the complete configuration in the
 board's NVS. Save and Reset buttons appear above and below the controls. Resolution, light
-timing, and supported numeric controls are restored after reboot. **Reset to
+timing, and all of the sensor's controls are restored after reboot. **Reset to
 Default** applies the firmware's YAML/driver defaults to the running camera.
 Select **Save** to store those defaults in NVS. A restart before saving loads the
 last saved settings. Invalid stored configurations fall back to defaults.
@@ -282,7 +294,10 @@ python tools/test_local_webrtc.py --port /dev/ttyUSB0 --browser /path/to/chromiu
 
 The test resets the board, reads its ephemeral identity over USB, compares the
 HTTPS certificate, checks that plain HTTP is closed and the origin rules, signs in with the camera password in a real browser,
-decodes camera JPEG, exercises sensor controls and invalid values, inspects
+decodes camera JPEG, checks that the settings panel shows the camera's controls
+as On/Off switches, labelled lists and number fields exactly as its profile
+reports, applies every list value and switch state through the panel,
+exercises sensor controls and invalid values, inspects
 DTLS connection statistics, and reconnects. It writes no credentials or camera
 images. Keep serial monitors closed while flashing or running either USB tool.
 

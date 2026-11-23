@@ -6,6 +6,9 @@ execute_process(COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/main/
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     "${WORKSPACE_ROOT}/config/frame_grabber/ov.yaml"
     "${WORKSPACE_ROOT}/config/frame_grabber/gc.yaml"
+    "${WORKSPACE_ROOT}/config/frame_grabber/sensors/ov2640.yaml"
+    "${WORKSPACE_ROOT}/config/frame_grabber/sensors/ov3660.yaml"
+    "${WORKSPACE_ROOT}/config/frame_grabber/sensors/gc0308.yaml"
     "${CMAKE_CURRENT_LIST_DIR}/main/generate_profiles.py")
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(webrtc)

@@ -1,0 +1,39 @@
+# OV3660 camera controls: allowed values and defaults.
+#
+# Ranges come from the pinned esp32-camera driver (2.1.6, sensors/ov3660.c)
+# and agree with the CameraWebServer OV3660 limits. Several are wider than on
+# the OV2640. Same format as ov2640.yaml:
+#   switch: true      -> an On/Off switch (0 = Off, 1 = On)
+#   options: [...]    -> a list of numbers, or {value: label} for named values
+#   range: [min, max] -> a number field, for controls with many values
+name: ov3660
+timing_profile: mid_light
+controls:
+  brightness: {default: 0, options: [-3, -2, -1, 0, 1, 2, 3]}
+  contrast: {default: 0, options: [-3, -2, -1, 0, 1, 2, 3]}
+  saturation: {default: 0, options: [-4, -3, -2, -1, 0, 1, 2, 3, 4]}
+  sharpness: {default: 1, options: [-3, -2, -1, 0, 1, 2, 3]}
+  denoise: {default: 1, options: {0: "Off", 1: "1", 2: "2", 3: "3", 4: "4", 5: "5", 6: "6", 7: "7", 8: "8"}}
+  # The driver writes 0-63 (lower is better quality, larger frames).
+  jpeg_quality: {default: 12, range: [2, 63]}
+  # A raw AEC gain ceiling register (0x3A18/0x3A19, 1/16x steps), not the
+  # OV2640's 2x-128x scale. 248 (about 15.5x) is the driver's reset value.
+  gain_ceiling: {default: 248, range: [0, 511]}
+  colorbar: {default: 0, switch: true}
+  horizontal_mirror: {default: 0, switch: true}
+  vertical_flip: {default: 0, switch: true}
+  automatic_white_balance: {default: 1, switch: true}
+  awb_gain: {default: 1, switch: true}
+  white_balance_mode: {default: 0, options: {0: Auto, 1: Sunny, 2: Cloudy, 3: Office, 4: Home}}
+  automatic_gain: {default: 1, switch: true}
+  agc_gain: {default: 0, range: [0, 64]}
+  automatic_exposure: {default: 1, switch: true}
+  # The driver also clamps to the current frame length.
+  aec_value: {default: 300, range: [0, 1536]}
+  ae_level: {default: 0, options: [-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5]}
+  aec2: {default: 0, switch: true}
+  downsize: {default: 1, switch: true}
+  black_pixel_correction: {default: 0, switch: true}
+  white_pixel_correction: {default: 1, switch: true}
+  raw_gamma: {default: 1, switch: true}
+  lens_correction: {default: 1, switch: true}

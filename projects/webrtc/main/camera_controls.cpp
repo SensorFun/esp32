@@ -10,7 +10,6 @@
 #include <cmath>
 struct Control {
     const char *name;
-    int low, high;
     int (*set)(sensor_t *, int);
     int (*get)(sensor_t *);
 };
@@ -20,6 +19,9 @@ static constexpr const char *timing_names[] = {"high_light", "mid_light", "low_l
 static sensor_t *sensor;
 static camera_config_t active_config{};
 static const char *sensor_name;
+// The detected sensor's controls, allowed values and defaults
+// (config/frame_grabber/sensors/<sensor>.yaml).
+static const SensorProfile *profile;
 static std::string factory_settings;
 static esp_err_t restore_settings();
 static cJSON *settings_values();
@@ -32,16 +34,21 @@ static bool valid_resolution(int size) {
     return size >= 0 && size <= max_resolution() &&
         resolution[size].width >= 160 && resolution[size].height >= 120;
 }
-static bool supported(const Control &c) {
-    if (is_gc()) {
-        for (const auto &setting : defaults_gc) if (!strcmp(c.name, setting.name)) return true;
-        return false;
-    }
-    // OV2640 driver has no implementation for these two controls.
-    return sensor->id.PID != OV2640_PID || (strcmp(c.name, "sharpness") && strcmp(c.name, "denoise"));
+static const ControlSpec *spec(const Control &c) {
+    for (size_t i = 0; i < profile->count; ++i) if (!strcmp(profile->controls[i].name, c.name)) return &profile->controls[i];
+    return nullptr;
 }
-static int control_low(const Control &c) { return is_gc() && !strcmp(c.name, "sharpness") ? -2 : c.low; }
-static int control_high(const Control &c) { return is_gc() && !strcmp(c.name, "sharpness") ? 2 : c.high; }
+static bool supported(const Control &c) { return spec(c) != nullptr; }
+// An allowed value: within the range, and one of the listed values for lists.
+static bool allowed(const Control &c, const cJSON *value) {
+    const ControlSpec *s = spec(c);
+    if (!s || !cJSON_IsNumber(value) || !std::isfinite(value->valuedouble) ||
+        value->valuedouble != std::floor(value->valuedouble) ||
+        value->valuedouble < s->low || value->valuedouble > s->high) return false;
+    if (!s->option_count) return true;
+    for (size_t i = 0; i < s->option_count; ++i) if (s->options[i].value == value->valueint) return true;
+    return false;
+}
 static bool restore_timing(int profile) { return is_gc() || (timing.initialize(sensor) == 0 && timing.apply(profile) == 0); }
 
 static void settle() {
@@ -91,24 +98,21 @@ esp_err_t camera_start(bool restore_saved) {
     } else if (sensor->id.PID == GC0308_PID) {
         sensor_name = "gc0308";
     } else return ESP_ERR_NOT_SUPPORTED;
+    profile = nullptr;
+    for (const auto &candidate : profiles) if (!strcmp(candidate.sensor, sensor_name)) profile = &candidate;
+    if (!profile) return ESP_ERR_NOT_SUPPORTED;
     if (sensor->set_framesize(sensor, FRAMESIZE_QVGA) || !restore_timing(0)) return ESP_FAIL;
     // The camera clock and the sensor's pixel bus run beside the PCB antenna.
     // At full drive strength their edges cut ESP32-CAM Wi-Fi throughput by
     // more than ten times; the weakest drive still captures cleanly.
     gpio_set_drive_capability(gpio_num_t(XCLK_GPIO_NUM), GPIO_DRIVE_CAP_0);
     if (sensor->id.PID == OV2640_PID && sensor->set_reg(sensor, 0x109, 0x03, 0x00)) return ESP_FAIL;  // COM2: 1x output drive
-    const Default *defaults = is_gc() ? defaults_gc : defaults_ov;
-    const size_t default_count = is_gc() ? sizeof(defaults_gc) / sizeof(Default) : sizeof(defaults_ov) / sizeof(Default);
-    for (size_t i = 0; i < default_count; ++i) {
-        const auto &setting = defaults[i];
-        if (!strcmp(setting.name, "timing_profile")) {
-            if (timing.apply(setting.value)) return ESP_FAIL;
-        }
-        for (const auto &c : controls) {
-            if (!strcmp(c.name, setting.name) && supported(c) && c.set(sensor, setting.value) != 0) {
-                ESP_LOGE("camera", "Cannot apply %s", c.name);
-                return ESP_FAIL;
-            }
+    if (profile->timing_profile >= 0 && timing.apply(profile->timing_profile)) return ESP_FAIL;
+    for (const auto &c : controls) {
+        const ControlSpec *s = spec(c);
+        if (s && c.set(sensor, s->value) != 0) {
+            ESP_LOGE("camera", "Cannot apply %s", c.name);
+            return ESP_FAIL;
         }
     }
     ESP_LOGI("camera", "Detected %s; YAML defaults applied; %s 320x240", sensor_name, is_gc() ? "YUV422 + software JPEG" : "JPEG");
@@ -193,10 +197,7 @@ static bool validate_values(const cJSON *values) {
         for (const char *name : timing_names) if (!strcmp(name, profile->valuestring)) known = true;
         if (!known) return false;
     }
-    for (const auto &c : controls) if (supported(c)) {
-        const cJSON *v = cJSON_GetObjectItemCaseSensitive(values, c.name);
-        if (!cJSON_IsNumber(v) || !std::isfinite(v->valuedouble) || v->valuedouble != std::floor(v->valuedouble) || v->valuedouble < control_low(c) || v->valuedouble > control_high(c)) return false;
-    }
+    for (const auto &c : controls) if (supported(c) && !allowed(c, cJSON_GetObjectItemCaseSensitive(values, c.name))) return false;
     return true;
 }
 // Writes only what differs from the running sensor, so Save does not
@@ -287,13 +288,27 @@ cJSON *camera_settings() {
             ? "High light / Mid light / Low light: native / 2x / 3x line period"
             : "High light / Mid light / Low light: native / 2x / 4x line period");
     }
+    // Only this sensor's controls: "switch" (0 Off / 1 On), "list" with
+    // [value, label] options, or "range" (a number field between min and max).
     cJSON *array = cJSON_AddArrayToObject(reply, "controls");
     for (const auto &c : controls) {
+        const ControlSpec *s = spec(c);
+        if (!s) continue;
         cJSON *item = cJSON_CreateObject();
         cJSON_AddStringToObject(item, "name", c.name);
-        cJSON_AddNumberToObject(item, "min", control_low(c)); cJSON_AddNumberToObject(item, "max", control_high(c));
+        cJSON_AddStringToObject(item, "kind", s->kind == Kind::toggle ? "switch" : s->kind == Kind::list ? "list" : "range");
+        cJSON_AddNumberToObject(item, "min", s->low); cJSON_AddNumberToObject(item, "max", s->high);
         cJSON_AddNumberToObject(item, "value", c.get(sensor));
-        cJSON_AddBoolToObject(item, "supported", supported(c));
+        cJSON_AddBoolToObject(item, "supported", true);
+        if (s->kind == Kind::list) {
+            cJSON *options = cJSON_AddArrayToObject(item, "options");
+            for (size_t i = 0; i < s->option_count; ++i) {
+                cJSON *option = cJSON_CreateArray();
+                cJSON_AddItemToArray(option, cJSON_CreateNumber(s->options[i].value));
+                cJSON_AddItemToArray(option, cJSON_CreateString(s->options[i].label));
+                cJSON_AddItemToArray(options, option);
+            }
+        }
         cJSON_AddItemToArray(array, item);
     }
     return reply;
@@ -389,7 +404,7 @@ cJSON *camera_command(const cJSON *request) {
     if (cJSON_IsString(op) && !strcmp(op->valuestring, "set") && cJSON_IsString(name) && cJSON_IsNumber(value)) {
         for (const auto &c : controls) if (!strcmp(name->valuestring, c.name)) {
             if (!supported(c)) error = "Control is unsupported by this sensor";
-            else if (!std::isfinite(value->valuedouble) || value->valuedouble < control_low(c) || value->valuedouble > control_high(c) || std::floor(value->valuedouble) != value->valuedouble) error = "Value must be an integer within the advertised range";
+            else if (!allowed(c, value)) error = "Value must be one of the advertised values";
             else if (c.set(sensor, value->valueint) != 0) error = "Sensor rejected setting";
             else return camera_settings();
             break;

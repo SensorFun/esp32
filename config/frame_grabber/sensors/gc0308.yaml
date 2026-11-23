@@ -1,0 +1,26 @@
+# GC0308 camera controls: allowed values and defaults.
+#
+# Ranges come from the pinned esp32-camera driver (2.1.6, sensors/gc0308.c).
+# Only controls the driver implements are listed; YUV422 frames are encoded
+# to JPEG in software, so sensor JPEG quality and OV light timing do not apply.
+# Same format as ov2640.yaml:
+#   switch: true      -> an On/Off switch (0 = Off, 1 = On)
+#   options: [...]    -> a list of numbers, or {value: label} for named values
+#   range: [min, max] -> a number field, for controls with many values
+name: gc0308
+controls:
+  contrast: {default: 0, options: [-2, -1, 0, 1, 2]}
+  saturation: {default: 0, options: [-2, -1, 0, 1, 2]}
+  sharpness: {default: 0, options: [-2, -1, 0, 1, 2]}
+  colorbar: {default: 0, switch: true}
+  horizontal_mirror: {default: 0, switch: true}
+  vertical_flip: {default: 0, switch: true}
+  automatic_white_balance: {default: 1, switch: true}
+  white_balance_mode: {default: 0, options: {0: Auto, 1: Sunny, 2: Cloudy, 3: Office, 4: Home}}
+  automatic_gain: {default: 1, switch: true}
+  # 0-30 maps to global gain 0x00-0x3F. 10 writes 0x15, close to the sensor
+  # default 0x14; 0 writes zero gain and a dark image even with AGC enabled.
+  agc_gain: {default: 10, range: [0, 30]}
+  automatic_exposure: {default: 1, switch: true}
+  aec_value: {default: 300, range: [0, 1200]}
+  ae_level: {default: 0, options: [-2, -1, 0, 1, 2]}

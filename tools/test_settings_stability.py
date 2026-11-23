@@ -6,6 +6,7 @@ logs while changing camera and motion controls. Restores the starting settings.
 import argparse
 
 from playwright.sync_api import sync_playwright
+from camera_panel import set_control
 from test_local_webrtc import add_password_argument, camera_password, connect_local, identity, wait_js
 
 parser = argparse.ArgumentParser(description=__doc__)
@@ -66,9 +67,12 @@ with console, sync_playwright() as p:
                     page.evaluate('responses.settings=null')
                     page.get_by_role('combobox', name='Light timing', exact=True).select_option(profile)
                     check('v=>responses.settings?.timing_profile===v', profile)
+                offered = {c['name']: c for c in metadata['controls']}
                 for name, value in [('brightness', iteration % 3 - 1), ('contrast', 1 - iteration % 3), ('jpeg_quality', 12 + iteration % 3)]:
+                    if name not in offered:
+                        continue  # GC0308 has neither brightness nor sensor JPEG quality.
                     page.evaluate('responses.settings=null')
-                    page.get_by_role('spinbutton', name=name.replace('_', ' '), exact=True).fill(str(value))
+                    set_control(page.locator('#settings-panel'), offered[name], value)
                     check('v=>responses.settings?.controls.find(c=>c.name===v.name)?.value===v.value', {'name': name, 'value': value})
                 progress()
             page.evaluate('responses.settings=null')

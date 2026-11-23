@@ -15,6 +15,7 @@ import threading
 import time
 
 from playwright.sync_api import sync_playwright
+from camera_panel import set_control
 from test_local_webrtc import add_password_argument, camera_password, enter_password, identity, wait_js
 
 parser = argparse.ArgumentParser(description=__doc__)
@@ -212,14 +213,13 @@ with console, sync_playwright() as p:
             wait_reply(page, 'settings', f"e2e.messages.settings?.timing_profile==='{profile}'")
             stream_check(page, seconds=6)
 
-        supported = {c['name'] for c in metadata['controls'] if c['supported']}
-        for name, value in (('brightness', 1), ('contrast', -1), ('jpeg quality', 14)):
-            if name.replace(' ', '_') not in supported:
+        offered = {c['name'].replace('_', ' '): c for c in metadata['controls']}
+        for name, value in (('brightness', 1), ('contrast', -1), ('jpeg quality', 14), ('horizontal mirror', 1), ('horizontal mirror', 0)):
+            if name not in offered:
                 continue
             step_name[0] = f'{name} {value}'
             page.evaluate('e2e.messages.settings=null')
-            box = page.get_by_role('spinbutton', name=name, exact=True)
-            box.fill(str(value)); box.press('Tab')
+            set_control(page.locator('#settings-panel'), offered[name], value)
             wait_reply(page, 'settings', f"e2e.messages.settings?.controls.find(c=>c.name==='{name.replace(' ', '_')}')?.value==={value}")
             stream_check(page, seconds=6)
 

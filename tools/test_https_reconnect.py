@@ -95,7 +95,7 @@ def main():
                 try:
                     page = context.new_page()
                     failures = []
-                    page.on('requestfailed', lambda request: failures.append(request.url)
+                    page.on('requestfailed', lambda request: failures.append(f'{request.method} {request.url}: {request.failure}')
                             if request.url.startswith(url) else None)
                     page.goto(url, wait_until='load', timeout=15000)
                     wait_js(page, "!!customElements.get('sensorfan-camera-settings')", timeout=5000)
@@ -105,6 +105,9 @@ def main():
                     assert page.evaluate("async()=>Promise.all(Array.from({length:3},async()=>{const r=await fetch('/camera-settings.js',{cache:'no-store'});return r.ok&&(await r.text()).includes('sensorfan-camera-settings')}))") == [True] * 3
                     if cycle == 0:
                         check_password_required(page, url)
+                        # Its reloads abort the viewer's unread POST/DELETE
+                        # response bodies (net::ERR_ABORTED); track afresh.
+                        failures.clear()
                     connect_local(page, password)
                     wait_js(page, "!!document.querySelector('#settings-panel').value")
                     wait_js(page, "document.querySelector('#preview').naturalWidth>0")

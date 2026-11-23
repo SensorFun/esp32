@@ -96,10 +96,11 @@ python tools/flash.py port=/dev/ttyACM0 dry_run=true
 ```
 
 The profiles live in `config/device/` and compose `board`, `frame_grabber`, and
-`lens` directly. OV devices use `config/frame_grabber/ov.yaml`; the S3-WROOM device uses
-`config/frame_grabber/gc.yaml` for its attached GC0308. All select
-`config/lens/general.yaml`, currently an empty lens profile. Firmware detects
-the physical sensor and applies the corresponding profile and supported controls.
+`lens` directly. OV devices use `config/frame_grabber/ov.yaml` (OV2640, OV3660);
+the S3-WROOM device uses `config/frame_grabber/gc.yaml` (GC0308). Each sensor's
+controls, allowed values and defaults are in `config/frame_grabber/sensors/`.
+All select `config/lens/general.yaml`, currently an empty lens profile. Firmware
+detects the physical sensor and offers that sensor's profile and controls.
 The device selects `frame_grabber=ov` or `frame_grabber=gc`; board entries list supported profile names in `supported_frame_grabber`
 that must exist under `config/frame_grabber/`. Sensor identification is automatic
 in firmware; there is no default camera selection.

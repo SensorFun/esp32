@@ -1,54 +1,138 @@
-"""Generate sensor defaults from the workspace YAML, failing on unknown controls."""
+"""Generate per-sensor camera control tables from the workspace YAML.
+
+config/frame_grabber/<family>.yaml lists sensors; each sensor's controls, their
+allowed values and defaults live in config/frame_grabber/sensors/<sensor>.yaml.
+Every listed sensor is embedded: the firmware detects the installed one at
+runtime and offers exactly its controls. Unknown controls, malformed value
+sets and out-of-range defaults fail the build rather than being dropped.
+"""
 from pathlib import Path
+import json
 import sys
 import yaml
-root, output = map(Path, sys.argv[1:])
-controls = [
-    ('brightness', 'brightness', -2, 2), ('contrast', 'contrast', -2, 2),
-    ('saturation', 'saturation', -2, 2), ('sharpness', 'sharpness', -3, 3),
-    ('denoise', 'denoise', 0, 8), ('jpeg_quality', 'quality', 2, 63),
-    ('gain_ceiling', 'gainceiling', 0, 6), ('colorbar', 'colorbar', 0, 1),
-    ('horizontal_mirror', 'hmirror', 0, 1), ('vertical_flip', 'vflip', 0, 1),
-    ('automatic_white_balance', 'awb', 0, 1), ('awb_gain', 'awb_gain', 0, 1),
-    ('white_balance_mode', 'wb_mode', 0, 4), ('automatic_gain', 'agc', 0, 1),
-    ('agc_gain', 'agc_gain', 0, 30), ('automatic_exposure', 'aec', 0, 1),
-    ('aec_value', 'aec_value', 0, 1200), ('ae_level', 'ae_level', -2, 2),
-    ('aec2', 'aec2', 0, 1), ('downsize', 'dcw', 0, 1),
-    ('black_pixel_correction', 'bpc', 0, 1), ('white_pixel_correction', 'wpc', 0, 1),
-    ('raw_gamma', 'raw_gma', 0, 1), ('lens_correction', 'lenc', 0, 1),
-]
-lines = ['// Generated from config/frame_grabber; do not edit.', 'static Control controls[] = {']
-for name, member, low, high in controls:
-    method = {'awb': 'whitebal', 'agc': 'gain_ctrl', 'aec': 'exposure_ctrl'}.get(member, member)
-    setter = f'[](sensor_t *s, int v) {{ return s->set_{method}(s, v); }}'
-    if member == 'gainceiling':
-        setter = '[](sensor_t *s, int v) { return s->set_gainceiling(s, static_cast<gainceiling_t>(v)); }'
-    lines.append(f'{{"{name}", {low}, {high}, {setter}, [](sensor_t *s) {{ return int(s->status.{member}); }}}},')
-lines += ['};', 'struct Default { const char *name; int value; };']
-for family in ('ov', 'gc'):
-    profile = yaml.safe_load((root / 'config/frame_grabber' / f'{family}.yaml').read_text())
-    if profile.get('name') != family:
-        raise ValueError('Profile name must match filename')
-    if family == 'gc':
-        gc_controls = {'contrast', 'saturation', 'sharpness', 'colorbar', 'horizontal_mirror', 'vertical_flip', 'automatic_white_balance', 'white_balance_mode', 'automatic_gain', 'agc_gain', 'automatic_exposure', 'aec_value', 'ae_level'}
-        if set(profile) - gc_controls - {'name'}:
-            raise ValueError('Unsupported GC0308 control')
-    timing_names = ('high_light', 'mid_light', 'low_light')
-    if profile.get('timing_profile') not in (None, *timing_names):
-        raise ValueError('Unknown timing profile')
-    unknown = set(profile) - {x[0] for x in controls} - {'name', 'timing_profile'}
+
+# Control name -> esp32-camera sensor_t status member (setters derive from it).
+MEMBERS = {
+    'brightness': 'brightness', 'contrast': 'contrast', 'saturation': 'saturation',
+    'sharpness': 'sharpness', 'denoise': 'denoise', 'jpeg_quality': 'quality',
+    'gain_ceiling': 'gainceiling', 'colorbar': 'colorbar', 'horizontal_mirror': 'hmirror',
+    'vertical_flip': 'vflip', 'automatic_white_balance': 'awb', 'awb_gain': 'awb_gain',
+    'white_balance_mode': 'wb_mode', 'automatic_gain': 'agc', 'agc_gain': 'agc_gain',
+    'automatic_exposure': 'aec', 'aec_value': 'aec_value', 'ae_level': 'ae_level',
+    'aec2': 'aec2', 'downsize': 'dcw', 'black_pixel_correction': 'bpc',
+    'white_pixel_correction': 'wpc', 'raw_gamma': 'raw_gma', 'lens_correction': 'lenc',
+}
+# Sensors the firmware can detect (camera_controls.cpp) and their profiles.
+SENSORS = ('ov2640', 'ov3660', 'gc0308')
+TIMING = ('high_light', 'mid_light', 'low_light')
+# Sensors with OV light timing (CLKRC or HTS line period control).
+TIMED = {'ov2640', 'ov3660'}
+
+
+def integer(value):
+    return type(value) is int
+
+
+def label(value):
+    return f'+{value}' if value > 0 else str(value)
+
+
+def control_spec(sensor, name, spec):
+    where = f'{sensor}.{name}'
+    if not isinstance(spec, dict) or not integer(spec.get('default')):
+        raise ValueError(f'{where}: needs an integer default')
+    kinds = [key for key in ('switch', 'options', 'range') if key in spec]
+    if len(kinds) != 1 or set(spec) - {'default', kinds[0]}:
+        raise ValueError(f'{where}: give exactly one of switch, options or range')
+    kind, default = kinds[0], spec['default']
+    if kind == 'switch':
+        if spec['switch'] is not True:
+            raise ValueError(f'{where}: switch must be true')
+        options = [(0, 'Off'), (1, 'On')]
+    elif kind == 'options':
+        values = spec['options']
+        if isinstance(values, list):
+            options = [(value, label(value)) if integer(value) else (None, None) for value in values]
+        elif isinstance(values, dict):
+            options = list(values.items())
+        else:
+            options = []
+        if len(options) < 2 or any(not integer(v) or not isinstance(text, str) or not text for v, text in options):
+            raise ValueError(f'{where}: options must be two or more integers, or integer: text labels')
+        if [v for v, _ in options] != sorted({v for v, _ in options}):
+            raise ValueError(f'{where}: options must be unique and ascending')
+    else:
+        bounds = spec['range']
+        if not (isinstance(bounds, list) and len(bounds) == 2 and all(map(integer, bounds)) and bounds[0] < bounds[1]):
+            raise ValueError(f'{where}: range must be [min, max] integers')
+        options = []
+    low, high = (options[0][0], options[-1][0]) if options else spec['range']
+    allowed = [v for v, _ in options] if options else range(low, high + 1)
+    if default not in allowed:
+        raise ValueError(f'{where}: default {default} is not an allowed value')
+    return {'name': name, 'kind': kind, 'default': default, 'low': low, 'high': high, 'options': options}
+
+
+def load_sensor(root, sensor):
+    profile = yaml.safe_load((root / 'config/frame_grabber/sensors' / f'{sensor}.yaml').read_text())
+    if not isinstance(profile, dict) or profile.get('name') != sensor:
+        raise ValueError(f'sensors/{sensor}.yaml: name must be {sensor}')
+    if set(profile) - {'name', 'timing_profile', 'controls'}:
+        raise ValueError(f'{sensor}: unknown keys {set(profile) - {"name", "timing_profile", "controls"}}')
+    timing = profile.get('timing_profile')
+    if (sensor in TIMED) != (timing is not None) or (timing is not None and timing not in TIMING):
+        raise ValueError(f'{sensor}: timing_profile must be one of {TIMING} for OV sensors and absent otherwise')
+    controls = profile.get('controls')
+    if not isinstance(controls, dict) or not controls:
+        raise ValueError(f'{sensor}: controls are required')
+    unknown = set(controls) - set(MEMBERS)
     if unknown:
-        raise ValueError(f'Unmapped camera settings: {unknown}')
-    lines.append(f'static const Default defaults_{family}[] = {{')
-    if 'timing_profile' in profile:
-        lines.append('{"timing_profile", ' + str(timing_names.index(profile['timing_profile'])) + '},')
-    for name, _, low, high in controls:
-        if name in profile:
-            value = profile[name]
-            if family == 'gc' and name == 'sharpness':
-                low, high = -2, 2
-            if type(value) is not int or not low <= value <= high:
-                raise ValueError(f'{family}.{name} out of range')
-            lines.append(f'{{"{name}", {value}}},')
+        raise ValueError(f'{sensor}: unmapped camera controls {sorted(unknown)}')
+    specs = [control_spec(sensor, name, controls[name]) for name in MEMBERS if name in controls]
+    return {'sensor': sensor, 'timing': TIMING.index(timing) if timing else -1, 'controls': specs}
+
+
+def generate(root):
+    sensors = []
+    for family in ('ov', 'gc'):
+        listed = yaml.safe_load((root / 'config/frame_grabber' / f'{family}.yaml').read_text())
+        if listed.get('name') != family or not isinstance(listed.get('sensors'), list) or set(listed) - {'name', 'sensors'}:
+            raise ValueError(f'{family}.yaml must have name: {family} and a sensors list only')
+        sensors += listed['sensors']
+    if sorted(sensors) != sorted(SENSORS):
+        raise ValueError(f'Frame grabbers must list each detectable sensor once: {SENSORS}')
+    profiles = [load_sensor(root, sensor) for sensor in SENSORS]
+    lines = ['// Generated from config/frame_grabber; do not edit.', 'static Control controls[] = {']
+    for name, member in MEMBERS.items():
+        method = {'awb': 'whitebal', 'agc': 'gain_ctrl', 'aec': 'exposure_ctrl'}.get(member, member)
+        setter = f'[](sensor_t *s, int v) {{ return s->set_{method}(s, v); }}'
+        if member == 'gainceiling':
+            setter = '[](sensor_t *s, int v) { return s->set_gainceiling(s, static_cast<gainceiling_t>(v)); }'
+        lines.append(f'{{"{name}", {setter}, [](sensor_t *s) {{ return int(s->status.{member}); }}}},')
+    lines += ['};',
+              'struct Option { int value; const char *label; };',
+              'enum class Kind { range, list, toggle };',
+              'struct ControlSpec { const char *name; Kind kind; int value, low, high; const Option *options; size_t option_count; };',
+              'struct SensorProfile { const char *sensor; int timing_profile; const ControlSpec *controls; size_t count; };']
+    kinds = {'range': 'Kind::range', 'options': 'Kind::list', 'switch': 'Kind::toggle'}
+    for profile in profiles:
+        for spec in profile['controls']:
+            if spec['options']:
+                entries = ', '.join(f'{{{value}, {json.dumps(text)}}}' for value, text in spec['options'])
+                lines.append(f'static const Option options_{profile["sensor"]}_{spec["name"]}[] = {{{entries}}};')
+        lines.append(f'static const ControlSpec controls_{profile["sensor"]}[] = {{')
+        for spec in profile['controls']:
+            options = f'options_{profile["sensor"]}_{spec["name"]}' if spec['options'] else 'nullptr'
+            lines.append(f'{{"{spec["name"]}", {kinds[spec["kind"]]}, {spec["default"]}, {spec["low"]}, {spec["high"]}, {options}, {len(spec["options"])}}},')
+        lines.append('};')
+    lines.append('static const SensorProfile profiles[] = {')
+    for profile in profiles:
+        sensor = profile['sensor']
+        lines.append(f'{{"{sensor}", {profile["timing"]}, controls_{sensor}, sizeof(controls_{sensor}) / sizeof(ControlSpec)}},')
     lines.append('};')
-output.write_text('\n'.join(lines) + '\n')
+    return '\n'.join(lines) + '\n'
+
+
+if __name__ == '__main__':
+    root, output = map(Path, sys.argv[1:])
+    output.write_text(generate(root))

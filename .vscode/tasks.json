@@ -14,6 +14,20 @@
   ],
   "tasks": [
     {
+      "label": "Build Firmware (All Boards)",
+      "detail": "Build WebRTC firmware for every device, one after another; flash from Run Website Locally",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/python3 tools/build.py --multirun project=webrtc device=esp32_cam,esp32s3_wroom,esp32s3_goouuu",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      }
+    },
+    {
       "label": "Run Website Locally",
       "type": "shell",
       "command": "npm",

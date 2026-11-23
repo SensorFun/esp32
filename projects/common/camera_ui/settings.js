@@ -1,4 +1,8 @@
-// Shared by the board's local viewer and the React website.
+// The one camera settings panel: the board's local viewer embeds this file and
+// the React website imports it. The camera describes its own controls (from
+// config/frame_grabber/sensors/<sensor>.yaml): "switch" controls are On/Off
+// switches, "list" controls offer their labelled values, and only "range"
+// controls with many values use a number field.
 class CameraSettings extends HTMLElement {
   constructor() { super(); this.attachShadow({ mode: 'open' }); }
   set settings(value) {
@@ -22,6 +26,10 @@ class CameraSettings extends HTMLElement {
       h2{font-size:20px;font-weight:500;margin:0 0 20px}.fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));gap:16px}
       label{display:flex;flex-direction:column;gap:7px;min-width:0}label.counter{flex-direction:row;align-items:center;justify-content:space-between;gap:12px;align-self:end}label.counter span{min-width:0;overflow-wrap:anywhere}label.counter input{width:88px;flex:none;text-align:right;font-variant-numeric:tabular-nums}input,select,button{font:inherit;min-height:44px;border-radius:6px;padding:10px;border:1px solid #415335}
       label.select-row{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:12px}
+      label.switch-row{flex-direction:row;align-items:center;justify-content:space-between;gap:12px;min-height:44px;cursor:pointer;align-self:end}label.switch-row span{min-width:0;overflow-wrap:anywhere}
+      input[type=checkbox]{appearance:none;-webkit-appearance:none;flex:none;width:52px;min-width:52px;height:30px;min-height:30px;padding:0;margin:0;border-radius:15px;background:#2a352c;position:relative;cursor:pointer;transition:background .15s}
+      input[type=checkbox]::before{content:"";position:absolute;top:3px;left:3px;width:22px;height:22px;border-radius:50%;background:#d8e8cb;transition:transform .15s}
+      input[type=checkbox]:checked{background:#00d4cb;border-color:#00d4cb}input[type=checkbox]:checked::before{transform:translateX(22px);background:#07302c}
       input,select{background:#0d180e;color:#d8e8cb;width:100%;min-width:0}input:disabled{opacity:.45}
       .actions{display:flex;flex-wrap:wrap;gap:12px;margin-top:24px}.actions:first-child{margin:0 0 24px}button{cursor:pointer;background:#00d4cb;color:#07302c;font-weight:600}button:last-child{background:transparent;color:#d8e8cb}button:disabled{opacity:.5;cursor:wait}
       [role=status]{margin:16px 0 0;line-height:1.6;color:#b7c9ab}input:focus-visible,select:focus-visible,button:focus-visible{outline:2px solid #00d4cb;outline-offset:3px}
@@ -29,11 +37,14 @@ class CameraSettings extends HTMLElement {
     </style><section><h2>Camera settings</h2><form><div class="actions"><button type="submit">Save</button><button type="button">Reset to Default</button></div><div class="fields"></div><div class="actions"><button type="submit">Save</button><button type="button">Reset to Default</button></div><p role="status"></p></form></section>`;
     this.shadowRoot.querySelector('h2').textContent = `Camera settings · ${this.value.sensor}`;
     const fields = this.shadowRoot.querySelector('.fields');
+    const valueOf = control => control.type === 'checkbox' ? Number(control.checked) :
+      control.name === 'timing_profile' ? control.value : Number(control.value);
     const add = (name, title, control) => {
       const label = document.createElement('label');
       const text = document.createElement('span'); text.textContent = title;
       // Number fields hold one to four digits: keep them on the label's line.
       if (control.type === 'number') label.className = 'counter';
+      if (control.type === 'checkbox') label.className = 'switch-row';
       if (control.tagName === 'SELECT') label.className = 'select-row';
       control.name = name; control.setAttribute('aria-label', title);
       label.append(text, control); fields.append(label);
@@ -42,7 +53,7 @@ class CameraSettings extends HTMLElement {
         if (!control.checkValidity() || control.value === '') return;
         this.shadowRoot.querySelector('[role=status]').textContent = 'Live changes. Select Save to keep them after reboot.';
         this.dispatchEvent(new CustomEvent('camera-command', {
-          detail: { op: 'set', name, value: name === 'timing_profile' ? control.value : Number(control.value) },
+          detail: { op: 'set', name, value: valueOf(control) },
           bubbles: true, composed: true,
         }));
       });
@@ -55,8 +66,17 @@ class CameraSettings extends HTMLElement {
     select('resolution', 'Resolution', this.value.resolutions.map(size => [size.value, `${size.width} × ${size.height}`]), this.value.resolution);
     if (this.value.timing_profiles.length) select('timing_profile', 'Light timing', this.value.timing_profiles.map(name => [name, ({high_light:'High light',mid_light:'Mid light',low_light:'Low light'})[name]]), this.value.timing_profile);
     for (const c of this.value.controls) {
-      const input = document.createElement('input'); input.type = 'number'; input.min = c.min; input.max = c.max; input.step = 1; input.value = c.value; input.disabled = !c.supported; input.required = c.supported;
-      add(c.name, c.name.replaceAll('_', ' '), input);
+      if (c.supported === false) continue;
+      const title = c.name.replaceAll('_', ' ');
+      if (c.kind === 'switch') {
+        const input = document.createElement('input'); input.type = 'checkbox'; input.setAttribute('role', 'switch'); input.checked = c.value === 1;
+        add(c.name, title, input);
+      } else if (c.kind === 'list') {
+        select(c.name, title, c.options, c.value);
+      } else {
+        const input = document.createElement('input'); input.type = 'number'; input.min = c.min; input.max = c.max; input.step = 1; input.value = c.value; input.required = true;
+        add(c.name, title, input);
+      }
     }
     this.shadowRoot.querySelector('[role=status]').textContent = message;
     const send = detail => {
@@ -70,7 +90,7 @@ class CameraSettings extends HTMLElement {
     this.shadowRoot.querySelector('form').onsubmit = event => {
       event.preventDefault();
       const settings = {};
-      for (const input of this.shadowRoot.querySelectorAll('input:not(:disabled),select')) settings[input.name] = input.name === 'timing_profile' ? input.value : Number(input.value);
+      for (const input of this.shadowRoot.querySelectorAll('input:not(:disabled),select')) settings[input.name] = valueOf(input);
       send({ op: 'apply', settings });
     };
     this.shadowRoot.querySelectorAll('button[type=button]').forEach(button => { button.onclick = () => send({ op: 'reset_defaults' }); });

@@ -67,7 +67,9 @@ class FirmwareToolTests(unittest.TestCase):
             self.assertEqual(s3.hardware.target, "esp32s3")
             self.assertEqual(s3.frame_grabber.name, "gc")
             self.assertNotIn("timing_profile", s3.frame_grabber)
-            self.assertEqual(s3.frame_grabber.vertical_flip, 0)
+            # Families list sensors; each sensor's controls live in sensors/<sensor>.yaml.
+            self.assertEqual(list(ai.frame_grabber.sensors), ["ov2640", "ov3660"])
+            self.assertEqual(list(s3.frame_grabber.sensors), ["gc0308"])
             self.assertEqual(dict(ai.lens), {})
             self.assertEqual(dict(s3.lens), {})
             self.assertNotIn("camera", s3)

@@ -1,9 +1,12 @@
 """Exercise a real camera via public signaling from the local static frontend."""
 import argparse
 import getpass
+from pathlib import Path
 import sys
 import time
 from playwright.sync_api import sync_playwright, expect
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'tools'))
+from camera_panel import check_settings_panel, set_control  # noqa: E402
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--browser', required=True)
 parser.add_argument('--url', required=True)
@@ -69,8 +72,12 @@ window.RTCPeerConnection=class extends NativePeer{
             page.wait_for_timeout(200)
         else: raise TimeoutError('No camera image within 60 seconds')
         assert not any('localhost:8787' in url or '/cameras' in url or '/session/' in url for url in requests), 'Unexpected signaling bridge request'
-        expect(page.get_by_role('spinbutton', name='contrast', exact=True)).to_be_visible(timeout=10000)
-        original_settings = page.locator('.remote-settings').evaluate('(panel)=>panel.value')
+        panel = page.locator('.remote-settings')
+        expect(panel.get_by_role('combobox', name='contrast', exact=True)).to_be_visible(timeout=10000)
+        original_settings = panel.evaluate('(panel)=>panel.value')
+        counts = check_settings_panel(panel, original_settings)
+        print(f"PASS: {original_settings['sensor']} panel: {counts['switch']} On/Off switches, {counts['list']} lists, {counts['range']} number fields")
+        controls = {control['name']: control for control in original_settings['controls']}
         page.set_viewport_size({'width': 320, 'height': 844})
         assert page.evaluate('document.documentElement.scrollWidth<=innerWidth'), 'Connected settings overflow phone viewport'
         page.wait_for_function("parseFloat(document.querySelector('[data-testid=remote-fps]').textContent) > 0", timeout=5000)
@@ -88,10 +95,17 @@ window.RTCPeerConnection=class extends NativePeer{
             arg=original_size, timeout=30000,
         )
         print('PASS: remote minimum/maximum resolution changes and return to the original resolution')
-        before = page.get_by_role('spinbutton', name='contrast', exact=True).input_value()
-        page.get_by_role('spinbutton', name='contrast', exact=True).fill('1')
-        expect(page.get_by_role('spinbutton', name='contrast', exact=True)).to_have_value('1')
-        page.wait_for_function("document.querySelector('.remote-settings').value.controls.find(c=>c.name==='contrast').value===1")
+        def changed(name, value):
+            page.wait_for_function(
+                "([name,value])=>document.querySelector('.remote-settings').value.controls.find(c=>c.name===name).value===value",
+                arg=[name, value])
+
+        before = controls['contrast']['value']
+        set_control(panel, controls['contrast'], 1)
+        changed('contrast', 1)
+        mirror = controls['horizontal_mirror']
+        set_control(panel, mirror, 1 - mirror['value'])
+        changed('horizontal_mirror', 1 - mirror['value'])
         timing = page.get_by_role('combobox', name='Light timing', exact=True)
         profiles = original_settings['timing_profiles']
 
@@ -113,11 +127,10 @@ window.RTCPeerConnection=class extends NativePeer{
         save()
         if profiles:
             set_timing(original_settings['timing_profile'])
-        page.get_by_role('spinbutton', name='contrast', exact=True).fill(before)
-        page.wait_for_function(
-            "value=>document.querySelector('.remote-settings').value.controls.find(c=>c.name==='contrast').value===value",
-            arg=int(before),
-        )
+        set_control(panel, controls['contrast'], before)
+        changed('contrast', before)
+        set_control(panel, mirror, mirror['value'])
+        changed('horizontal_mirror', mirror['value'])
         save()
         frame_count = page.evaluate('window.__frameStats.frameEnds')
         page.wait_for_function('window.__frameStats.frameEnds >= ' + str(frame_count + 3), timeout=20000)
@@ -142,12 +155,9 @@ window.RTCPeerConnection=class extends NativePeer{
         reset_controls = {control['name']: control['value'] for control in reset_settings['controls']}
         for control in original_settings['controls']:
             name, value = control['name'], control['value']
-            if control['supported'] and reset_controls[name] != value:
-                page.get_by_role('spinbutton', name=name.replace('_', ' '), exact=True).fill(str(value))
-                page.wait_for_function(
-                    "([name,value])=>document.querySelector('.remote-settings').value.controls.find(c=>c.name===name).value===value",
-                    arg=[name, value],
-                )
+            if reset_controls[name] != value:
+                set_control(panel, control, value)
+                changed(name, value)
         save()
         print('PASS: website live changes, Reset to Default and Save; original settings restored; connected panel fits 320px')
         page.get_by_role('button', name='Disconnect', exact=True).click()

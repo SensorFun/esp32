@@ -10,6 +10,7 @@ from contextlib import ExitStack
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
+from camera_panel import allowed_values, set_control
 from test_local_webrtc import add_password_argument, camera_password, connect_local, identity, wait_js
 
 parser = argparse.ArgumentParser(description=__doc__)
@@ -97,9 +98,7 @@ with sync_playwright() as p, ExitStack() as serial_handles:
                 wait_js(page, "v=>window.snapshot?.timing_profile===v", arg=settings['timing_profile'])
             for control in controls:
                 if control['supported'] and control['name'] in settings and settings[control['name']] != before[control['name']]:
-                    field = page.get_by_role('spinbutton', name=control['name'].replace('_', ' '), exact=True)
-                    field.fill('')
-                    field.fill(str(settings[control['name']]))
+                    set_control(page.locator('#settings-panel'), control, settings[control['name']])
                     try:
                         wait_js(page, "v=>window.snapshot?.controls?.find(c=>c.name===v.name)?.value===v.value", arg={'name': control['name'], 'value': settings[control['name']]})
                     except TimeoutError as error:
@@ -128,10 +127,10 @@ with sync_playwright() as p, ExitStack() as serial_handles:
                 candidates = [c for c in metadata['controls'] if c['supported'] and c['name'] in independent and c['min'] < c['max']]
                 assert len(candidates) >= 5, 'Need at least five supported controls'
                 for control in rng.sample(candidates, rng.randint(5, len(candidates))):
-                    low, high = control['min'], control['max']
+                    choices = allowed_values(control)
                     if control['name'] == 'jpeg_quality':
-                        low, high = max(low, 8), min(high, 25)
-                    choices = [v for v in range(low, high + 1) if v != current[control['name']]]
+                        choices = [v for v in choices if 8 <= v <= 25]
+                    choices = [v for v in choices if v != current[control['name']]]
                     expected[control['name']] = rng.choice(choices)
                 sizes = [s['value'] for s in metadata['resolutions'] if s['width'] <= 640 and s['height'] <= 480 and s['value'] != current['resolution']]
                 expected['resolution'] = rng.choice(sizes)

@@ -18,6 +18,7 @@ import urllib.request
 
 import serial
 from playwright.sync_api import sync_playwright
+from camera_panel import allowed_values, check_settings_panel, set_control
 
 
 class CameraConsole(serial.Serial):
@@ -164,6 +165,9 @@ def main():
             raise
         wait_js(page, "document.querySelector('#settings-panel').value?.controls.length > 0")
         print('Decoded live JPEG:', page.locator('#settings-panel').evaluate('(panel)=>panel.value.sensor'))
+        panel = page.locator('#settings-panel')
+        counts = check_settings_panel(panel, panel.evaluate('(panel)=>panel.value'))
+        print(f"Settings panel: {counts['switch']} On/Off switches, {counts['list']} lists, {counts['range']} number fields")
         wait_js(page, "parseFloat(document.querySelector('#fps').textContent) > 0", timeout=5000)
         print('Local displayed frame rate:', page.locator('#fps').inner_text())
         assert request_status('POST', b'busy') == 409
@@ -179,7 +183,7 @@ def main():
         page.evaluate("window.lastResponse=null;command({op:'get'})")
         wait_js(page, "window.lastResponse && window.lastResponse.type==='settings'")
         initial = page.evaluate('window.lastResponse')
-        maximum = (1600, 1200) if initial['sensor'] == 'ov2640' else (2048, 1536)
+        maximum = {'ov2640': (1600, 1200), 'ov3660': (2048, 1536), 'gc0308': (640, 480)}[initial['sensor']]
         sizes = initial['resolutions']
         assert (sizes[0]['width'], sizes[0]['height']) == (160, 120)
         assert all(size['width'] >= 160 and size['height'] >= 120 for size in sizes)
@@ -201,28 +205,33 @@ def main():
         page.evaluate("window.lastResponse=null;command({op:'get'})")
         wait_js(page, "window.lastResponse?.type==='settings'")
         initial = page.evaluate('window.lastResponse')
-        assert initial['timing_profiles'] == ['high_light', 'mid_light', 'low_light']
-        page.evaluate("window.lastResponse=null;command({op:'set',name:'timing_profile',value:'high_light'})")
-        wait_js(page, "window.lastResponse?.timing_profile==='high_light'")
-        baseline = page.evaluate('window.lastResponse.timing_register')
-        readbacks = []
-        for profile, factor in [('mid_light', 2), ('low_light', 3 if initial['sensor'] == 'ov3660' else 4), ('high_light', 1)]:
-            page.evaluate('window.lastResponse=null')
-            page.get_by_role('combobox', name='Light timing', exact=True).select_option(profile)
-            wait_js(page, 'window.lastResponse !== null')
-            response = page.evaluate('window.lastResponse')
-            assert response.get('timing_profile') == profile, (profile, response)
-            actual = page.evaluate('window.lastResponse.timing_register')
-            expected = baseline * factor if initial['sensor'] == 'ov3660' else (baseline + 1) * factor - 1
-            assert actual == expected, (profile, actual, expected)
-            readbacks.append((profile, actual))
-            # Observe three fresh decoded frames after each mode change.
-            for _ in range(3):
-                previous = page.locator('#preview').get_attribute('src')
-                wait_js(page, "src=>document.querySelector('#preview').src!==src && document.querySelector('#preview').naturalWidth>0", arg=previous)
-        page.evaluate("value=>{window.lastResponse=null;command({op:'set',name:'timing_profile',value});}", initial['timing_profile'])
-        wait_js(page, "value=>window.lastResponse?.timing_profile===value", arg=initial['timing_profile'])
-        print('Timing profiles changed real registers; live frames continued:', readbacks)
+        if initial['sensor'] == 'gc0308':
+            # The GC0308 has no OV light timing; its panel offers none.
+            assert initial['timing_profiles'] == []
+            assert page.get_by_role('combobox', name='Light timing', exact=True).count() == 0
+        else:
+            assert initial['timing_profiles'] == ['high_light', 'mid_light', 'low_light']
+            page.evaluate("window.lastResponse=null;command({op:'set',name:'timing_profile',value:'high_light'})")
+            wait_js(page, "window.lastResponse?.timing_profile==='high_light'")
+            baseline = page.evaluate('window.lastResponse.timing_register')
+            readbacks = []
+            for profile, factor in [('mid_light', 2), ('low_light', 3 if initial['sensor'] == 'ov3660' else 4), ('high_light', 1)]:
+                page.evaluate('window.lastResponse=null')
+                page.get_by_role('combobox', name='Light timing', exact=True).select_option(profile)
+                wait_js(page, 'window.lastResponse !== null')
+                response = page.evaluate('window.lastResponse')
+                assert response.get('timing_profile') == profile, (profile, response)
+                actual = page.evaluate('window.lastResponse.timing_register')
+                expected = baseline * factor if initial['sensor'] == 'ov3660' else (baseline + 1) * factor - 1
+                assert actual == expected, (profile, actual, expected)
+                readbacks.append((profile, actual))
+                # Observe three fresh decoded frames after each mode change.
+                for _ in range(3):
+                    previous = page.locator('#preview').get_attribute('src')
+                    wait_js(page, "src=>document.querySelector('#preview').src!==src && document.querySelector('#preview').naturalWidth>0", arg=previous)
+            page.evaluate("value=>{window.lastResponse=null;command({op:'set',name:'timing_profile',value});}", initial['timing_profile'])
+            wait_js(page, "value=>window.lastResponse?.timing_profile===value", arg=initial['timing_profile'])
+            print('Timing profiles changed real registers; live frames continued:', readbacks)
         page.evaluate("window.lastResponse=null;command({op:'set',name:'timing_profile',value:'invalid'})")
         wait_js(page, "window.lastResponse && window.lastResponse.type==='error'")
         assert page.evaluate('window.lastResponse.error') == 'Unknown timing profile'
@@ -231,9 +240,23 @@ def main():
         page.evaluate("value=>command({op:'set',name:'contrast',value})", new)
         wait_js(page, "v=>document.querySelector('#settings-panel').value.controls.some(c=>c.name==='contrast'&&c.value===v)", arg=new)
         page.evaluate("command({op:'set',name:'contrast',value:999})")
-        wait_js(page, "document.querySelector('#status').textContent.includes('within the advertised range')")
+        wait_js(page, "document.querySelector('#status').textContent.includes('one of the advertised values')")
         page.evaluate("value=>command({op:'set',name:'contrast',value})", original)
         wait_js(page, "v=>document.querySelector('#settings-panel').value.controls.some(c=>c.name==='contrast'&&c.value===v)", arg=original)
+        # Every listed value of each list, and both switch states, through the GUI.
+        page.evaluate("window.lastResponse=null;command({op:'get'})")
+        wait_js(page, "window.lastResponse?.type==='settings'")
+        current = page.evaluate('window.lastResponse')
+        page.evaluate('()=>{const p=document.querySelector("#settings-panel");p.dirty=false;p.settings=window.lastResponse;}')
+        risky = {'colorbar', 'automatic_exposure', 'automatic_gain'}  # Keep the image usable while testing.
+        for control in current['controls']:
+            if control['kind'] == 'range' or control['name'] in risky:
+                continue
+            for value in [v for v in allowed_values(control) if v != control['value']] + [control['value']]:
+                page.evaluate('window.lastResponse=null')
+                set_control(panel, control, value)
+                wait_js(page, "v=>window.lastResponse?.controls?.some(c=>c.name===v.name&&c.value===v.value)", arg={'name': control['name'], 'value': value}, timeout=10000)
+        print('Every list value and switch state applied through the GUI and read back')
         stats = page.evaluate("async()=>Array.from((await pc.getStats()).values()).filter(s=>s.type==='transport').map(s=>({dtlsState:s.dtlsState,tlsVersion:s.tlsVersion,dtlsCipher:s.dtlsCipher}))")
         assert any(s['dtlsState'] == 'connected' for s in stats), stats
         print('WebRTC transport:', stats)
