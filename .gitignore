@@ -12,3 +12,5 @@ projects/*/sdkconfig
 projects/*/sdkconfig.old
 projects/*/build/
 projects/*/managed_components/
+
+/output/

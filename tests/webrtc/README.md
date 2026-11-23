@@ -74,3 +74,50 @@ tests/webrtc/boards_test.sh --help
 ```
 
 `--collect-only` does not access USB, Docker or credentials.
+
+## Offline motion replay
+
+Run from the repository root:
+
+```sh
+python tests/webrtc/replay_motion.py --jobs 6
+python tests/webrtc/replay_motion.py --matrix tests/webrtc/config/motion-replay.json --jobs 6
+```
+
+The default inputs are the camera's MJPEG AVI files in `tests/data/motion/`.
+Pass clip paths to select other fixtures. The runner compiles the firmware's
+C++ detector and the same pinned ESP-JPEG decoder with the host C and C++
+compilers. A firmware build provides the decoder sources. For a different
+build layout, pass the pinned component's `tjpgd` directory with
+`--decoder-dir`.
+
+The default profiles use firmware motion thresholds with detection enabled.
+For a board-specific profile, use its `motion_get` JSON response or the
+response's `values` object in the matrix's `profiles` map. Missing thresholds
+use firmware defaults. The matrix runs every clip × profile × scenario in a
+separate process, up to `--jobs` concurrent cases. Scenarios can repeat the
+first frame (`freeze`), keep every Nth frame (`frame_stride`), and simulate
+analysis taking a fixed number of microseconds (`work_us`). Set
+`expect_motion` to assert detection or its absence. Omit it for exploratory
+scenarios that should report results without requiring a detection.
+
+The report defaults to `build/motion-replay/report.json`. It includes admission,
+timestamps, analysis dimensions, decode failures, motion area and speed,
+and the first sampled point that reaches the recording confirmation threshold.
+This checks the detector and confirmation logic rather than writing recordings
+or simulating SD card I/O. AVI supplies a constant average frame interval, so
+replay cannot reconstruct exact capture jitter or busy periods from the
+original run. The host's actual execution time never feeds the detector.
+
+To export annotated MP4s, add `--video-output`:
+
+```sh
+uv run --no-project --with 'pillow>=10.1' --with imageio-ffmpeg python \
+  tests/webrtc/replay_motion.py --video-output output/motion --jobs 6
+```
+
+The runner writes one MP4 per clip, profile, and scenario. Green boxes enclose
+connected groups of cells marked as moving when the detector reports motion.
+Between analyzed frames, the overlay holds the previous result and labels it
+`(held)`. Rendering and encoding happen after detection and do not affect
+the results. The export needs Pillow and an FFmpeg build with H.264 encoding.

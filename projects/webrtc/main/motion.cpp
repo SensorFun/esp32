@@ -1,6 +1,6 @@
 #include "diagnostics.h"
 #include "motion.h"
-#include "optical_flow.h"
+#include "motion_detector.h"
 #include "recorder.h"
 #include "esp_heap_caps.h"
 #include "esp_attr.h"
@@ -9,7 +9,6 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
-#include "rom/tjpgd.h"
 #include "nvs.h"
 #include <algorithm>
 #include <atomic>
@@ -71,12 +70,11 @@ std::atomic<bool> busy{false}, media_paused{false};
 uint8_t *job = nullptr;
 size_t job_capacity = 0, job_length = 0;
 int64_t job_time = 0;  // Capture time of the frame in job.
-int64_t next_analysis = 0;
+motion::FrameSchedule schedule;
 // Average JPEG size at the current stream resolution, measured by the worker.
 std::atomic<uint32_t> frame_bytes{0}, frame_dimensions{0};  // dimensions: width << 16 | height
 // Results, guarded by lock.
-bool moving = false;
-int64_t moving_since = 0, last_motion = 0;
+motion::Activity activity;
 float area = 0, speed = 0, rate = 0;  // speed: mean of moving cells, px/s
 int cols = 0, rows = 0;
 std::vector<uint8_t> grid;
@@ -235,7 +233,7 @@ void use(const MotionSettings &next) {
     Lock guard;
     settings = next;
     ++generation;
-    if (!next.enabled) { moving = false; area = speed = rate = 0; grid.clear(); }
+    if (!next.enabled) { activity = {}; area = speed = rate = 0; grid.clear(); }
 }
 
 cJSON *save(const MotionSettings &next) {
@@ -261,86 +259,34 @@ void cooperate() { vTaskDelay(1); }
 #define MOTION_SCRATCH
 #endif
 uint8_t flow_frames[2][motion::kMaxPixels];
-MOTION_SCRATCH motion::GrayScaler scaler;
-MOTION_SCRATCH alignas(4) uint8_t decoder_workspace[3100];
-
-struct DecodeSource { const uint8_t *data; size_t length, read; };
-
-UINT jpeg_input(JDEC *decoder, BYTE *buffer, UINT bytes) {
-    auto *source = static_cast<DecodeSource *>(decoder->device);
-    bytes = UINT(std::min<size_t>(bytes, source->length - source->read));
-    if (buffer) memcpy(buffer, source->data + source->read, bytes);
-    source->read += bytes;
-    return bytes;
-}
-
-// Receives each decoded RGB888 block; edges past the scaled size are clipped.
-int decoded_width, decoded_height;
-UINT jpeg_output(JDEC *, void *bitmap, JRECT *rect) {
-    const int right = std::min<int>(rect->right, decoded_width - 1), bottom = std::min<int>(rect->bottom, decoded_height - 1);
-    if (rect->left > right || rect->top > bottom) return 1;
-    return scaler.add(static_cast<const uint8_t *>(bitmap), rect->left, rect->top, right, bottom, rect->right - rect->left + 1) ? 1 : 0;
-}
-
-// Decodes a JPEG at 1/8 scale straight into an analysis-size luma frame.
-// Reports the JPEG's size and the analysis size.
-bool decode_gray(const uint8_t *jpeg, size_t length, uint8_t *gray, int &width, int &height, int &out_width, int &out_height) {
-    static DecodeSource source;
-    static JDEC decoder;  // Decoder state is hot; keep it in internal RAM, not the PSRAM stack.
-    source = {jpeg, length, 0};
-    if (jd_prepare(&decoder, jpeg_input, decoder_workspace, sizeof(decoder_workspace), &source) != JDR_OK) return false;
-    width = decoder.width; height = decoder.height;
-    decoded_width = std::max(1, width >> motion::kJpegScale); decoded_height = std::max(1, height >> motion::kJpegScale);
-    motion::analysis_size(width, height, out_width, out_height);
-    return scaler.begin(decoded_width, decoded_height, out_width, out_height, gray) &&
-           jd_decomp(&decoder, jpeg_output, BYTE(motion::kJpegScale)) == JDR_OK && scaler.finish();
-}
+MOTION_SCRATCH motion::JpegScratch jpeg_scratch;
 
 void detect(void *) {
-    motion::OpticalFlow detector(flow_frames[0], flow_frames[1]);
-    motion::FlowResult result;
+    motion::Detector detector(flow_frames[0], flow_frames[1], jpeg_scratch);
     uint32_t seen_generation = UINT32_MAX;
-    int last_width = 0, last_height = 0;
-    int64_t previous = 0, previous_frame = 0;
+    int64_t previous = 0;
     for (;;) {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
         struct FinishJob {
             ~FinishJob() { cooperate(); busy = false; }
         } finish_job;
-        if (media_paused) continue;
-        if (recorder_manual_state() != ManualRecording::idle) continue;
+        if (media_paused || recorder_manual_state() != ManualRecording::idle) continue;
         MotionSettings s;
         uint32_t current_generation;
         { Lock guard; s = settings; current_generation = generation; }
-        const int64_t frame_time = job_time;
-        int width = 0, height = 0, analysis_width = 0, analysis_height = 0;
-        if (!s.enabled || !decode_gray(job, job_length, detector.frame(), width, height, analysis_width, analysis_height)) continue;
-        if (current_generation != seen_generation || width != last_width || height != last_height) {
+        if (current_generation != seen_generation) {
             detector.reset();
-            seen_generation = current_generation; last_width = width; last_height = height;
-            previous = previous_frame = 0;
+            seen_generation = current_generation;
+            previous = 0;
         }
-        // Flow is measured between consecutive analysed frames; convert the
-        // speed threshold using their actual capture interval, which may be
-        // longer than 1 / analysis_fps when frames arrive slowly.
-        const float interval = previous_frame ? std::clamp(float(frame_time - previous_frame) / 1e6f, 0.02f, 5.0f) : 1.0f / s.analysis_fps;
-        previous_frame = frame_time;
-        motion::FlowParams params;
-        params.cell = s.cell; params.min_flow = s.min_speed * interval; params.min_texture = s.min_texture;
-        params.blur = s.blur; params.min_area = s.min_area;
-        if (!detector.process(analysis_width, analysis_height, params, result, cooperate)) continue;
+        if (detector.analyze(job, job_length, job_time, s, cooperate) != motion::FrameResult::analyzed)
+            continue;
         const int64_t now = esp_timer_get_time();
-        // Brief gaps between detections still count as one continuous motion.
-        const int64_t gap = std::max<int64_t>(1000000, 2500000 / s.analysis_fps);
         Lock guard;
         if (generation != current_generation) continue;
-        if (result.motion) {
-            if (!moving || now - last_motion > gap) moving_since = now;
-            moving = true;
-            last_motion = now;
-        } else if (now - last_motion > gap) moving = false;
-        area = result.area; speed = result.mean_flow / interval;
-        cols = result.cols; rows = result.rows; grid = result.moving;
+        activity.update(detector.flow.motion, now, s);
+        area = detector.flow.area; speed = detector.speed;
+        cols = detector.flow.cols; rows = detector.flow.rows; grid = detector.flow.moving;
         if (previous) rate = 0.8f * rate + 0.2f * (1e6f / float(now - previous));
         previous = now;
     }
@@ -372,7 +318,7 @@ bool motion_frame_due() {
     const int64_t now = esp_timer_get_time();
     MotionSettings s = motion_settings();
     if (!s.enabled) return false;
-    return (!busy && now >= next_analysis) || recorder_frame_due(s, now);
+    return schedule.due(now, busy) || recorder_frame_due(s, now);
 }
 
 void motion_feed(const camera_fb_t *frame) {
@@ -384,7 +330,7 @@ void motion_feed(const camera_fb_t *frame) {
     MotionSettings s = motion_settings();
     if (!s.enabled) return;
     const int64_t now = esp_timer_get_time();
-    if (!busy && now >= next_analysis) {
+    if (schedule.due(now, busy)) {
         if (frame->len > job_capacity) {
             heap_caps_free(job);
             job = static_cast<uint8_t *>(heap_caps_malloc(frame->len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
@@ -394,7 +340,7 @@ void motion_feed(const camera_fb_t *frame) {
             memcpy(job, frame->buf, frame->len);
             job_length = frame->len;
             job_time = now;
-            next_analysis = now + 1000000 / s.analysis_fps;
+            schedule.admit(now, s);
             busy = true;
             xTaskNotifyGive(task);
         }
@@ -404,7 +350,7 @@ void motion_feed(const camera_fb_t *frame) {
 
 void motion_activity(bool &active, int64_t &since, int64_t &last) {
     Lock guard;
-    active = moving; since = moving_since; last = last_motion;
+    active = activity.moving; since = activity.since; last = activity.last;
 }
 
 bool motion_overlay_active() {
@@ -421,7 +367,7 @@ cJSON *motion_status(bool include_overlay) {
         cJSON_AddBoolToObject(status, "enabled", settings.enabled);
         cJSON_AddBoolToObject(status, "analysis_suspended", suspended);
         cJSON_AddStringToObject(status, "method", kMethods[settings.method].id);
-        cJSON_AddBoolToObject(status, "motion", settings.enabled && moving);
+        cJSON_AddBoolToObject(status, "motion", settings.enabled && activity.moving);
         cJSON_AddNumberToObject(status, "area", std::round(double(area) * 10) / 10);
         cJSON_AddNumberToObject(status, "speed", std::round(double(speed) * 10) / 10);
         cJSON_AddNumberToObject(status, "fps", std::round(double(rate) * 10) / 10);
@@ -460,14 +406,13 @@ cJSON *motion_command(const cJSON *request) {
             {
                 Lock guard;
                 ++generation;
-                moving = false;
-                moving_since = last_motion = 0;
+                activity = {};
                 area = speed = rate = 0;
                 cols = rows = 0;
                 grid.clear();
             }
             while (busy.load()) vTaskDelay(1);
-            next_analysis = 0;
+            schedule.reset();
         }
         cJSON *reply = cJSON_CreateObject();
         cJSON_AddStringToObject(reply, "type", "manual_recording");

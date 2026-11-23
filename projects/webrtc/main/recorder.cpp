@@ -1,5 +1,6 @@
 #include "diagnostics.h"
 #include "recorder.h"
+#include "motion_detector.h"
 #include "avi_writer.h"
 #include "sd_card.h"
 #include "esp_heap_caps.h"
@@ -333,7 +334,7 @@ void record(void *) {
                 held -= pending.front().length;
                 release(pending.front()); pending.pop_front();
             }
-            if (!moving || now - since < int64_t(s.trigger_seconds * kSecond) || pending.empty() || now < retry_open) continue;
+            if (!motion::Activity{moving, since, last}.confirmed(now, s.trigger_seconds) || pending.empty() || now < retry_open) continue;
             if (!clip.open(pending.front(), s.overwrite_oldest)) {
                 retry_open = now + 10 * kSecond;  // A full card is checked again later, not per frame.
                 continue;

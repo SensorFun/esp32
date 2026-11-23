@@ -1,0 +1,15 @@
+{
+  "profiles": {
+    "firmware-defaults-enabled": {},
+    "low-rate-small-cells": {
+      "analysis_fps": 3,
+      "cell": 5
+    }
+  },
+  "scenarios": [
+    {"name": "original", "expect_motion": true},
+    {"name": "static", "freeze": true, "expect_motion": false},
+    {"name": "dropped-frames", "frame_stride": 2},
+    {"name": "busy-detector", "work_us": 350000}
+  ]
+}
