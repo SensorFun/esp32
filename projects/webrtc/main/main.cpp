@@ -438,10 +438,12 @@ void worker(common::Application &app) {
             { Lock guard; if (fb) { camera_frame_return(fb); fb = nullptr; } close_peer(); }
             if (server) { ESP_ERROR_CHECK(httpd_ssl_stop(server)); server = nullptr; }
             // Keep detecting and recording while Wi-Fi is down.
-            if (camera_ready && motion_frame_due()) {
+            const bool motion_enabled = camera_ready && motion_settings().enabled;
+            if (camera_ready && camera_capture_idle(!camera_stream_images() && !motion_enabled) &&
+                motion_enabled && motion_frame_due()) {
                 if (camera_fb_t *frame = camera_frame_get()) { motion_feed(frame); camera_frame_return(frame); }
             }
-            vTaskDelay(pdMS_TO_TICKS(camera_ready && motion_settings().enabled ? 10 : 100));
+            vTaskDelay(pdMS_TO_TICKS(motion_enabled ? 10 : 100));
             continue;
         }
         if (!camera_ready) {
@@ -508,8 +510,9 @@ void worker(common::Application &app) {
             }
             const bool viewer = channel_ready && peer_auth.allowed();
             if (viewer && now >= next_status) {
-                send_text(motion_status());
-                next_status = now + (motion_overlay_active() ? 500000 : 1000000);
+                const bool overlay = camera_stream_images() && motion_overlay_active();
+                send_text(motion_status(overlay));
+                next_status = now + (overlay ? 500000 : 1000000);
             }
             bool reply_waiting = false;
             while (channel_ready && !replies.empty()) {
@@ -527,11 +530,17 @@ void worker(common::Application &app) {
             }
             reply_waiting = !replies.empty();
             const bool downloading = viewer && transfer.fd >= 0;
+            const bool images_enabled = camera_stream_images();
+            const bool motion_enabled = motion_settings().enabled;
+            if (fb && (!viewer || !images_enabled)) { camera_frame_return(fb); fb = nullptr; }
+            const bool capture_ready = camera_capture_idle(!images_enabled && !motion_enabled);
+            if (!images_enabled && !motion_enabled) capture_stalled_since = 0;
+            const bool bulk_traffic = viewer && (images_enabled || downloading);
             // Backpressure slows bulk traffic: blocked control replies, a full
             // Wi-Fi TX queue, or internal RAM running low.
             const uint32_t queue_full = camera_transport_queue_full();
-            const bool low_memory = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) < PACING_LOW_MEMORY;
-            if (viewer && (reply_waiting || queue_full != queue_full_seen || low_memory)) {
+            const bool low_memory = bulk_traffic && heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) < PACING_LOW_MEMORY;
+            if (bulk_traffic && (reply_waiting || queue_full != queue_full_seen || low_memory)) {
                 slow_reply += reply_waiting; slow_queue += queue_full != queue_full_seen; slow_memory += low_memory;
                 pacer.congested(now);
             }
@@ -544,7 +553,7 @@ void worker(common::Application &app) {
                 pacer.congested(esp_timer_get_time());
                 return true;
             };
-            if (viewer && now >= next_pacing_report) {
+            if (bulk_traffic && now >= next_pacing_report) {
                 next_pacing_report = now + 5000000;
                 wifi_ap_record_t ap{};
                 esp_wifi_sta_get_ap_info(&ap);
@@ -556,9 +565,9 @@ void worker(common::Application &app) {
             // Stop admitting video and recording transfers under pressure; let
             // SCTP acknowledgements drain its cache while still servicing
             // settings and heartbeats.
-            const bool video_memory = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) >= 12288 &&
+            const bool video_memory = bulk_traffic && heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) >= 12288 &&
                 heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) >= 2048;
-            if (viewer && !video_memory) {
+            if (bulk_traffic && !video_memory) {
                 static int64_t last_memory_report = 0;
                 if (now - last_memory_report > 10000000) {
                     last_memory_report = now;
@@ -567,7 +576,7 @@ void worker(common::Application &app) {
                         unsigned(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)));
                 }
             }
-            const bool streaming = viewer && !reply_waiting && !downloading && video_memory;
+            const bool streaming = viewer && images_enabled && capture_ready && !reply_waiting && !downloading && video_memory;
             if (downloading && !reply_waiting && video_memory && pacer.due(now)) {
                 // Abandon a partly sent frame; the viewer discards incomplete frames.
                 if (fb) { camera_frame_return(fb); fb = nullptr; }
@@ -605,8 +614,9 @@ void worker(common::Application &app) {
                 }
             }
             // Motion detection and recording capture frames with or without a viewer.
-            if (!fb && (streaming || motion_frame_due())) {
-                fb = camera_frame_get(); offset = 0; ++sequence; last_progress = esp_timer_get_time();
+            if (!fb && capture_ready && (streaming || (motion_enabled && motion_frame_due()))) {
+                fb = camera_frame_get(streaming);
+                if (streaming) { offset = 0; ++sequence; last_progress = esp_timer_get_time(); }
                 if (fb) { capture_stalled_since = 0; motion_feed(fb); }
                 else if (!capture_stalled_since) capture_stalled_since = esp_timer_get_time();
                 else if (esp_timer_get_time() - capture_stalled_since >= 8000000) {
@@ -644,10 +654,8 @@ void worker(common::Application &app) {
                     // A full Wi-Fi TX queue ends the burst, as for downloads above.
                     if (ret != 0 || queue_filled() || !pacer.due(esp_timer_get_time())) break;
                 }
-            } else if (!viewer) {
-                if (!motion_settings().enabled) capture_stalled_since = 0;
-                if (fb) { camera_frame_return(fb); fb = nullptr; }
             }
+            if (!viewer && !motion_enabled) capture_stalled_since = 0;
         }
         if (esp_timer_get_time() >= next_app) { app.main(); next_app = esp_timer_get_time() + 20000; }
         vTaskDelay(pdMS_TO_TICKS(2));

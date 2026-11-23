@@ -6,7 +6,6 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "img_converters.h"
-#include <atomic>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -37,7 +36,7 @@ Slot slots[2];
 SemaphoreHandle_t slot_lock;     // Guards slot states.
 SemaphoreHandle_t capture_lock;  // Recursive: held while a driver frame is out, or the camera is reconfigured.
 TaskHandle_t encoder_task, waiting_task;
-std::atomic<int64_t> demand{0};
+int64_t prefetch_until;  // Guarded by slot_lock.
 
 struct Lock {
     Lock() { xSemaphoreTake(slot_lock, portMAX_DELAY); }
@@ -106,16 +105,23 @@ bool encode(const camera_fb_t *raw, Slot &slot) {
 void encode_frames(void *) {
     for (;;) {
         Slot *slot = nullptr;
-        if (esp_timer_get_time() - demand.load() < kIdleUs) {
+        {
             Lock guard;
             bool ready = false;
             for (auto &s : slots) ready |= s.state == Slot::kReady;
-            for (auto &s : slots) if (!ready && !slot && s.state == Slot::kFree) slot = &s;
+            if (!ready && (waiting_task || esp_timer_get_time() < prefetch_until)) {
+                for (auto &s : slots) if (s.state == Slot::kFree) { slot = &s; break; }
+            }
             if (slot) slot->state = Slot::kEncoding;
         }
         if (!slot) { ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100)); continue; }
         xSemaphoreTakeRecursive(capture_lock, portMAX_DELAY);
-        camera_fb_t *raw = esp_camera_fb_get();
+        bool requested;
+        {
+            Lock guard;
+            requested = waiting_task || esp_timer_get_time() < prefetch_until;
+        }
+        camera_fb_t *raw = requested ? esp_camera_fb_get() : nullptr;
         bool ok = false;
         if (raw) {
             slot->fb = *raw;
@@ -146,14 +152,16 @@ void start_encoder() {
 }
 }  // namespace
 
-camera_fb_t *camera_frame_get() {
+camera_fb_t *camera_frame_get(bool prefetch) {
     init_locks();
     if (!raw_sensor()) return esp_camera_fb_get();
     start_encoder();
     if (!encoder_task) return nullptr;
     const int64_t started = esp_timer_get_time();
-    demand = started;
-    xTaskNotifyGive(encoder_task);
+    {
+        Lock guard;
+        prefetch_until = prefetch ? started + kIdleUs : 0;
+    }
     // Wait as long as a driver frame wait would (see camera_poll.c).
     while (esp_timer_get_time() - started < 100000) {
         {
@@ -173,6 +181,12 @@ camera_fb_t *camera_frame_get() {
     Lock guard;
     waiting_task = nullptr;
     return nullptr;
+}
+
+void camera_stop_stream_prefetch() {
+    if (!slot_lock) return;
+    Lock guard;
+    prefetch_until = 0;
 }
 
 void camera_frame_return(camera_fb_t *frame) {

@@ -406,7 +406,7 @@ bool motion_overlay_active() {
     return settings.enabled && settings.overlay;
 }
 
-cJSON *motion_status() {
+cJSON *motion_status(bool include_overlay) {
     cJSON *status = cJSON_CreateObject();
     cJSON_AddStringToObject(status, "type", "motion_status");
     {
@@ -423,7 +423,7 @@ cJSON *motion_status() {
             cJSON_AddNumberToObject(status, "analysis_width", width);
             cJSON_AddNumberToObject(status, "analysis_height", height);
         }
-        if (settings.enabled && settings.overlay && cols && grid.size() == size_t(cols) * rows) {
+        if (include_overlay && settings.enabled && settings.overlay && cols && grid.size() == size_t(cols) * rows) {
             // Row-major moving-cell bits, packed into hex nibbles, MSB first.
             std::string hex((grid.size() + 3) / 4, '0');
             for (size_t i = 0; i < grid.size(); ++i) if (grid[i]) hex[i / 4] |= 1 << (3 - i % 4);

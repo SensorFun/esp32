@@ -17,6 +17,8 @@ class CameraSettings extends HTMLElement {
   // being edited keeps the user's text.
   sync(value) {
     const active = this.shadowRoot.activeElement;
+    const stream = this.shadowRoot.querySelector('[name=stream_images]');
+    if (stream && stream !== active) stream.checked = value.stream_images === 1;
     for (const c of value.controls || []) {
       const input = this.shadowRoot.querySelector(`[name="${c.name}"]`);
       if (!input || input === active) continue;
@@ -92,6 +94,12 @@ class CameraSettings extends HTMLElement {
       for (const [id, text] of options) { const option = document.createElement('option'); option.value = id; option.textContent = text; control.append(option); }
       control.value = value; add(name, title, control);
     };
+    if (this.value.stream_images !== undefined) {
+      const stream = document.createElement('input');
+      stream.type = 'checkbox';
+      stream.checked = this.value.stream_images === 1;
+      add('stream_images', 'Stream camera images', stream);
+    }
     select('resolution', 'Resolution', this.value.resolutions.map(size => [size.value, `${size.width} × ${size.height}`]), this.value.resolution);
     if (this.value.timing_profiles.length) select('timing_profile', 'Light timing', this.value.timing_profiles.map(name => [name, ({high_light:'High light',mid_light:'Mid light',low_light:'Low light'})[name]]), this.value.timing_profile);
     for (const c of this.value.controls) {

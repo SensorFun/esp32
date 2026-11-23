@@ -3,6 +3,7 @@
 #include "camera_timing.h"
 #include "esp_camera.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "driver/gpio.h"
 #include "nvs.h"
 #include <string>
@@ -23,9 +24,49 @@ static const char *sensor_name;
 // (config/frame_grabber/sensors/<sensor>.yaml).
 static const SensorProfile *profile;
 static std::string factory_settings;
+static bool stream_images = true;
+static bool capture_idle;
+static int64_t capture_idle_retry;
+static constexpr char stream_setting[] = "stream_images";
 static esp_err_t restore_settings();
-static cJSON *settings_values();
+static cJSON *settings_values(bool streaming = stream_images);
 static bool is_gc() { return sensor->id.PID == GC0308_PID; }
+bool camera_stream_images() { return stream_images; }
+static void set_stream_images(bool enabled) {
+    if (stream_images && !enabled) camera_stop_stream_prefetch();
+    stream_images = enabled;
+}
+
+bool camera_capture_idle(bool idle) {
+    if (capture_idle == idle) return true;
+    const int64_t now = esp_timer_get_time();
+    if (now < capture_idle_retry) return false;
+    camera_frames_pause();
+    if (!idle && esp_camera_available_frames()) {
+        if (auto *stale = esp_camera_fb_get()) esp_camera_fb_return(stale);
+    }
+    int err;
+    if (sensor->id.PID == OV2640_PID) {
+        // COM2 standby suspends the sensor's image pipeline, including JPEG.
+        err = sensor->set_reg(sensor, 0x109, 0x10, idle ? 0x10 : 0);
+    } else if (sensor->id.PID == OV3660_PID) {
+        // SYSTEM_CTROL0 software standby leaves the register state intact.
+        err = sensor->set_reg(sensor, 0x3008, 0x40, idle ? 0x40 : 0);
+    } else {
+        // GC0308 has no JPEG engine. Gate its parallel data and sync output.
+        err = sensor->set_reg(sensor, 0xfe, 0xff, 0);
+        if (!err) err = sensor->set_reg(sensor, 0x25, 0x0f, idle ? 0 : 0x0f);
+    }
+    camera_frames_resume();
+    if (err) {
+        capture_idle_retry = now + 1000000;
+        ESP_LOGW("camera", "Could not %s sensor capture: %d", idle ? "pause" : "resume", err);
+        return false;
+    }
+    capture_idle_retry = 0;
+    capture_idle = idle;
+    return true;
+}
 static framesize_t max_resolution() {
     if (is_gc()) return FRAMESIZE_VGA;
     return sensor->id.PID == OV2640_PID ? FRAMESIZE_UXGA : FRAMESIZE_QXGA;
@@ -91,6 +132,8 @@ esp_err_t camera_start(bool restore_saved) {
     if (err != ESP_OK) return err;
     active_config = cfg;
     sensor = esp_camera_sensor_get();
+    capture_idle = false;
+    capture_idle_retry = 0;
     if (sensor->id.PID == OV2640_PID) {
         sensor_name = "ov2640";
     } else if (sensor->id.PID == OV3660_PID) {
@@ -118,7 +161,7 @@ esp_err_t camera_start(bool restore_saved) {
         }
     }
     ESP_LOGI("camera", "Detected %s; YAML defaults applied; %s 320x240", sensor_name, is_gc() ? "YUV422 + software JPEG" : "JPEG");
-    cJSON *defaults_json = settings_values();
+    cJSON *defaults_json = settings_values(true);
     char *defaults_text = cJSON_PrintUnformatted(defaults_json);
     if (!defaults_text) { cJSON_Delete(defaults_json); return ESP_ERR_NO_MEM; }
     factory_settings = defaults_text;
@@ -127,10 +170,11 @@ esp_err_t camera_start(bool restore_saved) {
         esp_err_t restore_err = restore_settings();
         if (restore_err != ESP_OK) return restore_err;
     }
-    settle();
+    if (stream_images) settle();
     return ESP_OK;
 }
 static bool set_resolution(framesize_t size) {
+    if (!camera_capture_idle(false)) return false;
     const auto previous = static_cast<framesize_t>(sensor->status.framesize);
     const int profile = timing.selected();
     constexpr size_t count = sizeof(controls) / sizeof(controls[0]);
@@ -181,15 +225,21 @@ static bool set_resolution(framesize_t size) {
     if (!apply(previous)) ESP_LOGE("camera", "Could not restore the previous resolution");
     return false;
 }
-static cJSON *settings_values() {
+static cJSON *settings_values(bool streaming) {
     cJSON *value = cJSON_CreateObject();
     cJSON_AddNumberToObject(value, "resolution", sensor->status.framesize);
+    cJSON_AddNumberToObject(value, stream_setting, streaming);
     if (!is_gc()) cJSON_AddStringToObject(value, "timing_profile", timing_names[timing.selected()]);
     for (const auto &c : controls) if (supported(c)) cJSON_AddNumberToObject(value, c.name, c.get(sensor));
     return value;
 }
+static bool valid_stream_setting(const cJSON *value) {
+    return cJSON_IsNumber(value) && (value->valuedouble == 0 || value->valuedouble == 1);
+}
 static bool validate_values(const cJSON *values) {
     if (!cJSON_IsObject(values)) return false;
+    const cJSON *stream = cJSON_GetObjectItemCaseSensitive(values, stream_setting);
+    if (stream && !valid_stream_setting(stream)) return false;
     const cJSON *size = cJSON_GetObjectItemCaseSensitive(values, "resolution");
     if (!cJSON_IsNumber(size) || !std::isfinite(size->valuedouble) || size->valuedouble != std::floor(size->valuedouble) || !valid_resolution(size->valueint)) return false;
     if (!is_gc()) {
@@ -214,16 +264,32 @@ static bool apply_values(const cJSON *values, bool force = false) {
         const int value = cJSON_GetObjectItemCaseSensitive(values, c.name)->valueint;
         if ((force || c.get(sensor) != value) && c.set(sensor, value)) return false;
     }
-    if (is_gc()) return true;
-    const char *profile = cJSON_GetObjectItemCaseSensitive(values, "timing_profile")->valuestring;
-    for (int i = 0; i < 3; ++i) {
-        if (strcmp(profile, timing_names[i])) continue;
-        return (!force && timing.selected() == i) || timing.apply(i) == 0;
+    if (!is_gc()) {
+        const char *profile = cJSON_GetObjectItemCaseSensitive(values, "timing_profile")->valuestring;
+        for (int i = 0; i < 3; ++i) {
+            if (strcmp(profile, timing_names[i])) continue;
+            if ((force || timing.selected() != i) && timing.apply(i) != 0) return false;
+            break;
+        }
     }
-    return false;
+    if (const cJSON *stream = cJSON_GetObjectItemCaseSensitive(values, stream_setting)) {
+        set_stream_images(stream->valueint != 0);
+    }
+    return true;
 }
 static esp_err_t store_values(const cJSON *values) {
+    // An older viewer may save a settings object without the stream switch.
+    cJSON *completed = nullptr;
+    if (!cJSON_HasObjectItem(values, stream_setting)) {
+        completed = cJSON_Duplicate(values, true);
+        if (!completed || !cJSON_AddNumberToObject(completed, stream_setting, stream_images)) {
+            cJSON_Delete(completed);
+            return ESP_ERR_NO_MEM;
+        }
+        values = completed;
+    }
     char *text = cJSON_PrintUnformatted(values);
+    cJSON_Delete(completed);
     if (!text) return ESP_ERR_NO_MEM;
     nvs_handle_t handle;
     esp_err_t ret = nvs_open("camera_settings", NVS_READWRITE, &handle);
@@ -272,6 +338,7 @@ cJSON *camera_settings() {
     cJSON_AddStringToObject(reply, "type", "settings");
     cJSON_AddStringToObject(reply, "sensor", sensor_name);
     cJSON_AddNumberToObject(reply, "resolution", sensor->status.framesize);
+    cJSON_AddNumberToObject(reply, stream_setting, stream_images);
     cJSON *sizes = cJSON_AddArrayToObject(reply, "resolutions");
     for (int i = FRAMESIZE_96X96; i <= max_resolution(); ++i) {
         if (!valid_resolution(i)) continue;
@@ -381,6 +448,14 @@ cJSON *camera_command(const cJSON *request) {
     const auto *name = cJSON_GetObjectItemCaseSensitive(request, "name");
     const auto *value = cJSON_GetObjectItemCaseSensitive(request, "value");
     const char *error = "Unknown camera command";
+    if (cJSON_IsString(op) && !strcmp(op->valuestring, "set") && cJSON_IsString(name) &&
+        !strcmp(name->valuestring, stream_setting)) {
+        if (valid_stream_setting(value)) {
+            set_stream_images(value->valueint != 0);
+            return camera_settings();
+        }
+        error = "Stream camera images must be on or off";
+    }
     if (cJSON_IsString(op) && !strcmp(op->valuestring, "set") && cJSON_IsString(name) &&
         !strcmp(name->valuestring, "resolution")) {
         if (!cJSON_IsNumber(value) || !std::isfinite(value->valuedouble) ||

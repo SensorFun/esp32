@@ -30,6 +30,8 @@ password = camera_password(args)
 
 def values(data):
     settings = {'resolution': data['resolution']}
+    if 'stream_images' in data:
+        settings['stream_images'] = data['stream_images']
     if data['timing_profiles']:
         settings['timing_profile'] = data['timing_profile']
     settings.update({c['name']: c['value'] for c in data['controls'] if c['supported']})
@@ -82,7 +84,7 @@ with sync_playwright() as p, ExitStack() as serial_handles:
     else:
         original = values(page.evaluate('window.snapshot'))
         if args.snapshot:
-            original = json.loads(args.snapshot.read_text())
+            original.update(json.loads(args.snapshot.read_text()))
             apply(page, original)
         seed = args.seed if args.seed is not None else secrets.randbits(64)
         rng = random.Random(seed)
@@ -106,7 +108,7 @@ with sync_playwright() as p, ExitStack() as serial_handles:
                         raise AssertionError(f"Live change not acknowledged: {control['name']}={settings[control['name']]}") from error
             page.evaluate("window.snapshot=null;command({op:'get'})")
             try:
-                wait_js(page, "expected=>{const s=window.snapshot;if(s?.type!=='settings')return false;const actual={resolution:s.resolution,timing_profile:s.timing_profile,...Object.fromEntries(s.controls.filter(c=>c.supported).map(c=>[c.name,c.value]))};return Object.entries(expected).every(([key,value])=>actual[key]===value)}", arg=settings)
+                wait_js(page, "expected=>{const s=window.snapshot;if(s?.type!=='settings')return false;const actual={resolution:s.resolution,stream_images:s.stream_images,timing_profile:s.timing_profile,...Object.fromEntries(s.controls.filter(c=>c.supported).map(c=>[c.name,c.value]))};return Object.entries(expected).every(([key,value])=>actual[key]===value)}", arg=settings)
             except TimeoutError:
                 actual = page.evaluate('window.snapshot')
                 if actual and actual.get('type') == 'settings':
@@ -116,6 +118,32 @@ with sync_playwright() as p, ExitStack() as serial_handles:
             assert values(page.evaluate('window.snapshot')) == settings, 'Live settings differ from requested values'
 
         try:
+            panel = page.locator('#settings-panel')
+            stream = panel.get_by_role('checkbox', name='Stream camera images', exact=True)
+            stream.check()
+            wait_js(page, "window.snapshot?.stream_images===1 && document.querySelector('#preview').naturalWidth>0")
+            stream.uncheck()
+            wait_js(page, "window.snapshot?.stream_images===0 && !document.querySelector('#preview').hasAttribute('src')")
+            page.evaluate("""() => {
+                window.imagePackets = 0;
+                channel.addEventListener('message', ({data}) => {
+                    if (data instanceof ArrayBuffer && data.byteLength >= 16 && new DataView(data).getUint32(0, true) === 0x4745504a)
+                        window.imagePackets++;
+                });
+            }""")
+            panel.get_by_role('button', name='Save', exact=True).click()
+            wait_js(page, "window.snapshot?.saved===true && window.snapshot.stream_images===0")
+            page.wait_for_timeout(1000)
+            assert page.evaluate('window.imagePackets') == 0, 'Camera sent images after streaming was turned off'
+            close(page); reboot(); page = connect()
+            panel = page.locator('#settings-panel')
+            assert not panel.get_by_role('checkbox', name='Stream camera images', exact=True).is_checked()
+            assert page.evaluate('window.snapshot.stream_images') == 0, 'Streaming preference did not survive reboot'
+            panel.get_by_role('button', name='Reset to Default', exact=True).click()
+            wait_js(page, "window.snapshot?.reset===true && window.snapshot.stream_images===1 && document.querySelector('#preview').naturalWidth>0", timeout=20000)
+            apply(page, original)
+            print('PASS: streaming stops live, stays off after reboot, and defaults resume the preview', flush=True)
+
             for iteration in range(args.rounds):
                 metadata = page.evaluate('window.snapshot')
                 current = values(metadata)
@@ -142,11 +170,11 @@ with sync_playwright() as p, ExitStack() as serial_handles:
                     assert values(page.evaluate('window.snapshot')) == current, 'Unsaved changes survived reboot'
                     edit(expected)
                 page.evaluate('window.snapshot=null')
-                page.get_by_role('button', name='Save', exact=True).nth(iteration % 2).click()
+                page.locator('#settings-panel').get_by_role('button', name='Save', exact=True).click()
                 wait_js(page, "window.snapshot?.saved===true", timeout=20000)
                 assert values(page.evaluate('window.snapshot')) == expected, 'Save acknowledgement differs from requested settings'
-                assert page.get_by_role('button', name='Save', exact=True).count() == 2
-                assert page.get_by_role('button', name='Reset to Default', exact=True).count() == 2
+                assert page.locator('#settings-panel').get_by_role('button', name='Save', exact=True).count() == 1
+                assert page.locator('#settings-panel').get_by_role('button', name='Reset to Default', exact=True).count() == 1
                 assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
                 close(page); reboot(); page = connect()
                 assert values(page.evaluate('window.snapshot')) == expected, 'Saved random settings did not survive reboot'

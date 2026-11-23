@@ -32,7 +32,7 @@ bool motion_frame_due();
 void motion_feed(const camera_fb_t *frame);
 // Handles motion_* and recording list/delete commands; nullptr for other ops.
 cJSON *motion_command(const cJSON *request);
-cJSON *motion_status();
+cJSON *motion_status(bool include_overlay);
 // True when viewers draw the moving-cell overlay, so status is sent more often.
 bool motion_overlay_active();
 MotionSettings motion_settings();

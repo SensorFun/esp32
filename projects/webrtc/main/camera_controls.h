@@ -5,5 +5,7 @@
 esp_err_t camera_start(bool restore_saved = true);
 // Call only with no outstanding framebuffer; preserve current user controls.
 esp_err_t camera_recover();
+bool camera_stream_images();
+bool camera_capture_idle(bool idle);
 cJSON *camera_settings();
 cJSON *camera_command(const cJSON *request);
