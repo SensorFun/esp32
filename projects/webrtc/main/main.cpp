@@ -35,8 +35,11 @@
 namespace {
 constexpr char TAG[] = "local_webrtc";
 constexpr size_t CHUNK = 2048;
-constexpr int64_t PEER_IDLE_US = 30000000;
-constexpr int64_t DOWNLOAD_IDLE_US = 60000000;
+// A viewer pings every 5 seconds. Browsers throttle timers in background tabs
+// and on sleeping phones, so the camera keeps the session through up to five
+// minutes without any message and only then disconnects it. Recording
+// transfers count as activity too. Closed tabs disconnect at once.
+constexpr int64_t PEER_IDLE_US = 5 * 60 * 1000000LL;
 // Bound bulk traffic independently of how fast the peer loop can run. Control
 // replies and pings bypass this pacing so a full video queue cannot starve them.
 constexpr int64_t BULK_BYTES_PER_SECOND = 256 * 1024;
@@ -50,8 +53,10 @@ esp_peer_default_cfg_t peer_defaults(uint8_t candidates) {
     // activity; the worker also counts recording transfer progress. Avoid
     // a second STUN keepalive checker dropping an otherwise active channel.
     cfg.alive_binding_retries = 0xff;
-    // The browser creates a reliable, ordered channel. Retain its packets
-    // beyond our inactivity deadline, rather than expiring them after 5 s.
+    // The browser creates a reliable, ordered channel. Retain unacknowledged
+    // packets for 60 s rather than the library's 5 s, so temporary backpressure
+    // does not drop ordered messages. The field is 16-bit milliseconds (65.5 s
+    // at most), so it cannot follow the 5-minute inactivity deadline.
     cfg.data_ch_cfg.cache_timeout = 60000;
     // Bound queued video so Wi-Fi retains internal heap for control traffic.
     cfg.data_ch_cfg.send_cache_size = 16384;
@@ -238,7 +243,7 @@ esp_err_t session(httpd_req_t *r) {
         httpd_resp_set_hdr(r, "Cache-Control", "no-store");
         return httpd_resp_send(r, answer.data(), answer.size());
     }
-    if (peer) return respond(r, "409 Conflict", "{\"error\":\"One browser at a time; disconnect the other viewer or try again shortly\"}");
+    if (peer) return respond(r, "409 Conflict", "{\"error\":\"One browser at a time; disconnect the other viewer, or wait up to 5 minutes if its connection was lost\"}");
     if (!RemoteAuth::configured()) return respond(r, "403 Forbidden", "{\"error\":\"Set a camera password over USB before viewing\"}");
     if (RemoteAuth::blocked()) return respond(r, "429 Too Many Requests", "{\"error\":\"Too many wrong passwords; wait 30 seconds\"}");
     if (!r->content_len || r->content_len > 16384) return respond(r, "400 Bad Request", "{}");
@@ -437,8 +442,7 @@ void worker(common::Application &app) {
                          unsigned(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
                          unsigned(heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)));
             }
-            const int64_t idle_limit = transfer.fd >= 0 ? DOWNLOAD_IDLE_US : PEER_IDLE_US;
-            if (peer && (failed || peer_auth.expired(now) || now - activity > idle_limit)) {
+            if (peer && (failed || peer_auth.expired(now) || now - activity > PEER_IDLE_US)) {
                 if (fb) { camera_frame_return(fb); fb = nullptr; }
                 ESP_LOGW(TAG, "Closing camera peer: failed=%d idle_ms=%lld", failed, (now - activity) / 1000);
                 close_peer();

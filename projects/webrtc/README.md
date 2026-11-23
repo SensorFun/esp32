@@ -73,8 +73,10 @@ during the pauses.
    self-signed HTTPS certificate. Plain HTTP is not served: the password proof
    uses the browser's Web Crypto API, which needs HTTPS.
 4. Use the displayed controls while watching the live camera. **Disconnect**
-   releases the single peer. An abandoned session expires after 30 seconds
-   without browser data-channel keepalives.
+   releases the single peer, and closing the tab does too. A viewer whose
+   connection is lost (network drop, sleeping phone, throttled background tab)
+   keeps the single session for up to 5 minutes without any message; then the
+   camera disconnects it.
 
 Certificates change after a reboot. Saved Wi-Fi settings
 survive ordinary reboots. The existing `wifi-reset` and physical setup reset
@@ -151,11 +153,11 @@ The pinned `esp_peer` transport uses a 500 ms receive wait during ICE/DTLS/SCTP
 setup and switches to 10 ms after the data channel opens. `peer_receive.c`
 implements that transition, including resetting it for reconnects. This allows
 STUN replies time to arrive while preserving short idle polls during streaming.
-Peer liveness uses encrypted data-channel pings and the application's 30-second
-inactivity deadline. The library's redundant periodic STUN keepalive checker is
+Peer liveness uses encrypted data-channel pings every 5 seconds and the
+application's 5-minute inactivity deadline (recording transfers count as activity). The library's redundant periodic STUN keepalive checker is
 disabled; initial ICE/STUN negotiation remains enabled.
-Reliable data-channel packets are retained for 60 seconds, beyond the inactivity
-deadline, to avoid discarding ordered messages during temporary backpressure.
+Reliable data-channel packets are retained for 60 seconds (the library's
+16-bit millisecond limit is 65.5 seconds), to avoid discarding ordered messages during temporary backpressure.
 `peer_send.c` gives the pinned UDP transport's explicit queue-full result a
 250 ms retry budget (plus the final transport call), preserving the same
 encrypted datagram. Other results pass through unchanged. Persistent failures
