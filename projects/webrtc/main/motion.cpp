@@ -67,7 +67,7 @@ SemaphoreHandle_t lock;
 MotionSettings settings;
 uint32_t generation = 0;  // Changes whenever settings change; resets the detector.
 TaskHandle_t task;
-std::atomic<bool> busy{false};
+std::atomic<bool> busy{false}, media_paused{false};
 uint8_t *job = nullptr;
 size_t job_capacity = 0, job_length = 0;
 int64_t job_time = 0;  // Capture time of the frame in job.
@@ -307,6 +307,7 @@ void detect(void *) {
         struct FinishJob {
             ~FinishJob() { cooperate(); busy = false; }
         } finish_job;
+        if (media_paused) continue;
         if (recorder_manual_state() != ManualRecording::idle) continue;
         MotionSettings s;
         uint32_t current_generation;
@@ -367,6 +368,7 @@ int motion_pre_seconds_limit(const MotionSettings &s) {
 }
 
 bool motion_frame_due() {
+    if (media_paused) return false;
     const int64_t now = esp_timer_get_time();
     MotionSettings s = motion_settings();
     if (!s.enabled) return false;
@@ -374,6 +376,7 @@ bool motion_frame_due() {
 }
 
 void motion_feed(const camera_fb_t *frame) {
+    if (media_paused) return;
     if (!frame || frame->format != PIXFORMAT_JPEG) return;
     const uint32_t dimensions = uint32_t(frame->width) << 16 | uint32_t(frame->height);
     if (frame_dimensions != dimensions) { frame_dimensions = dimensions; frame_bytes = uint32_t(frame->len); }
@@ -524,4 +527,10 @@ cJSON *motion_command(const cJSON *request) {
         return reply;
     }
     return nullptr;
+}
+
+void motion_pause(bool paused) {
+    media_paused = paused;
+    if (paused) while (busy.load()) vTaskDelay(1);
+    else { Lock guard; ++generation; }
 }

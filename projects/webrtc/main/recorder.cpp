@@ -52,6 +52,7 @@ int64_t last_accept = 0;
 std::string active_clip, last_error, format_result;
 // Set by viewers, handled by the recorder task, which owns mounting.
 std::atomic<bool> format_requested{false};
+std::atomic<bool> media_paused{false}, pause_acknowledged{false};
 std::atomic<ManualRecording> manual_state{ManualRecording::idle};
 std::atomic<uint32_t> manual_id{0};
 int64_t clip_started = 0;
@@ -248,6 +249,16 @@ void record(void *) {
     for (;;) {
         Frame frame;
         const bool received = xQueueReceive(queue, &frame, pdMS_TO_TICKS(200)) == pdTRUE;
+        if (media_paused) {
+            if (received) release(frame);
+            clip.close();
+            release_pending(pending);
+            Frame queued;
+            while (xQueueReceive(queue, &queued, 0) == pdTRUE) release(queued);
+            pause_acknowledged = true;
+            continue;
+        }
+        pause_acknowledged = false;
         const auto mode = manual_state.load();
         const uint32_t current_session = mode == ManualRecording::idle ? 0 : manual_id.load();
         if (current_session != session) {
@@ -549,4 +560,9 @@ const char *recorder_open(const char *name, int &fd, uint32_t &size) {
     if (fd < 0) return "Cannot open recording";
     size = uint32_t(info.st_size);
     return nullptr;
+}
+
+void recorder_pause(bool paused) {
+    media_paused = paused;
+    while (pause_acknowledged.load() != paused) vTaskDelay(1);
 }

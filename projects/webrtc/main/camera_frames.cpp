@@ -203,8 +203,10 @@ void camera_frame_return(camera_fb_t *frame) {
 void camera_frames_pause() {
     init_locks();
     xSemaphoreTakeRecursive(capture_lock, portMAX_DELAY);
+    // Cancel speculative capture when the sensor is paused or reconfigured.
     // Frames from the old configuration may have another size; drop them.
     Lock guard;
+    prefetch_until = 0;
     for (auto &slot : slots) if (slot.state == Slot::kReady) slot.state = Slot::kFree;
 }
 

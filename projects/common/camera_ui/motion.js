@@ -314,7 +314,9 @@ function defineElements() {
     connectedCallback() { document.addEventListener('visibilitychange', this.onVisibilityChange); }
     disconnectedCallback() {
       document.removeEventListener('visibilitychange', this.onVisibilityChange);
+      if (this.transfer) command(this, { op: 'recording_cancel' });
       this.finishTransfer();
+      this.stopPlayer();
     }
     async keepScreenAwake() {
       const transfer = this.transfer;
@@ -383,7 +385,7 @@ function defineElements() {
       const active = this.manual === 'active', stopping = this.manual === 'stopping';
       const card = this.list.sd?.state;
       record.hidden = this.manual === null;
-      record.disabled = this.manualPending || stopping || this.formatting || (!active && card !== 'mounted');
+      record.disabled = Boolean(this.transfer || this.player) || this.manualPending || stopping || this.formatting || (!active && card !== 'mounted');
       record.textContent = active ? 'Stop recording' : 'Start recording';
       this.shadowRoot.querySelector('.manual-status').textContent = this.manualError ||
         (stopping ? 'Finalizing recording…' : active ? 'Manual recording · motion analysis paused' : '');
@@ -426,7 +428,12 @@ function defineElements() {
     downloadStarted(message) {
       const transfer = this.transfer;
       if (!transfer || (message.name !== transfer.name && (message.id === undefined || message.id !== transfer.id))) return;
-      if (message.error) { this.finishTransfer(); this.render(); this.say(message.error); return; }
+      if (message.error) {
+        this.finishTransfer();
+        this.stopPlayer();
+        if (transfer.purpose === 'play') command(this, { op: 'recording_playback', active: false });
+        this.render(); this.say(message.error); return;
+      }
       if (message.id === undefined) return;
       Object.assign(transfer, { id: message.id, size: message.size, received: 0, stream: new AviStream(message.size) });
       if (transfer.purpose === 'play') this.play(transfer.name, transfer.stream);  // Starts with the first frame.
@@ -459,6 +466,7 @@ function defineElements() {
         }
         return;
       }
+      if (purpose === 'play') command(this, { op: 'recording_playback', active: true });
       this.transfer = { name, purpose, id: undefined, size: 0, received: 0, stream: null };
       void this.keepScreenAwake();
       this.render();
@@ -466,8 +474,9 @@ function defineElements() {
     }
     cancel() {
       if (!this.transfer) return;
-      const { stream } = this.finishTransfer();
+      const { stream, purpose } = this.finishTransfer();
       command(this, { op: 'recording_cancel' });
+      if (purpose === 'play' && !this.player) command(this, { op: 'recording_playback', active: false });
       if (stream && this.player?.stream === stream) this.stopPlayer();
       this.render();
       this.say('Download cancelled.');
@@ -478,18 +487,20 @@ function defineElements() {
       if (!bar || !transfer) return;
       bar.max = transfer.size || 1; bar.value = transfer.received;
       const what = transfer.purpose === 'play' ? 'Loading clip' : 'Downloading';
-      text.textContent = transfer.size ? `${what} · ${formatBytes(transfer.received)} of ${formatBytes(transfer.size)} · live preview paused` : 'Starting…';
+      text.textContent = transfer.size ? `${what} · ${formatBytes(transfer.received)} of ${formatBytes(transfer.size)} · capture and recording paused` : 'Starting…';
     }
-    stopPlayer() {
+    stopPlayer(releasePause = true) {
       if (!this.player) return;
       clearTimeout(this.player.timer);
       if (this.player.url) URL.revokeObjectURL(this.player.url);
       this.player = null;
+      if (releasePause) command(this, { op: 'recording_playback', active: false });
     }
     // Plays a stream that may still be downloading.
     play(name, stream) {
-      this.stopPlayer();
-      if (stream.complete && !stream.frames.length) { this.say('This clip has no frames.'); return; }
+      this.stopPlayer(false);
+      if (stream.complete && !stream.frames.length) { command(this, { op: 'recording_playback', active: false }); this.say('This clip has no frames.'); return; }
+      command(this, { op: 'recording_playback', active: true });
       this.player = { name, stream, index: 0, shown: -1, playing: true, waiting: false, timer: 0, url: '' };
       this.render();
       this.framesArrived();

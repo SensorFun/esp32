@@ -28,3 +28,6 @@ const char *recorder_open(const char *name, int &fd, uint32_t &size);
 const char *recorder_request_format();
 // Adds recording and SD card fields to a motion status message.
 void recorder_status(cJSON *status);
+
+// Finalizes current clips and discards queued frames before acknowledging.
+void recorder_pause(bool paused);

@@ -41,3 +41,6 @@ MotionSettings motion_settings();
 int motion_pre_seconds_limit(const MotionSettings &settings);
 // Motion continuously present since `since`; last seen at `last` (esp_timer us).
 void motion_activity(bool &moving, int64_t &since, int64_t &last);
+
+// Wait for any current analysis to finish before pausing.
+void motion_pause(bool paused);

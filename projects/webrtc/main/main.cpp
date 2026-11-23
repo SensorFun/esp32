@@ -114,6 +114,14 @@ extern const unsigned char logs_end[] asm("_binary_logs_js_end");
 // kept for a retry after backpressure instead of reading the card again.
 struct Transfer { int fd = -1; uint32_t id = 0, size = 0, offset = 0, buffered = UINT32_MAX; } transfer;
 uint32_t transfer_ids = 0;
+bool playback_active = false, media_paused = false;
+void pause_media(bool paused) {
+    if (paused == media_paused) return;
+    motion_pause(paused);
+    recorder_pause(paused);
+    media_paused = paused;
+    diagnostic_event("info", paused ? "Capture, analysis and recording paused for recorded video" : "Recorded video closed; capture, analysis and recording resumed");
+}
 
 struct Lock {
     Lock() { xSemaphoreTakeRecursive(mutex, portMAX_DELAY); }
@@ -140,12 +148,17 @@ int send_text(cJSON *json) {
     return 0;
 }
 void stop_transfer() {
-    if (transfer.fd >= 0) close(transfer.fd);
+    if (transfer.fd >= 0) {
+        diagnostic_eventf("info", "Download %s: %u/%u bytes", transfer.offset == transfer.size ? "completed" : "stopped", unsigned(transfer.offset), unsigned(transfer.size));
+        close(transfer.fd);
+    }
     transfer.fd = -1;
     transfer.buffered = UINT32_MAX;
+    pause_media(playback_active);
 }
 void start_transfer(const cJSON *request) {
     stop_transfer();
+    pause_media(true);
     const cJSON *name = cJSON_GetObjectItemCaseSensitive(request, "name");
     cJSON *reply = cJSON_CreateObject();
     cJSON_AddStringToObject(reply, "type", "download");
@@ -153,9 +166,10 @@ void start_transfer(const cJSON *request) {
     uint32_t size = 0;
     const char *error = cJSON_IsString(name) ? recorder_open(name->valuestring, fd, size) : "Missing recording name";
     if (cJSON_IsString(name)) cJSON_AddStringToObject(reply, "name", name->valuestring);
-    if (error) cJSON_AddStringToObject(reply, "error", error);
+    if (error) { cJSON_AddStringToObject(reply, "error", error); pause_media(playback_active); }
     else {
         transfer = {fd, ++transfer_ids, size, 0};
+        diagnostic_eventf("info", "Download started: %u bytes", unsigned(size));
         cJSON_AddNumberToObject(reply, "id", transfer.id);
         cJSON_AddNumberToObject(reply, "size", size);
     }
@@ -230,6 +244,7 @@ void close_peer() {
     channel_ready = false;
     camera_peer_transport_ready(false);
     if (peer) { esp_peer_close(peer); peer = nullptr; }
+    playback_active = false;
     stop_transfer();
     answer.clear(); replies.clear(); commands.clear(); peer_offer.clear(); peer_auth.clear(); failed = false; remote_peer = false;
     pacer.reset(esp_timer_get_time());
@@ -462,7 +477,7 @@ void worker(common::Application &app) {
     }
     diagnostic_boot();
     bool network_ready = false;
-    bool camera_ready = false;
+    bool camera_ready = false, capture_fault = false;
     camera_fb_t *fb = nullptr;
     size_t offset = 0;
     uint32_t sequence = 0;
@@ -483,7 +498,7 @@ void worker(common::Application &app) {
             const auto manual = recorder_manual_state();
             const bool recording = manual == ManualRecording::active;
             const bool motion_enabled = camera_ready && manual == ManualRecording::idle && motion_settings().enabled;
-            if (camera_ready && camera_capture_idle(!camera_stream_images() && !motion_enabled && !recording) &&
+            if (camera_ready && !capture_fault && camera_capture_idle(!camera_stream_images() && !motion_enabled && !recording) &&
                 (recorder_manual_frame_due() || (motion_enabled && motion_frame_due()))) {
                 if (camera_fb_t *frame = camera_frame_get()) {
                     if (recording) recorder_manual_feed(frame); else motion_feed(frame);
@@ -576,12 +591,22 @@ void worker(common::Application &app) {
                     else if (cJSON_IsString(op) && !strcmp(op->valuestring, "time")) set_clock(request);
                     else if (cJSON_IsString(op) && !strcmp(op->valuestring, "recording_download")) start_transfer(request);
                     else if (cJSON_IsString(op) && !strcmp(op->valuestring, "recording_cancel")) stop_transfer();
+                    else if (cJSON_IsString(op) && !strcmp(op->valuestring, "recording_playback")) {
+                        playback_active = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(request, "active"));
+                        pause_media(playback_active || transfer.fd >= 0);
+                    }
                     else if (cJSON_IsString(op) && !strcmp(op->valuestring, "sd_format")) {
                         stop_transfer();  // Formatting needs every file on the card closed.
                         send_text(motion_command(request));
                     }
                     else if ((reply = motion_command(request))) send_text(reply);
-                    else send_text(camera_command(request));
+                    else if (!capture_fault && (!media_paused || (cJSON_IsString(op) && !strcmp(op->valuestring, "get")))) send_text(camera_command(request));
+                    else {
+                        cJSON *error = cJSON_CreateObject();
+                        cJSON_AddStringToObject(error, "type", "error");
+                        cJSON_AddStringToObject(error, "error", "Camera capture unavailable or paused. Close recorded video to resume; restart if recovery failed.");
+                        send_text(error);
+                    }
                     cJSON_Delete(request);
                 }
             }
@@ -613,7 +638,7 @@ void worker(common::Application &app) {
             const bool motion_enabled = manual == ManualRecording::idle && motion_settings().enabled;
             const bool recording = manual == ManualRecording::active;
             if (fb && (!viewer || !images_enabled)) { camera_frame_return(fb); fb = nullptr; }
-            const bool capture_ready = camera_capture_idle(!images_enabled && !motion_enabled && !recording);
+            const bool capture_ready = !capture_fault && camera_capture_idle(media_paused || (!images_enabled && !motion_enabled && !recording)) && !media_paused;
             if (!images_enabled && !motion_enabled && !recording) capture_stalled_since = 0;
             const bool bulk_traffic = viewer && (images_enabled || downloading);
             // Backpressure slows bulk traffic: blocked control replies, a full
@@ -703,7 +728,11 @@ void worker(common::Application &app) {
                     camera_frame_return(record_frame);
                 }
             }
-            if (!fb && capture_ready && (streaming || manual_due || (motion_enabled && motion_frame_due()))) {
+            const bool capture_requested = capture_ready && (streaming || manual_due || (motion_enabled && motion_frame_due()));
+            // Intentional pauses and held frames are not evidence of a stalled
+            // sensor. In particular, file transfers temporarily suspend video.
+            if (!capture_requested || fb) capture_stalled_since = 0;
+            if (!fb && capture_requested) {
                 fb = camera_frame_get(streaming);
                 if (streaming) { offset = 0; ++sequence; last_progress = esp_timer_get_time(); }
                 if (fb) {
@@ -718,9 +747,21 @@ void worker(common::Application &app) {
                     // retain the connection and all current user settings.
                     diagnostic_event("warning", "Restarting stalled camera capture");
                     ESP_LOGW(TAG, "Restarting stalled camera capture");
-                    ESP_ERROR_CHECK(camera_recover());
+                    const esp_err_t recovered = camera_recover();
                     capture_stalled_since = 0;
-                    if (viewer) send_text(camera_settings());
+                    if (recovered == ESP_OK) {
+                        diagnostic_event("info", "Camera capture recovery succeeded");
+                        if (viewer) send_text(camera_settings());
+                    } else {
+                        // A failed probe may free the driver and invalidate the
+                        // sensor pointer. Stop all capture and sensor commands.
+                        capture_fault = true;
+                        diagnostic_eventf("error", "Camera recovery failed: %s (0x%x); capture disabled", esp_err_to_name(recovered), unsigned(recovered));
+                        cJSON *error = cJSON_CreateObject();
+                        cJSON_AddStringToObject(error, "type", "error");
+                        cJSON_AddStringToObject(error, "error", "Camera capture unavailable or paused. Close recorded video to resume; restart if recovery failed.");
+                        send_text(error);
+                    }
                 }
                 if (fb && !streaming) { camera_frame_return(fb); fb = nullptr; }
             }
