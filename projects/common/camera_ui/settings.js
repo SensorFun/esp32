@@ -45,10 +45,10 @@ class CameraSettings extends HTMLElement {
       input[type=checkbox]::before{content:"";position:absolute;top:3px;left:3px;width:22px;height:22px;border-radius:50%;background:#d8e8cb;transition:transform .15s}
       input[type=checkbox]:checked{background:#00d4cb;border-color:#00d4cb}input[type=checkbox]:checked::before{transform:translateX(22px);background:#07302c}
       input,select{background:#0d180e;color:#d8e8cb;width:100%;min-width:0}input:disabled{opacity:.45}
-      .actions{display:flex;flex-wrap:wrap;gap:12px;margin-top:24px}.actions:first-child{margin:0 0 24px}button{cursor:pointer;background:#00d4cb;color:#07302c;font-weight:600}button:last-child{background:transparent;color:#d8e8cb}button:disabled{opacity:.5;cursor:wait}
-      [role=status]{margin:16px 0 0;line-height:1.6;color:#b7c9ab}input:focus-visible,select:focus-visible,button:focus-visible{outline:2px solid #00d4cb;outline-offset:3px}
+      .actions{display:flex;flex-wrap:wrap;gap:12px;margin-bottom:12px}button{cursor:pointer;background:#00d4cb;color:#07302c;font-weight:600}button:last-child{background:transparent;color:#d8e8cb}button:disabled{opacity:.5;cursor:wait}
+      [role=status]{margin:0 0 20px;line-height:1.6;color:#b7c9ab}input:focus-visible,select:focus-visible,button:focus-visible{outline:2px solid #00d4cb;outline-offset:3px}
       @media(max-width:600px){section{padding:18px}input,select{font-size:16px}.actions button{flex:1}}
-    </style><section><h2>Camera settings</h2><form><div class="actions"><button type="submit">Save</button><button type="button">Reset to Default</button></div><div class="fields"></div><div class="actions"><button type="submit">Save</button><button type="button">Reset to Default</button></div><p role="status"></p></form></section>`;
+    </style><section><h2>Camera settings</h2><form><div class="actions"><button type="submit">Save</button><button type="button">Reset to Default</button></div><p role="status"></p><div class="fields"></div></form></section>`;
     this.shadowRoot.querySelector('h2').textContent = `Camera settings · ${this.value.sensor}`;
     const fields = this.shadowRoot.querySelector('.fields');
     const valueOf = control => control.type === 'checkbox' ? Number(control.checked) :
@@ -124,7 +124,7 @@ class CameraSettings extends HTMLElement {
       for (const input of this.shadowRoot.querySelectorAll('input[name]:not(:disabled),select')) settings[input.name] = valueOf(input);
       send({ op: 'apply', settings });
     };
-    this.shadowRoot.querySelectorAll('button[type=button]').forEach(button => { button.onclick = () => send({ op: 'reset_defaults' }); });
+    this.shadowRoot.querySelector('button[type=button]').onclick = () => send({ op: 'reset_defaults' });
   }
 }
 customElements.define('sensorfan-camera-settings', CameraSettings);

@@ -225,10 +225,10 @@ function defineElements() {
         label.counter input{width:88px;flex:none;text-align:right;font-variant-numeric:tabular-nums}label.counter .with-unit span{min-width:4.5ch}
         label.toggle{display:flex;flex-wrap:wrap;align-items:center;gap:10px;min-height:44px}label.toggle input{width:24px;height:24px;min-height:0;margin:0;accent-color:#00d4cb;flex:none}
         label.toggle small{flex-basis:100%;padding-left:34px}.live{margin-bottom:6px}.card{margin:0 0 18px}
-        :host([group=recording]){margin-bottom:18px}.groups.fields{margin-bottom:18px}
+        :host([group=recording]){margin-bottom:18px}.save-status{margin:12px 0 18px}
         #recording-warning{color:#ffd58a;margin:0}#recording-warning:not(:empty){background:#3a2a12;border:1px solid #8a6421;border-radius:6px;padding:10px 12px;margin-bottom:12px}
       </style><section><header><h2></h2></header><div class="live pills" aria-live="polite"></div><p class="card muted"></p>
-      <form><div class="groups"></div>${this.shows('recording') ? '<p id="recording-warning" role="status"></p>' : ''}<div class="actions"><button type="submit">Save</button><button type="button" class="secondary">Reset to Default</button></div><p class="save-status" role="status"></p></form></section>`;
+      <form><div class="actions"><button type="submit">Save</button><button type="button" class="secondary">Reset to Default</button></div><p class="save-status" role="status"></p>${this.shows('recording') ? '<p id="recording-warning" role="status"></p>' : ''}<div class="groups"></div></form></section>`;
       this.shadowRoot.querySelector('h2').textContent = this.panel.title;
       const groups = this.shadowRoot.querySelector('.groups');
       const titles = { detection: 'Detection', recording: 'SD card recording' };
