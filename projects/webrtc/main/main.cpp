@@ -6,6 +6,7 @@
 #include "motion.h"
 #include "recorder.h"
 #include "remote_signaling.h"
+#include "esp_peer_signaling.h"
 #include "remote_auth.h"
 #include "peer_receive.h"
 #include "peer_send.h"
@@ -338,7 +339,11 @@ void remote_events() {
             if (payload) { remote_send(4, payload); cJSON_free(payload); }
             cJSON_Delete(ready); continue;
         }
-        if (event.type == 3) { if (remote_peer) close_peer(); continue; }
+        if (event.type == ESP_PEER_SIGNALING_MSG_TRANSPORT_LOST) {
+            if (remote_peer && !peer_auth.allowed()) close_peer();
+            continue;
+        }
+        if (event.type == ESP_PEER_SIGNALING_MSG_BYE) { if (remote_peer) close_peer(); continue; }
         if (event.type == 1 && !remote_peer) {
             if (peer) { remote_send(4, "busy"); continue; }
             if (!RemoteAuth::configured()) { remote_send(4, "password_not_configured"); continue; }

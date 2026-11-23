@@ -64,6 +64,7 @@ void receive(Client *client, cJSON *root) {
     else if (!strcmp(type, "candidate")) { incoming.type = ESP_PEER_SIGNALING_MSG_CANDIDATE; text = string(root, "candidate"); }
     else if (!strcmp(type, "customized")) { incoming.type = ESP_PEER_SIGNALING_MSG_CUSTOMIZED; text = string(root, "data"); }
     else if (!strcmp(type, "bye")) { incoming.type = ESP_PEER_SIGNALING_MSG_BYE; text = ""; }
+    else if (!strcmp(type, "signaling_lost")) { incoming.type = ESP_PEER_SIGNALING_MSG_TRANSPORT_LOST; text = ""; }
     if (text) {
         incoming.data = reinterpret_cast<uint8_t *>(const_cast<char *>(text)); incoming.size = strlen(text);
         if (client->cfg.on_msg) client->cfg.on_msg(&incoming, client->cfg.ctx);
@@ -77,6 +78,7 @@ void websocket_event(void *context, esp_event_base_t, int32_t event, void *raw) 
         cJSON_AddStringToObject(join, "type", "join");
         cJSON_AddStringToObject(join, "room", client->room.c_str());
         cJSON_AddStringToObject(join, "secret", client->secret.c_str());
+        cJSON_AddBoolToObject(join, "preserve_peer", true);
         if (!send(client, join)) fail(client);
     } else if (event == WEBSOCKET_EVENT_DISCONNECTED || event == WEBSOCKET_EVENT_ERROR) fail(client);
     else if (event == WEBSOCKET_EVENT_DATA) {

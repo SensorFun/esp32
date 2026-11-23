@@ -453,19 +453,24 @@ cJSON *motion_command(const cJSON *request) {
     const bool live = !strcmp(op->valuestring, "motion_set");
     if (live || !strcmp(op->valuestring, "motion_apply")) {
         MotionSettings next = motion_settings();
+        const cJSON *values = cJSON_GetObjectItemCaseSensitive(request, "settings");
         const char *error = nullptr;
         cJSON *reply = nullptr;
-        if (!parse(cJSON_GetObjectItemCaseSensitive(request, "settings"), next, error)) {
+        if (!parse(values, next, error)) {
             std::string message = std::string("Invalid value: ") + error;
             reply = describe(message.c_str());
         }
-        int width, height;
-        const int limit = reply ? 0 : pre_seconds_limit(next, width, height);
-        if (!reply && next.pre_seconds > limit) {
-            char message[160];
-            snprintf(message, sizeof(message), "Pre-record can be at most %d s at %d x %d and %d fps; free PSRAM limits the buffer. Lower the recording rate or resolution for more.",
-                     limit, width, height, next.record_fps);
-            reply = describe(message);
+        // The recorder already clamps stored pre-roll to the current budget.
+        // Only validate the dynamic limit when the request supplies pre-roll.
+        if (!reply && cJSON_GetObjectItemCaseSensitive(values, "pre_seconds")) {
+            int width, height;
+            const int limit = pre_seconds_limit(next, width, height);
+            if (next.pre_seconds > limit) {
+                char message[160];
+                snprintf(message, sizeof(message), "Pre-record can be at most %d s at %d x %d and %d fps; free PSRAM limits the buffer. Lower the recording rate or resolution for more.",
+                         limit, width, height, next.record_fps);
+                reply = describe(message);
+            }
         }
         if (!reply && live) { use(next); reply = describe(); }
         if (!reply) return save(next);

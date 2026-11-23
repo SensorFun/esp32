@@ -13,7 +13,7 @@ export class Signaling {
     this.closed = false;
     this.socket = new WebSocket(url.href);
     this.socket.onopen = () => {
-      if (!this.closed) this.socket.send(JSON.stringify({ type: 'join', room: this.room }));
+      if (!this.closed) this.socket.send(JSON.stringify({ type: 'join', room: this.room, preserve_peer: true }));
     };
     this.socket.onmessage = event => {
       if (this.closed) return;
@@ -29,7 +29,7 @@ export class Signaling {
           message = JSON.parse(message.data);
           if (message.type !== 'ready') return;
         }
-        if (['ready', 'answer', 'candidate', 'bye'].includes(message?.type)) this.onmessage?.({ data: JSON.stringify(message) });
+        if (['ready', 'answer', 'candidate', 'bye', 'signaling_lost'].includes(message?.type)) this.onmessage?.({ data: JSON.stringify(message) });
       } catch (error) { this.onerror?.(error); }
     };
     this.socket.onerror = () => { if (!this.closed) this.onerror?.(Error('Cannot reach the signaling server.')); };
@@ -39,8 +39,11 @@ export class Signaling {
     if (!this.joined) throw Error('Signaling session is not ready');
     this.socket.send(data);
   }
-  close() {
+  close({ notifyPeer = false } = {}) {
     if (this.closed) return;
+    if (notifyPeer && this.joined && this.socket.readyState === WebSocket.OPEN) {
+      this.socket.send(JSON.stringify({ type: 'bye' }));
+    }
     this.closed = true;
     this.socket.close();
     this.room = null;

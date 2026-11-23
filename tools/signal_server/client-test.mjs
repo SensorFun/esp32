@@ -39,8 +39,8 @@ class Peer {
       this.waiters.push(waiter);
     });
   }
-  join(room, role, key) {
-    const body = { type: 'join', room };
+  join(room, role, key, preservePeer = false) {
+    const body = { type: 'join', room, preserve_peer: preservePeer };
     if (role === 'camera') body.secret = key ?? secret;
     this.ws.send(JSON.stringify(body));
     return this.next(value => value.type === 'joined' || value.type === 'error');
@@ -155,4 +155,42 @@ test('browser rejects insecure or credential-bearing remote endpoints', () => {
   for (const url of ['ws://signal.example.test', 'wss://user:password@signal.example.test', 'wss://signal.example.test?secret=value']) {
     assert.throws(() => new Signaling(roomId(), url), /secure wss/);
   }
+});
+
+test('a dropped signaling socket differs from an explicit disconnect', async () => {
+  const room = roomId();
+  const camera = await new Peer().open(cameraEndpoint);
+  assert.equal((await camera.join(room, 'camera', undefined, true)).type, 'joined');
+  const legacyViewer = await new Peer().open(viewerEndpoint);
+  assert.equal((await legacyViewer.join(room, 'viewer')).type, 'joined');
+  await camera.received('customized');
+  legacyViewer.close();
+  await camera.received('bye');
+
+  const firstViewer = await new Peer().open(viewerEndpoint);
+  assert.equal((await firstViewer.join(room, 'viewer', undefined, true)).type, 'joined');
+  await camera.received('customized');
+  firstViewer.ws.terminate();
+  await camera.received('signaling_lost');
+  assert(!camera.queue.some(message => message.type === 'bye'));
+
+  const browser = new Signaling(room, viewerEndpoint);
+  sockets.add(browser.socket);
+  await camera.received('customized');
+  for (let count = 0; !browser.joined && count < 50; count++) await delay(20);
+  assert(browser.joined);
+  browser.close({ notifyPeer: true });
+  await camera.received('bye');
+  await camera.received('signaling_lost');
+
+  const nextViewer = new Signaling(room, viewerEndpoint);
+  sockets.add(nextViewer.socket);
+  const notice = new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(Error('Missing camera signaling loss notice')), 5000);
+    nextViewer.onmessage = event => { clearTimeout(timer); resolve(JSON.parse(event.data)); };
+  });
+  await camera.received('customized');
+  camera.ws.terminate();
+  assert.equal((await notice).type, 'signaling_lost');
+  nextViewer.close();
 });

@@ -42,7 +42,13 @@ int ice_info(esp_peer_signaling_ice_info_t *info, void *) {
     return 0;
 }
 int on_connected(void *) { connected = true; ESP_LOGI("remote", "Private signaling connected"); return 0; }
-int on_close(void *) { connected = false; interrupted = true; ESP_LOGW("remote", "Private signaling disconnected; rebuilding membership"); queue(3, "", 0); return 0; }
+int on_close(void *) {
+    connected = false;
+    interrupted = true;
+    ESP_LOGW("remote", "Private signaling disconnected; rebuilding membership");
+    queue(ESP_PEER_SIGNALING_MSG_TRANSPORT_LOST, "", 0);
+    return 0;
+}
 int on_message(esp_peer_signaling_msg_t *msg, void *) {
     ESP_LOGI("remote", "Received signal type %d (%d bytes)", int(msg->type), msg->size);
     queue(int(msg->type), reinterpret_cast<char *>(msg->data), msg->size);

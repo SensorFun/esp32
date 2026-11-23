@@ -190,6 +190,7 @@ async def handle(request, role):
             pair = {"camera": None, "viewer": None}
             rooms[key] = pair
         pair[role] = ws
+        pair[f"{role}_preserves_peer"] = join.get("preserve_peer") is True
         room = key
         joined_at = time.monotonic()
         stats[f"{role}_joined"] += 1
@@ -229,9 +230,14 @@ async def handle(request, role):
             pair = rooms.get(room)
             if pair is not None:
                 pair[role] = None
-                other = pair["camera"] if pair["camera"] is not None else pair["viewer"]
+                other_role = "viewer" if role == "camera" else "camera"
+                other = pair[other_role]
                 if other is not None:
-                    await safe_send(other, {"type": "bye"})
+                    # Older clients use WebSocket closure to disconnect. Only
+                    # separate socket loss from bye when both peers support it.
+                    preserve = pair.get(f"{role}_preserves_peer") and pair.get(f"{other_role}_preserves_peer")
+                    kind = "signaling_lost" if preserve else "bye"
+                    await safe_send(other, {"type": kind})
                 if pair["camera"] is None and pair["viewer"] is None:
                     rooms.pop(room, None)
             stats[f"{role}_disconnected"] += 1

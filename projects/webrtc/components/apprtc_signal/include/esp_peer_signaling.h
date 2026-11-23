@@ -52,6 +52,7 @@ typedef enum {
     ESP_PEER_SIGNALING_MSG_CANDIDATE,  /*!< Candidate message type */
     ESP_PEER_SIGNALING_MSG_BYE,        /*!< Bye message type */
     ESP_PEER_SIGNALING_MSG_CUSTOMIZED, /*!< Customized message type */
+    ESP_PEER_SIGNALING_MSG_TRANSPORT_LOST, /*!< Signaling socket closed independently of the peer */
 } esp_peer_signaling_msg_type_t;
 
 typedef struct {

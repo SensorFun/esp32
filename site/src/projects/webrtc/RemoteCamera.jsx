@@ -80,14 +80,14 @@ export function RemoteCamera({ onSessionState }) {
     connection.current = null;
     if (session) {
       clearInterval(session.heartbeat); clearTimeout(session.timeout);
-      session.socket?.close(); session.channel?.close(); session.peer?.close();
+      session.socket?.close({ notifyPeer: true }); session.channel?.close(); session.peer?.close();
       if (session.url) URL.revokeObjectURL(session.url);
     }
     setState('idle'); setSettings(null); setTransport('—'); setFps(0); setStatus(message);
     for (const view of motionViews()) view.reset();
     if (image.current) image.current.removeAttribute('src');
   }
-  useEffect(() => () => { generation.current++; onSessionState('idle'); const session = connection.current; if (session) { clearInterval(session.heartbeat); clearTimeout(session.timeout); session.socket?.close(); session.peer?.close(); if (session.url) URL.revokeObjectURL(session.url); } }, []);
+  useEffect(() => () => { generation.current++; onSessionState('idle'); const session = connection.current; if (session) { clearInterval(session.heartbeat); clearTimeout(session.timeout); session.socket?.close({ notifyPeer: true }); session.peer?.close(); if (session.url) URL.revokeObjectURL(session.url); } }, []);
   function command(message) { const channel = connection.current?.channel; if (connection.current?.authenticated && channel?.readyState === 'open') channel.send(JSON.stringify(message)); }
   async function connect() {
     let secret = password;
@@ -175,6 +175,10 @@ export function RemoteCamera({ onSessionState }) {
       if (!alive()) return;
       try {
         const message = JSON.parse(event.data);
+        if (message.type === 'bye') { stop('Camera ended the session'); return; }
+        // An authenticated peer uses its direct data channel for liveness.
+        if (session.authenticated) return;
+        if (message.type === 'signaling_lost') { stop('Camera signaling connection interrupted'); return; }
         if (message.type === 'error') throw Error(message.error);
         if (message.type === 'ready') {
           if (session.peer) return;
@@ -192,7 +196,7 @@ export function RemoteCamera({ onSessionState }) {
           let offerSent = false;
           const localCandidates = [];
           peer.onicecandidate = ({ candidate }) => {
-            if (!candidate || !alive()) return;
+            if (!candidate || !alive() || session.authenticated) return;
             const signal = JSON.stringify({ type: 'candidate', candidate: candidate.candidate });
             if (!offerSent) localCandidates.push(signal);
             else {
@@ -215,11 +219,11 @@ export function RemoteCamera({ onSessionState }) {
           const candidate = { candidate: message.candidate, sdpMid: '0', sdpMLineIndex: 0 };
           if (session.peer?.remoteDescription) await session.peer.addIceCandidate(candidate);
           else session.candidates.push(candidate);
-        } else if (message.type === 'bye') stop('Camera ended the session');
+        }
       } catch (error) { if (alive()) stop(error.message); }
     };
-    session.socket.onerror = error => { if (alive()) stop(error.message || 'Cannot reach the signaling server.'); };
-    session.socket.onclose = () => { if (alive() && connection.current) stop('Signaling connection disconnected'); };
+    session.socket.onerror = error => { if (alive() && !session.authenticated) stop(error.message || 'Cannot reach the signaling server.'); };
+    session.socket.onclose = () => { if (alive() && !session.authenticated) stop('Signaling connection disconnected'); };
   }
   return <section className="remote-camera" data-state={state} ref={root}>
     <div className="rtc-panel remote-connection"><div className="panel-title"><Icon name="signal" /><h2>Remote camera</h2></div>
