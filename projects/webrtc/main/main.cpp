@@ -444,7 +444,17 @@ void worker(common::Application &app) {
             // must not fill the TX queue while the radio is sleeping.
             const esp_err_t power = esp_wifi_set_ps(WIFI_PS_NONE);
             if (power != ESP_OK) ESP_LOGW(TAG, "Cannot disable Wi-Fi modem sleep: %s", esp_err_to_name(power));
-            ESP_ERROR_CHECK(camera_start()); camera_ready = true;
+            // The sensor bus occasionally misreads right after power-up (an
+            // unrecognised sensor ID, or a register write timing out). Retry
+            // from a clean driver state before giving up and restarting.
+            esp_err_t started = camera_start();
+            for (int attempt = 2; started != ESP_OK && attempt <= 3; ++attempt) {
+                ESP_LOGW(TAG, "Camera start failed (%s); retrying (%d of 3)", esp_err_to_name(started), attempt);
+                esp_camera_deinit();
+                vTaskDelay(pdMS_TO_TICKS(250));
+                started = camera_start();
+            }
+            ESP_ERROR_CHECK(started); camera_ready = true;
         }
         if (!server) start_server();
         if (!sntp_started) {

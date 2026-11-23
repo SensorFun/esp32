@@ -268,11 +268,24 @@ def test_browser_flash_then_usb_provision(board, wifi_credentials):
             browser = playwright.chromium.launch(executable_path=board['browser'], args=['--no-sandbox'])
             page = browser.new_page(viewport={'width': 390, 'height': 900})
             bridge.attach(page)
+            page_errors = []
+            page.on('pageerror', lambda error: page_errors.append(str(error)))
             page.goto(site + 'tools/flasher?project=webrtc')
 
             print('Flashing from the browser (settings cleared)…', flush=True)
+            # A fresh dev server bundles its dependencies on the first page load,
+            # which can take well over 30 s while other boards' workers compile
+            # firmware. Every board radio appears once the page has rendered.
+            try:
+                expect(page.locator('input[name=board]').first).to_be_attached(timeout=120000)
+            except AssertionError:
+                raise AssertionError(f'The flasher page did not render; page errors: {page_errors}') from None
             radio = page.locator(f'input[name=board][value="{board_id}"]')
-            expect(radio).to_be_enabled(timeout=30000)
+            try:
+                expect(radio).to_be_enabled(timeout=30000)
+            except AssertionError:
+                index = page.evaluate("fetch('/firmware/index.json',{cache:'no-store'}).then(r=>r.text())")
+                raise AssertionError(f'{board_id} has no local build in the flasher; index: {index}') from None
             radio.check()
             expect(page.get_by_test_id('firmware-summary')).to_contain_text('Local build')
             page.get_by_role('tab', name='USB Port', exact=True).click()
