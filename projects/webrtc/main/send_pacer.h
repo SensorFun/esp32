@@ -48,13 +48,17 @@ public:
 
     // Backpressure: a full send cache or TX queue, blocked control replies,
     // or internal RAM running low.
+    // Every signal also defers the next send by one chunk at the current rate,
+    // so a full queue is not retried on every worker pass.
     void congested(int64_t now) {
         window_start_ = now;
         window_bytes_ = 0;
-        if (now - last_cut_ < config_.cooldown_us) return;
-        rate_ = std::max(config_.floor, rate_ * 7 / 10);
-        last_cut_ = now;
-        ++cuts_;
+        if (now - last_cut_ >= config_.cooldown_us) {
+            rate_ = std::max(config_.floor, rate_ * 7 / 10);
+            last_cut_ = now;
+            ++cuts_;
+        }
+        next_ = std::max(next_, now + int64_t(config_.chunk) * 1000000 / rate_);
     }
 
 private:

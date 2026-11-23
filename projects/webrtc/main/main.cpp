@@ -103,7 +103,9 @@ extern const unsigned char settings_end[] asm("_binary_settings_js_end");
 extern const unsigned char motion_start_js[] asm("_binary_motion_js_start");
 extern const unsigned char motion_end_js[] asm("_binary_motion_js_end");
 // One recording download at a time; its chunks replace video frames until done.
-struct Transfer { int fd = -1; uint32_t id = 0, size = 0, offset = 0; } transfer;
+// `buffered` is the offset of the chunk already read into the packet buffer,
+// kept for a retry after backpressure instead of reading the card again.
+struct Transfer { int fd = -1; uint32_t id = 0, size = 0, offset = 0, buffered = UINT32_MAX; } transfer;
 uint32_t transfer_ids = 0;
 
 struct Lock {
@@ -131,6 +133,7 @@ int send_text(cJSON *json) {
 void stop_transfer() {
     if (transfer.fd >= 0) close(transfer.fd);
     transfer.fd = -1;
+    transfer.buffered = UINT32_MAX;
 }
 void start_transfer(const cJSON *request) {
     stop_transfer();
@@ -518,6 +521,14 @@ void worker(common::Application &app) {
                 pacer.congested(now);
             }
             queue_full_seen = queue_full;
+            // True when the Wi-Fi TX queue filled since the last check; slows the pacer.
+            auto queue_filled = [&] {
+                const uint32_t count = camera_transport_queue_full();
+                if (count == queue_full_seen) return false;
+                queue_full_seen = count; ++slow_queue;
+                pacer.congested(esp_timer_get_time());
+                return true;
+            };
             if (viewer && now >= next_pacing_report) {
                 next_pacing_report = now + 5000000;
                 wifi_ap_record_t ap{};
@@ -527,8 +538,9 @@ void worker(common::Application &app) {
                          unsigned(slow_reply), unsigned(slow_memory), int(ap.rssi));
             }
             // Wi-Fi needs contiguous internal RAM even though images live in PSRAM.
-            // Stop admitting video under pressure; let SCTP acknowledgements
-            // drain its cache while still servicing settings and heartbeats.
+            // Stop admitting video and recording transfers under pressure; let
+            // SCTP acknowledgements drain its cache while still servicing
+            // settings and heartbeats.
             const bool video_memory = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) >= 12288 &&
                 heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) >= 2048;
             if (viewer && !video_memory) {
@@ -541,12 +553,13 @@ void worker(common::Application &app) {
                 }
             }
             const bool streaming = viewer && !reply_waiting && !downloading && video_memory;
-            if (downloading && !reply_waiting && pacer.due(now)) {
+            if (downloading && !reply_waiting && video_memory && pacer.due(now)) {
                 // Abandon a partly sent frame; the viewer discards incomplete frames.
                 if (fb) { camera_frame_return(fb); fb = nullptr; }
                 for (int chunks = 0; transfer.fd >= 0 && chunks < BULK_CHUNKS_PER_PASS && pacer.due(esp_timer_get_time()); ++chunks) {
                     const uint32_t size = std::min<uint32_t>(CHUNK, transfer.size - transfer.offset);
-                    if (lseek(transfer.fd, transfer.offset, SEEK_SET) < 0 || read(transfer.fd, packet + 16, size) != ssize_t(size)) {
+                    if (transfer.buffered != transfer.offset &&
+                        (lseek(transfer.fd, transfer.offset, SEEK_SET) < 0 || read(transfer.fd, packet + 16, size) != ssize_t(size))) {
                         cJSON *error = cJSON_CreateObject();
                         cJSON_AddStringToObject(error, "type", "download");
                         cJSON_AddNumberToObject(error, "id", transfer.id);
@@ -554,6 +567,7 @@ void worker(common::Application &app) {
                         send_text(error); stop_transfer();
                         break;
                     }
+                    transfer.buffered = transfer.offset;
                     // Four LE uint32: magic "FILE", transfer id, total bytes, byte offset.
                     const uint32_t header[] = {0x454c4946, transfer.id, transfer.size, transfer.offset};
                     memcpy(packet, header, sizeof(header));
@@ -570,6 +584,9 @@ void worker(common::Application &app) {
                     pacer.sent(size + 16, activity);
                     transfer.offset += size;
                     if (transfer.offset == transfer.size) stop_transfer();
+                    // A full Wi-Fi TX queue ends the burst so the worker services
+                    // acknowledgements and controls before sending more.
+                    if (queue_filled()) break;
                 }
             }
             // Motion detection and recording capture frames with or without a viewer.
@@ -609,7 +626,8 @@ void worker(common::Application &app) {
                     if (offset == fb->len || esp_timer_get_time() - last_progress > 2000000 || (ret != 0 && ret != ESP_PEER_ERR_WOULD_BLOCK && ret != ESP_PEER_ERR_NO_MEM)) {
                         camera_frame_return(fb); fb = nullptr;
                     }
-                    if (ret != 0 || !pacer.due(esp_timer_get_time())) break;
+                    // A full Wi-Fi TX queue ends the burst, as for downloads above.
+                    if (ret != 0 || queue_filled() || !pacer.due(esp_timer_get_time())) break;
                 }
             } else if (!viewer) {
                 if (!motion_settings().enabled) capture_stalled_since = 0;

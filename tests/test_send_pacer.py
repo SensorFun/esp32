@@ -42,11 +42,20 @@ int main() {
     // One congestion signal cuts to 70%; repeats within the cooldown do not.
     pacer.congested(now);
     assert(pacer.rate() == 1536 * KiB * 7 / 10);
+    // It also defers the next send by one chunk at the new rate.
+    const int64_t wait = 2048 * 1000000 / (1536 * KiB * 7 / 10);
+    assert(!pacer.due(now) && !pacer.due(now + wait - 1) && pacer.due(now + wait));
     pacer.congested(now + 100000);
     assert(pacer.rate() == 1536 * KiB * 7 / 10 && pacer.cuts() == 1);
     // Sustained congestion bottoms out at the floor.
     for (int i = 1; i <= 20; ++i) pacer.congested(now + i * 200000);
     assert(pacer.rate() == 128 * KiB);
+    // Consecutive cuts keep deferring: no retry on every worker pass.
+    SendPacer backoff(CONFIG);
+    backoff.congested(0);
+    assert(backoff.rate() == 179 * KiB + 204 && !backoff.due(1000));
+    backoff.congested(300000);
+    assert(backoff.rate() == 128 * KiB && !backoff.due(300000) && !backoff.due(300000 + 15000) && backoff.due(300000 + 15625));
     now += 5000000;
 
     // An idle or light stream does not inflate the rate.
