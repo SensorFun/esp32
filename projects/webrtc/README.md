@@ -167,10 +167,19 @@ Setting commands run after the WebRTC receive callback returns and after releasi
 any held camera frame. The command queue is bounded to 16 entries. Temporary
 send-buffer exhaustion (`WOULD_BLOCK` or `NO_MEM`) retains the pending reply for
 retry instead of disconnecting the viewer. Telemetry yields to queued replies.
-Video and file sends use 2 KiB chunks and a 16 KiB SCTP send cache. Bulk payloads
-are paced to 256 KiB/s; video may send up to three chunks of unused pacing credit
-in one worker pass, and file downloads one chunk per pass. Settings and heartbeat
-processing bypass that limit. The camera
+Video and file sends use 2 KiB chunks and a 64 KiB SCTP send cache (in PSRAM;
+16 KiB limited video to one window per acknowledgement, about 190 KiB/s).
+Bulk payloads (video and recording downloads) are paced adaptively
+(`main/send_pacer.h`): the rate starts at 256 KiB/s, rises by 32 KiB/s every
+100 ms while the stream uses most of it, and drops to 70% (at most every
+200 ms) on backpressure: a full SCTP send cache, a full Wi-Fi TX queue, waiting
+control replies, or internal RAM below 20 KiB. It stays between 128 KiB/s and
+1 MiB/s (ESP32) or 1.5 MiB/s (ESP32-S3). A worker pass may bank 50 ms of credit
+and send up to 12 chunks. Every 5 seconds a viewer is connected, the log prints
+the rate, slowdowns by cause and the Wi-Fi RSSI. Settings and heartbeat
+processing bypass the pacer. On the ESP32-S3 the WebRTC library's send path
+(DTLS and SCTP) itself tops out near 260 KiB/s, so the largest JPEGs are limited
+by it rather than by the pacer. The camera
 disables Wi-Fi modem sleep to prevent a sleeping radio from delaying the live
 stream and filling its TX queue. Video admission pauses below 12 KiB of free internal RAM or a
 2 KiB largest free block, leaving the peer loop active to drain acknowledgements.
@@ -190,6 +199,8 @@ On the ESP32-CAM the camera clock and the sensor's pixel bus run beside the PCB
 antenna. At the default drive strengths they cut Wi-Fi throughput by more than ten
 times, even with a strong signal and no capture running. The firmware sets the clock
 pin and the OV2640 outputs to their weakest drive, which restores full Wi-Fi speed.
+The OV3660 driver sets 4x pad drive; the firmware lowers it to 1x as well, which
+stopped Wi-Fi TX queue overflows on the Goouuu ESP32-S3 board.
 
 Optical-flow and grayscale loops cooperate with FreeRTOS between bounded work
 blocks so the CPU 1 idle task can run; increasing the analysis rate cannot create

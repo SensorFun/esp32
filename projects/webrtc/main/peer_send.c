@@ -1,4 +1,5 @@
 #include "udp.h"
+#include "peer_send.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -8,11 +9,17 @@
 
 extern int __real_udp_socket_sendto(udp_socket_t *, esp_peer_addr_t *, const uint8_t *, int);
 
+// Times the Wi-Fi TX queue was full, even if a retry then succeeded: the
+// earliest sign the link is saturated. The worker's send pacer reads it.
+static volatile uint32_t queue_full_count;
+uint32_t camera_transport_queue_full(void) { return queue_full_count; }
+
 int __wrap_udp_socket_sendto(udp_socket_t *socket, esp_peer_addr_t *address,
                              const uint8_t *buffer, int length)
 {
     const int64_t started = esp_timer_get_time();
     int result = __real_udp_socket_sendto(socket, address, buffer, length);
+    if (result == -200) queue_full_count = queue_full_count + 1;
     // The pinned UDP implementation returns -200 after its two short retries
     // exhaust the Wi-Fi TX queue. Retry the identical encrypted datagram here,
     // before returning to DTLS, so its pending record need not be abandoned.

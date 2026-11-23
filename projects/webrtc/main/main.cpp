@@ -8,6 +8,8 @@
 #include "remote_signaling.h"
 #include "remote_auth.h"
 #include "peer_receive.h"
+#include "peer_send.h"
+#include "send_pacer.h"
 #include "local_candidates.h"
 #include "lwip/sockets.h"
 #include "esp_camera.h"
@@ -40,12 +42,26 @@ constexpr size_t CHUNK = 2048;
 // minutes without any message and only then disconnects it. Recording
 // transfers count as activity too. Closed tabs disconnect at once.
 constexpr int64_t PEER_IDLE_US = 5 * 60 * 1000000LL;
-// Bound bulk traffic independently of how fast the peer loop can run. Control
-// replies and pings bypass this pacing so a full video queue cannot starve them.
-constexpr int64_t BULK_BYTES_PER_SECOND = 256 * 1024;
-// Video may send up to this much unused pacing credit back to back, so one
-// loop pass (which waits for incoming packets) can carry several chunks.
-constexpr int64_t BULK_BURST_US = 3 * int64_t(CHUNK) * 1000000 / BULK_BYTES_PER_SECOND;
+// Bulk traffic (video, recording downloads) follows the link's capacity; see
+// send_pacer.h. Control replies and pings bypass the pacer so a full video
+// queue cannot starve them. The ceiling allows for each chip's CPU and RAM.
+constexpr SendPacer::Config PACING = {
+    .floor = 128 * 1024, .start = 256 * 1024,
+#if CONFIG_IDF_TARGET_ESP32S3
+    .ceiling = 1536 * 1024,
+#else
+    .ceiling = 1024 * 1024,
+#endif
+    .step = 32 * 1024, .increase_us = 100000, .cooldown_us = 200000, .chunk = CHUNK,
+};
+// Chunks one worker pass may send; the pacer's credit is the real limit.
+constexpr int BULK_CHUNKS_PER_PASS = 12;
+// Internal RAM below this slows bulk traffic before video must pause (12 KiB).
+constexpr size_t PACING_LOW_MEMORY = 20480;
+SendPacer pacer(PACING);
+// Why the pacer slowed down, for the periodic log: a full SCTP send cache,
+// a full Wi-Fi TX queue, waiting control replies, low internal RAM.
+uint32_t slow_cache, slow_queue, slow_reply, slow_memory;
 esp_peer_default_cfg_t peer_defaults(uint8_t candidates) {
     esp_peer_default_cfg_t cfg{};
     cfg.agent_recv_timeout = CAMERA_ICE_RECEIVE_MS;
@@ -58,8 +74,11 @@ esp_peer_default_cfg_t peer_defaults(uint8_t candidates) {
     // does not drop ordered messages. The field is 16-bit milliseconds (65.5 s
     // at most), so it cannot follow the 5-minute inactivity deadline.
     cfg.data_ch_cfg.cache_timeout = 60000;
-    // Bound queued video so Wi-Fi retains internal heap for control traffic.
-    cfg.data_ch_cfg.send_cache_size = 16384;
+    // Unacknowledged data the channel may have in flight. 16 KiB limited video
+    // to one window per browser acknowledgement (about 190 KiB/s on a strong
+    // link); 64 KiB stops that. esp_peer allocates it from PSRAM through the
+    // media_lib allocator, so internal RAM is unaffected.
+    cfg.data_ch_cfg.send_cache_size = 65536;
     cfg.data_ch_cfg.recv_cache_size = 8192;
     cfg.max_candidates = candidates;
     return cfg;
@@ -197,6 +216,7 @@ void close_peer() {
     if (peer) { esp_peer_close(peer); peer = nullptr; }
     stop_transfer();
     answer.clear(); replies.clear(); commands.clear(); peer_offer.clear(); peer_auth.clear(); failed = false; remote_peer = false;
+    pacer.reset(esp_timer_get_time());
 }
 esp_err_t respond(httpd_req_t *r, const char *status, const char *body) {
     httpd_resp_set_status(r, status);
@@ -401,7 +421,8 @@ void worker(common::Application &app) {
     int64_t capture_stalled_since = 0;
     int64_t last_progress = 0, next_status = 0;
     bool sntp_started = false;
-    int64_t next_bulk_send = 0;
+    uint32_t queue_full_seen = camera_transport_queue_full();
+    int64_t next_pacing_report = 0;
     uint8_t packet[CHUNK + 16];
     int64_t next_app = 0;
     for (;;) {
@@ -488,6 +509,23 @@ void worker(common::Application &app) {
             }
             reply_waiting = !replies.empty();
             const bool downloading = viewer && transfer.fd >= 0;
+            // Backpressure slows bulk traffic: blocked control replies, a full
+            // Wi-Fi TX queue, or internal RAM running low.
+            const uint32_t queue_full = camera_transport_queue_full();
+            const bool low_memory = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) < PACING_LOW_MEMORY;
+            if (viewer && (reply_waiting || queue_full != queue_full_seen || low_memory)) {
+                slow_reply += reply_waiting; slow_queue += queue_full != queue_full_seen; slow_memory += low_memory;
+                pacer.congested(now);
+            }
+            queue_full_seen = queue_full;
+            if (viewer && now >= next_pacing_report) {
+                next_pacing_report = now + 5000000;
+                wifi_ap_record_t ap{};
+                esp_wifi_sta_get_ap_info(&ap);
+                ESP_LOGI(TAG, "Send pacing: %u KiB/s, %u slowdowns (send cache %u, TX queue %u, replies %u, memory %u), RSSI %d dBm",
+                         unsigned(pacer.rate() / 1024), unsigned(pacer.cuts()), unsigned(slow_cache), unsigned(slow_queue),
+                         unsigned(slow_reply), unsigned(slow_memory), int(ap.rssi));
+            }
             // Wi-Fi needs contiguous internal RAM even though images live in PSRAM.
             // Stop admitting video under pressure; let SCTP acknowledgements
             // drain its cache while still servicing settings and heartbeats.
@@ -503,10 +541,10 @@ void worker(common::Application &app) {
                 }
             }
             const bool streaming = viewer && !reply_waiting && !downloading && video_memory;
-            if (downloading && !reply_waiting && now >= next_bulk_send) {
+            if (downloading && !reply_waiting && pacer.due(now)) {
                 // Abandon a partly sent frame; the viewer discards incomplete frames.
                 if (fb) { camera_frame_return(fb); fb = nullptr; }
-                for (int chunks = 0; transfer.fd >= 0 && chunks < 1; ++chunks) {
+                for (int chunks = 0; transfer.fd >= 0 && chunks < BULK_CHUNKS_PER_PASS && pacer.due(esp_timer_get_time()); ++chunks) {
                     const uint32_t size = std::min<uint32_t>(CHUNK, transfer.size - transfer.offset);
                     if (lseek(transfer.fd, transfer.offset, SEEK_SET) < 0 || read(transfer.fd, packet + 16, size) != ssize_t(size)) {
                         cJSON *error = cJSON_CreateObject();
@@ -523,9 +561,13 @@ void worker(common::Application &app) {
                     chunk.type = ESP_PEER_DATA_CHANNEL_DATA; chunk.stream_id = stream_id;
                     chunk.data = packet; chunk.size = size + 16;
                     int ret = esp_peer_send_data(peer, &chunk);
-                    if (ret != 0) { if (ret != ESP_PEER_ERR_WOULD_BLOCK && ret != ESP_PEER_ERR_NO_MEM) failed = true; break; }
+                    if (ret != 0) {
+                        if (ret == ESP_PEER_ERR_WOULD_BLOCK || ret == ESP_PEER_ERR_NO_MEM) { ++slow_cache; pacer.congested(esp_timer_get_time()); }
+                        else failed = true;
+                        break;
+                    }
                     activity = esp_timer_get_time();
-                    next_bulk_send = activity + int64_t(size) * 1000000 / BULK_BYTES_PER_SECOND;
+                    pacer.sent(size + 16, activity);
                     transfer.offset += size;
                     if (transfer.offset == transfer.size) stop_transfer();
                 }
@@ -546,10 +588,10 @@ void worker(common::Application &app) {
                 }
                 if (fb && !streaming) { camera_frame_return(fb); fb = nullptr; }
             }
-            if (streaming && now >= next_bulk_send) {
+            if (streaming && pacer.due(now)) {
                 // Pace bulk packets; continuous capture must not saturate Wi-Fi
                 // and leave DTLS unable to send acknowledgements or controls.
-                for (int chunks = 0; fb && chunks < 4; ++chunks) {
+                for (int chunks = 0; fb && chunks < BULK_CHUNKS_PER_PASS; ++chunks) {
                     size_t size = std::min(CHUNK, fb->len - offset);
                     // Four LE uint32: magic, sequence, total bytes, byte offset.
                     const uint32_t header[] = {0x4745504a, sequence, uint32_t(fb->len), uint32_t(offset)};
@@ -560,13 +602,14 @@ void worker(common::Application &app) {
                     int ret = esp_peer_send_data(peer, &frame);
                     if (ret == 0) {
                         offset += size; last_progress = esp_timer_get_time();
-                        next_bulk_send = std::max(next_bulk_send, last_progress - BULK_BURST_US) +
-                            int64_t(size) * 1000000 / BULK_BYTES_PER_SECOND;
+                        pacer.sent(size + 16, last_progress);
+                    } else if (ret == ESP_PEER_ERR_WOULD_BLOCK || ret == ESP_PEER_ERR_NO_MEM) {
+                        ++slow_cache; pacer.congested(esp_timer_get_time());
                     }
                     if (offset == fb->len || esp_timer_get_time() - last_progress > 2000000 || (ret != 0 && ret != ESP_PEER_ERR_WOULD_BLOCK && ret != ESP_PEER_ERR_NO_MEM)) {
                         camera_frame_return(fb); fb = nullptr;
                     }
-                    if (ret != 0 || next_bulk_send > esp_timer_get_time()) break;
+                    if (ret != 0 || !pacer.due(esp_timer_get_time())) break;
                 }
             } else if (!viewer) {
                 if (!motion_settings().enabled) capture_stalled_since = 0;

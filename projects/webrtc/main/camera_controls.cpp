@@ -107,6 +107,8 @@ esp_err_t camera_start(bool restore_saved) {
     // more than ten times; the weakest drive still captures cleanly.
     gpio_set_drive_capability(gpio_num_t(XCLK_GPIO_NUM), GPIO_DRIVE_CAP_0);
     if (sensor->id.PID == OV2640_PID && sensor->set_reg(sensor, 0x109, 0x03, 0x00)) return ESP_FAIL;  // COM2: 1x output drive
+    // The OV3660 driver sets 4x pad drive (0x302C bits 7:6); 1x captures cleanly.
+    if (sensor->id.PID == OV3660_PID && sensor->set_reg(sensor, 0x302c, 0xc0, 0x00)) return ESP_FAIL;
     if (profile->timing_profile >= 0 && timing.apply(profile->timing_profile)) return ESP_FAIL;
     for (const auto &c : controls) {
         const ControlSpec *s = spec(c);

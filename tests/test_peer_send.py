@@ -41,14 +41,19 @@ int __real_udp_socket_sendto(udp_socket_t *s, esp_peer_addr_t *a, const uint8_t 
     errno = EIO; return result;
 }
 int __wrap_udp_socket_sendto(udp_socket_t *, esp_peer_addr_t *, const uint8_t *, int);
+uint32_t camera_transport_queue_full(void);
 static int send(void) { return __wrap_udp_socket_sendto(&socket, &address, buffer, 8); }
 int main(void) {
     result = 8; congested = 2;
     assert(send() == 8 && calls == 3 && now == 100000);
+    // A full queue counts once per datagram, even when a retry succeeds.
+    assert(camera_transport_queue_full() == 1);
     calls = 0; congested = 100; now = 0;
     assert(send() == -200 && calls == 6 && now == 290000 && errno == ENOMEM);
+    assert(camera_transport_queue_full() == 2);
     calls = 0; congested = 0; result = -1;
     assert(send() == -1 && calls == 1 && errno == EIO);
+    assert(camera_transport_queue_full() == 2);
     calls = 0; congested = 0; result = 0;
     assert(send() == 0 && calls == 1);
 }
