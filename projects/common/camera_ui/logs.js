@@ -5,10 +5,10 @@ class CameraLogs extends HTMLElement {
     this.shadowRoot.innerHTML = `<style>
       :host{display:block;min-width:0;color:#e4eadd;font:16px system-ui}:host([hidden]){display:none}
       *{box-sizing:border-box}section{padding:18px;background:#17201a;border:1px solid #2a352c;border-radius:8px;min-width:0}
-      h2{font-size:20px;margin:0 0 12px}button{font:inherit;min-height:44px;padding:10px 16px;background:#00d4cb;color:#07302c;border:0;border-radius:6px;cursor:pointer}button:disabled{opacity:.5;cursor:default}.actions{display:flex;flex-wrap:wrap;gap:12px}
+      h2{font-size:20px;margin:0 0 12px}button{font:inherit;min-height:44px;padding:10px 16px;background:#00d4cb;color:#07302c;border:0;border-radius:6px;cursor:pointer}button:disabled{opacity:.5;cursor:default}.actions{display:flex;flex-wrap:wrap;gap:12px}button.clear{background:transparent;color:#d8e8cb;border:1px solid #4a5a4c}
       pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:360px;overflow:auto;font:13px/1.6 monospace;min-width:0}
       p{line-height:1.5;color:#b7c9ab}button:focus-visible{outline:2px solid white;outline-offset:3px}
-    </style><section><h2>Diagnostics</h2><p>Recent main events from this boot. Updates while connected.</p><div class="actions"><button type="button">Download logs</button><button type="button" class="core" disabled>Download core dump</button></div><p class="core-status" role="status"></p><p role="status" class="connection-status">Connect a camera to view logs.</p><pre aria-label="Camera diagnostic events"></pre></section>`;
+    </style><section><h2>Diagnostics</h2><p>Recent main events from this boot. Updates while connected.</p><div class="actions"><button type="button">Download logs</button><button type="button" class="core" disabled>Download core dump</button><button type="button" class="clear">Clear logs</button></div><p class="core-status" role="status"></p><p role="status" class="connection-status">Connect a camera to view logs.</p><pre aria-label="Camera diagnostic events"></pre></section>`;
     this.shadowRoot.querySelector('button').onclick = () => {
       const report = ['Camera diagnostics', `Exported ${new Date().toISOString()}`, ...this.lines].join('\n');
       const url = URL.createObjectURL(new Blob([report], { type: 'text/plain' }));
@@ -16,6 +16,19 @@ class CameraLogs extends HTMLElement {
       setTimeout(() => URL.revokeObjectURL(url), 1000);
     };
     this.shadowRoot.querySelector('.core').onclick = () => this.downloadCore();
+    this.shadowRoot.querySelector('.clear').onclick = () => this.clear();
+  }
+  // Clears this page and, when connected, the camera's event history too.
+  clear() {
+    this.lines = [];
+    this.shadowRoot.querySelector('pre').textContent = '';
+    if (this.online) {
+      // Log replies already in flight predate the clear; drop them until the
+      // camera acknowledges it.
+      this.clearing = true;
+      this.send({ op: 'logs_clear' });
+      this.recordBrowser('Logs cleared on this page and the camera');
+    } else this.recordBrowser('Logs cleared on this page');
   }
   send(detail) {
     this.dispatchEvent(new CustomEvent('camera-command', { detail, bubbles: true, composed: true }));
@@ -72,6 +85,7 @@ class CameraLogs extends HTMLElement {
   set connected(value) {
     if (!value && this.corePending) this.finishCore('Connection lost. Reconnect and retry the core dump download.', true);
     this.online = value;
+    this.clearing = false;
     this.shadowRoot.querySelector('.core').disabled = !value;
     this.shadowRoot.querySelector('.connection-status').textContent = value ? 'Waiting for recent events…' : 'Disconnected. Displayed events are retained in this page.';
     if (value) { this.cursor = 0; this.recordBrowser("Camera connection authenticated"); this.poll(); }
@@ -98,6 +112,8 @@ class CameraLogs extends HTMLElement {
       this.coreTimeout(); return;
     }
     if (data.type !== 'logs') return;
+    if (this.clearing && !data.cleared) return;
+    if (data.cleared) this.clearing = false;
     if (data.board) this.recordBrowser(`Board ${data.board}; firmware ${data.firmware}; IDF ${data.idf}; ELF ${data.elf_sha256}; reset reason ${data.reset_reason}`);
     if (data.gap) this.lines.push('Some older events expired from the camera buffer.');
     for (const entry of data.entries || []) {

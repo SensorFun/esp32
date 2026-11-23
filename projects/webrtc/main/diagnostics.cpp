@@ -13,14 +13,23 @@ namespace {
 struct Entry { uint32_t id; int64_t ms; char level[8]; char message[128]; uint32_t repeats; };
 Entry entries[48]{};
 uint32_t sequence = 0;
+// Entries up to this id were cleared by a viewer. Ids keep increasing so
+// viewer cursors stay valid across a clear.
+uint32_t cleared = 0;
 portMUX_TYPE lock = portMUX_INITIALIZER_UNLOCKED;
+}
+uint32_t diagnostic_clear() {
+    portENTER_CRITICAL(&lock);
+    cleared = sequence;
+    portEXIT_CRITICAL(&lock);
+    return cleared;
 }
 void diagnostic_event(const char *level, const char *message) {
     if (!message || !*message) return;
     const int64_t now = esp_timer_get_time() / 1000;
     portENTER_CRITICAL(&lock);
     Entry &last = entries[sequence % 48];
-    if (sequence && !strcmp(last.message, message) && !strcmp(last.level, level) && now - last.ms < 10000) {
+    if (sequence > cleared && !strcmp(last.message, message) && !strcmp(last.level, level) && now - last.ms < 10000) {
         // Give the replacement a fresh sequence so connected viewers see its count.
         Entry copy = last;
         copy.id = ++sequence; copy.ms = now; ++copy.repeats;
@@ -36,16 +45,18 @@ void diagnostic_event(const char *level, const char *message) {
 cJSON *diagnostic_logs(uint32_t after) {
     Entry batch[4]{};
     unsigned count = 0;
-    uint32_t oldest, newest;
+    uint32_t retained, newest, skipped;
     portENTER_CRITICAL(&lock);
     newest = sequence;
-    oldest = newest > 48 ? newest - 47 : 1;
-    uint32_t start = after >= newest ? newest + 1 : (after + 1 < oldest ? oldest : after + 1);
-    for (uint32_t id = start; id <= newest && count < 4; ++id) batch[count++] = entries[id % 48];
+    retained = newest > 48 ? newest - 47 : 1;
+    // Cleared entries are skipped silently; only ring overflow is a gap.
+    skipped = after > cleared ? after : cleared;
+    const uint32_t oldest = skipped + 1 > retained ? skipped + 1 : retained;
+    for (uint32_t id = oldest; id <= newest && count < 4; ++id) batch[count++] = entries[id % 48];
     portEXIT_CRITICAL(&lock);
     cJSON *reply = cJSON_CreateObject();
     cJSON_AddStringToObject(reply, "type", "logs");
-    cJSON_AddBoolToObject(reply, "gap", after && after + 1 < oldest);
+    cJSON_AddBoolToObject(reply, "gap", after && skipped + 1 < retained);
     cJSON *list = cJSON_AddArrayToObject(reply, "entries");
     for (unsigned i = 0; i < count; ++i) {
         const Entry &entry = batch[i];

@@ -636,6 +636,15 @@ void worker(common::Application &app) {
                             next_logs = now + 2000000;
                         }
                     }
+                    else if (cJSON_IsString(op) && !strcmp(op->valuestring, "logs_clear")) {
+                        const uint32_t cleared = diagnostic_clear();
+                        diagnostic_event("info", "Diagnostic history cleared by viewer");
+                        // Replies stay in order: the viewer drops log replies
+                        // until this acknowledgement, which starts after the clear.
+                        cJSON *logs = diagnostic_logs(cleared);
+                        cJSON_AddBoolToObject(logs, "cleared", true);
+                        send_text(logs);
+                    }
                     else if (cJSON_IsString(op) && !strcmp(op->valuestring, "time")) set_clock(request);
                     else if (cJSON_IsString(op) && !strcmp(op->valuestring, "recording_download")) start_transfer(request);
                     else if (cJSON_IsString(op) && !strcmp(op->valuestring, "recording_cancel")) { if (!transfer.core) stop_transfer(); }

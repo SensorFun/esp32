@@ -41,6 +41,34 @@ int main() {
     auto *entry=cJSON_GetArrayItem(cJSON_GetObjectItem(reply,"entries"),0);
     assert(std::string(cJSON_GetObjectItem(entry,"message")->valuestring).size()==127);
     cJSON_Delete(reply);
+
+    // Clearing hides history without reporting a gap or resetting ids.
+    const uint32_t cleared = diagnostic_clear();
+    assert(cleared == 61);
+    for (uint32_t cursor : {0u, 1u, 61u}) {
+        reply = diagnostic_logs(cursor);
+        assert(cJSON_GetArraySize(cJSON_GetObjectItem(reply,"entries"))==0);
+        assert(!cJSON_IsTrue(cJSON_GetObjectItem(reply,"gap")));
+        cJSON_Delete(reply);
+    }
+    // A repeat of the last cleared message is a new entry, not a hidden merge.
+    diagnostic_event("error", std::string(500,'x').c_str());
+    diagnostic_event("info", "after clear");
+    reply = diagnostic_logs(5);
+    entries = cJSON_GetObjectItem(reply,"entries");
+    assert(cJSON_GetArraySize(entries)==2);
+    assert(!cJSON_IsTrue(cJSON_GetObjectItem(reply,"gap")));
+    entry = cJSON_GetArrayItem(entries,0);
+    assert(cJSON_GetObjectItem(entry,"id")->valueint==62);
+    assert(cJSON_GetObjectItem(entry,"repeats")->valueint==1);
+    assert(std::string(cJSON_GetObjectItem(cJSON_GetArrayItem(entries,1),"message")->valuestring)=="after clear");
+    cJSON_Delete(reply);
+
+    // Overflow after a clear is still reported as a gap.
+    for (int i=0;i<60;++i) diagnostic_event("info", ("later " + std::to_string(i)).c_str());
+    reply = diagnostic_logs(63);
+    assert(cJSON_IsTrue(cJSON_GetObjectItem(reply,"gap")));
+    cJSON_Delete(reply);
 }
 ''')
             binary = folder / 'test'

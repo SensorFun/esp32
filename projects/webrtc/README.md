@@ -432,6 +432,9 @@ disconnect reason/RSSI, signaling and peer failures, settings saves/resets,
 recording start/stop/errors, SD mount/format failures and space reclamation.
 Internal RAM free/largest/minimum and Wi-Fi RSSI are sampled once per minute.
 Device history remains bounded to 48 events, and reports identify history gaps.
+**Clear logs** empties the panel and, when connected, the camera's event
+history; the camera then records that a viewer cleared it. Event ids keep
+increasing, so a clear is never reported as a history gap.
 
 The shared Diagnostics panel provides **Download core dump** after authentication
 in both local and remote viewers. It saves `camera-core-dump.bin` over the
