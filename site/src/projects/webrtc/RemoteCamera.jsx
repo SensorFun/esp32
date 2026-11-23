@@ -150,7 +150,7 @@ export function RemoteCamera({ onSessionState }) {
         return;
       }
       if (!session.authenticated || !(event.data instanceof ArrayBuffer) || event.data.byteLength < 16) return;
-      if (recordings.current?.binary(event.data)) return;
+      if (logs.current?.binary(event.data) || recordings.current?.binary(event.data)) return;
       const view = new DataView(event.data);
       if (session.imagesDisabled || view.getUint32(0, true) !== 0x4745504a) return;
       const id = view.getUint32(4, true), total = view.getUint32(8, true), offset = view.getUint32(12, true), bytes = new Uint8Array(event.data, 16);

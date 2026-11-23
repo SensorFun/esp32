@@ -103,7 +103,7 @@ async function authenticate(data,current){
 function message(event){
  if(typeof event.data==='string'){let data;try{data=JSON.parse(event.data);}catch{status('Invalid camera response');return;}if(!authed){authenticate(data,run);return;}settings(data);for(const view of motionViews())view.handle(data);return;}
  if(!authed)return;
- if(!(event.data instanceof ArrayBuffer)||event.data.byteLength<16||$('recordings').binary(event.data))return;
+ if(!(event.data instanceof ArrayBuffer)||event.data.byteLength<16||$('logs-panel').binary(event.data)||$('recordings').binary(event.data))return;
  const view=new DataView(event.data);if(imagesDisabled||view.getUint32(0,true)!==0x4745504a)return;
  const id=view.getUint32(4,true),total=view.getUint32(8,true),offset=view.getUint32(12,true),bytes=new Uint8Array(event.data,16);
  if(total===0||total>2*1024*1024||offset+bytes.length>total)return;

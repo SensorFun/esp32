@@ -2,6 +2,8 @@
 #include "diagnostics.h"
 #include "esp_system.h"
 #include "esp_app_desc.h"
+#include "esp_core_dump.h"
+#include "esp_flash.h"
 #include "provisioning.h"
 #include "local_http.h"
 #include "tls_identity.h"
@@ -112,7 +114,14 @@ extern const unsigned char logs_end[] asm("_binary_logs_js_end");
 // One recording download at a time; its chunks replace video frames until done.
 // `buffered` is the offset of the chunk already read into the packet buffer,
 // kept for a retry after backpressure instead of reading the card again.
-struct Transfer { int fd = -1; uint32_t id = 0, size = 0, offset = 0, buffered = UINT32_MAX; } transfer;
+struct Transfer {
+    int fd = -1;
+    uint32_t id = 0, size = 0, offset = 0, buffered = UINT32_MAX;
+    bool core = false;
+    size_t address = 0;
+    uint32_t request_id = 0;
+    bool active() const { return fd >= 0 || core; }
+} transfer;
 uint32_t transfer_ids = 0;
 bool playback_active = false, media_paused = false;
 void pause_media(bool paused) {
@@ -120,7 +129,7 @@ void pause_media(bool paused) {
     motion_pause(paused);
     recorder_pause(paused);
     media_paused = paused;
-    diagnostic_event("info", paused ? "Capture, analysis and recording paused for recorded video" : "Recorded video closed; capture, analysis and recording resumed");
+    diagnostic_event("info", paused ? "Capture, analysis and recording paused for download/playback" : "Download/playback ended; capture, analysis and recording resumed");
 }
 
 struct Lock {
@@ -148,15 +157,33 @@ int send_text(cJSON *json) {
     return 0;
 }
 void stop_transfer() {
-    if (transfer.fd >= 0) {
+    if (transfer.core && transfer.offset < transfer.size) {
+        cJSON *reply = cJSON_CreateObject();
+        cJSON_AddStringToObject(reply, "type", "core_dump");
+        cJSON_AddNumberToObject(reply, "id", transfer.id);
+        cJSON_AddNumberToObject(reply, "request_id", transfer.request_id);
+        cJSON_AddStringToObject(reply, "error", "Core dump download interrupted; please retry");
+        send_text(reply);
+    }
+    if (transfer.active()) {
         diagnostic_eventf("info", "Download %s: %u/%u bytes", transfer.offset == transfer.size ? "completed" : "stopped", unsigned(transfer.offset), unsigned(transfer.size));
-        close(transfer.fd);
+        if (transfer.fd >= 0) close(transfer.fd);
     }
     transfer.fd = -1;
+    transfer.core = false;
     transfer.buffered = UINT32_MAX;
     pause_media(playback_active);
 }
 void start_transfer(const cJSON *request) {
+    if (transfer.core) {
+        cJSON *reply = cJSON_CreateObject();
+        cJSON_AddStringToObject(reply, "type", "download");
+        const cJSON *name = cJSON_GetObjectItemCaseSensitive(request, "name");
+        if (cJSON_IsString(name)) cJSON_AddStringToObject(reply, "name", name->valuestring);
+        cJSON_AddStringToObject(reply, "error", "Wait for the core dump download to finish");
+        send_text(reply);
+        return;
+    }
     stop_transfer();
     pause_media(true);
     const cJSON *name = cJSON_GetObjectItemCaseSensitive(request, "name");
@@ -172,6 +199,27 @@ void start_transfer(const cJSON *request) {
         diagnostic_eventf("info", "Download started: %u bytes", unsigned(size));
         cJSON_AddNumberToObject(reply, "id", transfer.id);
         cJSON_AddNumberToObject(reply, "size", size);
+    }
+    send_text(reply);
+}
+void start_core_download(const cJSON *request) {
+    cJSON *reply = cJSON_CreateObject();
+    cJSON_AddStringToObject(reply, "type", "core_dump");
+    const cJSON *token = cJSON_GetObjectItemCaseSensitive(request, "request_id");
+    const double value = cJSON_IsNumber(token) ? token->valuedouble : 0;
+    const uint32_t request_id = value >= 1 && value <= UINT32_MAX ? uint32_t(value) : 0;
+    cJSON_AddNumberToObject(reply, "request_id", request_id);
+    size_t address = 0, size = 0;
+    const esp_err_t result = esp_core_dump_image_get(&address, &size);
+    if (transfer.active()) cJSON_AddStringToObject(reply, "error", "Another download is in progress");
+    else if (result != ESP_OK || !size || size > 256 * 1024) {
+        cJSON_AddStringToObject(reply, "error", "No readable saved core dump is available");
+    } else {
+        pause_media(true);
+        transfer = {-1, ++transfer_ids, uint32_t(size), 0, UINT32_MAX, true, address, request_id};
+        cJSON_AddNumberToObject(reply, "id", transfer.id);
+        cJSON_AddNumberToObject(reply, "size", size);
+        diagnostic_eventf("info", "Core dump download started: %u bytes", unsigned(size));
     }
     send_text(reply);
 }
@@ -590,10 +638,12 @@ void worker(common::Application &app) {
                     }
                     else if (cJSON_IsString(op) && !strcmp(op->valuestring, "time")) set_clock(request);
                     else if (cJSON_IsString(op) && !strcmp(op->valuestring, "recording_download")) start_transfer(request);
-                    else if (cJSON_IsString(op) && !strcmp(op->valuestring, "recording_cancel")) stop_transfer();
+                    else if (cJSON_IsString(op) && !strcmp(op->valuestring, "recording_cancel")) { if (!transfer.core) stop_transfer(); }
+                    else if (cJSON_IsString(op) && !strcmp(op->valuestring, "core_dump_download")) start_core_download(request);
+                    else if (cJSON_IsString(op) && !strcmp(op->valuestring, "core_dump_cancel")) { if (transfer.core) stop_transfer(); }
                     else if (cJSON_IsString(op) && !strcmp(op->valuestring, "recording_playback")) {
                         playback_active = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(request, "active"));
-                        pause_media(playback_active || transfer.fd >= 0);
+                        pause_media(playback_active || transfer.active());
                     }
                     else if (cJSON_IsString(op) && !strcmp(op->valuestring, "sd_format")) {
                         stop_transfer();  // Formatting needs every file on the card closed.
@@ -633,7 +683,7 @@ void worker(common::Application &app) {
                 break;
             }
             reply_waiting = !replies.empty();
-            const bool downloading = viewer && transfer.fd >= 0;
+            const bool downloading = viewer && transfer.active();
             const bool images_enabled = camera_stream_images();
             const bool motion_enabled = manual == ManualRecording::idle && motion_settings().enabled;
             const bool recording = manual == ManualRecording::active;
@@ -686,20 +736,26 @@ void worker(common::Application &app) {
             if (downloading && !reply_waiting && video_memory && pacer.due(now)) {
                 // Abandon a partly sent frame; the viewer discards incomplete frames.
                 if (fb) { camera_frame_return(fb); fb = nullptr; }
-                for (int chunks = 0; transfer.fd >= 0 && chunks < BULK_CHUNKS_PER_PASS && pacer.due(esp_timer_get_time()); ++chunks) {
+                for (int chunks = 0; transfer.active() && chunks < BULK_CHUNKS_PER_PASS && pacer.due(esp_timer_get_time()); ++chunks) {
                     const uint32_t size = std::min<uint32_t>(CHUNK, transfer.size - transfer.offset);
-                    if (transfer.buffered != transfer.offset &&
-                        (lseek(transfer.fd, transfer.offset, SEEK_SET) < 0 || read(transfer.fd, packet + 16, size) != ssize_t(size))) {
+                    bool read_failed = false;
+                    if (transfer.buffered != transfer.offset) {
+                        read_failed = transfer.core
+                            ? esp_flash_read(nullptr, packet + 16, transfer.address + transfer.offset, size) != ESP_OK
+                            : lseek(transfer.fd, transfer.offset, SEEK_SET) < 0 || read(transfer.fd, packet + 16, size) != ssize_t(size);
+                    }
+                    if (read_failed) {
                         cJSON *error = cJSON_CreateObject();
-                        cJSON_AddStringToObject(error, "type", "download");
+                        cJSON_AddStringToObject(error, "type", transfer.core ? "core_dump" : "download");
                         cJSON_AddNumberToObject(error, "id", transfer.id);
-                        cJSON_AddStringToObject(error, "error", "SD card read failed");
+                        if (transfer.core) cJSON_AddNumberToObject(error, "request_id", transfer.request_id);
+                        cJSON_AddStringToObject(error, "error", transfer.core ? "Core dump flash read failed" : "SD card read failed");
                         send_text(error); stop_transfer();
                         break;
                     }
                     transfer.buffered = transfer.offset;
                     // Four LE uint32: magic "FILE", transfer id, total bytes, byte offset.
-                    const uint32_t header[] = {0x454c4946, transfer.id, transfer.size, transfer.offset};
+                    const uint32_t header[] = {transfer.core ? 0x45524f43u : 0x454c4946u, transfer.id, transfer.size, transfer.offset};
                     memcpy(packet, header, sizeof(header));
                     esp_peer_data_frame_t chunk{};
                     chunk.type = ESP_PEER_DATA_CHANNEL_DATA; chunk.stream_id = stream_id;

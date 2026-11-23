@@ -432,3 +432,10 @@ disconnect reason/RSSI, signaling and peer failures, settings saves/resets,
 recording start/stop/errors, SD mount/format failures and space reclamation.
 Internal RAM free/largest/minimum and Wi-Fi RSSI are sampled once per minute.
 Device history remains bounded to 48 events, and reports identify history gaps.
+
+The shared Diagnostics panel provides **Download core dump** after authentication
+in both local and remote viewers. It saves `camera-core-dump.bin` over the
+encrypted data channel with progress and cancellation. The camera sends bounded
+chunks through its existing bulk-traffic pacer, pauses capture/analysis/recording
+during transfer, and retains the saved dump in flash. A missing dump is reported
+in the panel. Use the matching archived ELF to decode the downloaded raw dump.
