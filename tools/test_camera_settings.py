@@ -72,6 +72,43 @@ with sync_playwright() as p, ExitStack() as serial_handles:
         wait_js(page, "window.snapshot?.saved===true", timeout=20000)
         assert values(page.evaluate('window.snapshot')) == settings
 
+    def check_manual_recording(page):
+        page.evaluate("""() => channel.addEventListener('message', ({data}) => {
+            if (typeof data !== 'string') return;
+            const reply = JSON.parse(data);
+            if (reply.type === 'motion_status') window.motionStatus = reply;
+            if (reply.type === 'motion') window.motionValues = reply.values;
+        })""")
+        wait_js(page, 'Boolean(window.motionStatus)')
+        if page.evaluate("window.motionStatus.sd?.state") != 'mounted':
+            print('SKIP: manual recording requires a mounted SD card', flush=True)
+            return
+        page.evaluate("command({op:'motion_get'})")
+        wait_js(page, 'Boolean(window.motionValues)')
+        motion = page.evaluate('({enabled:window.motionValues.enabled, record:window.motionValues.record})')
+        size = page.evaluate('window.snapshot.resolutions.find(size=>size.value===window.snapshot.resolution)')
+        page.evaluate("command({op:'motion_set',settings:{enabled:true,record:false}})")
+        clip = None
+        page.get_by_role('tab', name='SD card recording').click()
+        try:
+            page.get_by_role('button', name='Start recording', exact=True).click()
+            wait_js(page, """window.motionStatus?.manual_recording==='active' && window.motionStatus.enabled &&
+                window.motionStatus.analysis_suspended && window.motionStatus.fps===0 && window.motionStatus.clip_frames>=2""", timeout=20000)
+            clip = page.evaluate('window.motionStatus.clip')
+            assert not page.locator('#preview').get_attribute('src'), 'Manual recording enabled the live preview'
+            page.get_by_role('button', name='Stop recording', exact=True).click()
+            wait_js(page, "window.motionStatus?.manual_recording==='idle' && !window.motionStatus.analysis_suspended")
+            wait_js(page, "name=>document.querySelector('#recordings').list?.files?.some(file=>file.name===name && file.complete)", arg=clip)
+            result = page.evaluate("name=>document.querySelector('#recordings').list.files.find(file=>file.name===name)", clip)
+            assert (result['width'], result['height']) == (size['width'], size['height'])
+            print('PASS: manual clip used the active resolution with live video and motion analysis off', flush=True)
+        finally:
+            page.evaluate("command({op:'recording_stop'})")
+            page.evaluate("settings=>command({op:'motion_set',settings})", motion)
+            if clip:
+                page.evaluate("name=>command({op:'recording_delete',name})", clip)
+            page.get_by_role('tab', name='Camera settings').click()
+
     if args.port and not args.capture:
         reboot()
     page = connect()
@@ -139,6 +176,7 @@ with sync_playwright() as p, ExitStack() as serial_handles:
             panel = page.locator('#settings-panel')
             assert not panel.get_by_role('checkbox', name='Stream camera images', exact=True).is_checked()
             assert page.evaluate('window.snapshot.stream_images') == 0, 'Streaming preference did not survive reboot'
+            check_manual_recording(page)
             panel.get_by_role('button', name='Reset to Default', exact=True).click()
             wait_js(page, "window.snapshot?.reset===true && window.snapshot.stream_images===1 && document.querySelector('#preview').naturalWidth>0", timeout=20000)
             apply(page, original)

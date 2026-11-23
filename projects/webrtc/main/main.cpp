@@ -438,12 +438,17 @@ void worker(common::Application &app) {
             { Lock guard; if (fb) { camera_frame_return(fb); fb = nullptr; } close_peer(); }
             if (server) { ESP_ERROR_CHECK(httpd_ssl_stop(server)); server = nullptr; }
             // Keep detecting and recording while Wi-Fi is down.
-            const bool motion_enabled = camera_ready && motion_settings().enabled;
-            if (camera_ready && camera_capture_idle(!camera_stream_images() && !motion_enabled) &&
-                motion_enabled && motion_frame_due()) {
-                if (camera_fb_t *frame = camera_frame_get()) { motion_feed(frame); camera_frame_return(frame); }
+            const auto manual = recorder_manual_state();
+            const bool recording = manual == ManualRecording::active;
+            const bool motion_enabled = camera_ready && manual == ManualRecording::idle && motion_settings().enabled;
+            if (camera_ready && camera_capture_idle(!camera_stream_images() && !motion_enabled && !recording) &&
+                (recorder_manual_frame_due() || (motion_enabled && motion_frame_due()))) {
+                if (camera_fb_t *frame = camera_frame_get()) {
+                    if (recording) recorder_manual_feed(frame); else motion_feed(frame);
+                    camera_frame_return(frame);
+                }
             }
-            vTaskDelay(pdMS_TO_TICKS(motion_enabled ? 10 : 100));
+            vTaskDelay(pdMS_TO_TICKS(recording || motion_enabled ? 10 : 100));
             continue;
         }
         if (!camera_ready) {
@@ -509,8 +514,9 @@ void worker(common::Application &app) {
                 }
             }
             const bool viewer = channel_ready && peer_auth.allowed();
+            const auto manual = recorder_manual_state();
             if (viewer && now >= next_status) {
-                const bool overlay = camera_stream_images() && motion_overlay_active();
+                const bool overlay = manual == ManualRecording::idle && camera_stream_images() && motion_overlay_active();
                 send_text(motion_status(overlay));
                 next_status = now + (overlay ? 500000 : 1000000);
             }
@@ -531,10 +537,11 @@ void worker(common::Application &app) {
             reply_waiting = !replies.empty();
             const bool downloading = viewer && transfer.fd >= 0;
             const bool images_enabled = camera_stream_images();
-            const bool motion_enabled = motion_settings().enabled;
+            const bool motion_enabled = manual == ManualRecording::idle && motion_settings().enabled;
+            const bool recording = manual == ManualRecording::active;
             if (fb && (!viewer || !images_enabled)) { camera_frame_return(fb); fb = nullptr; }
-            const bool capture_ready = camera_capture_idle(!images_enabled && !motion_enabled);
-            if (!images_enabled && !motion_enabled) capture_stalled_since = 0;
+            const bool capture_ready = camera_capture_idle(!images_enabled && !motion_enabled && !recording);
+            if (!images_enabled && !motion_enabled && !recording) capture_stalled_since = 0;
             const bool bulk_traffic = viewer && (images_enabled || downloading);
             // Backpressure slows bulk traffic: blocked control replies, a full
             // Wi-Fi TX queue, or internal RAM running low.
@@ -613,11 +620,23 @@ void worker(common::Application &app) {
                     if (queue_filled()) break;
                 }
             }
-            // Motion detection and recording capture frames with or without a viewer.
-            if (!fb && capture_ready && (streaming || (motion_enabled && motion_frame_due()))) {
+            const bool manual_due = capture_ready && recording && recorder_manual_frame_due();
+            // A slow viewer may still hold its frame. Manual recording can
+            // use the other capture buffer without waiting for that send.
+            if (fb && manual_due) {
+                if (camera_fb_t *record_frame = camera_frame_get(streaming)) {
+                    recorder_manual_feed(record_frame);
+                    camera_frame_return(record_frame);
+                }
+            }
+            if (!fb && capture_ready && (streaming || manual_due || (motion_enabled && motion_frame_due()))) {
                 fb = camera_frame_get(streaming);
                 if (streaming) { offset = 0; ++sequence; last_progress = esp_timer_get_time(); }
-                if (fb) { capture_stalled_since = 0; motion_feed(fb); }
+                if (fb) {
+                    capture_stalled_since = 0;
+                    if (recording) recorder_manual_feed(fb);
+                    else if (manual == ManualRecording::idle) motion_feed(fb);
+                }
                 else if (!capture_stalled_since) capture_stalled_since = esp_timer_get_time();
                 else if (esp_timer_get_time() - capture_stalled_since >= 8000000) {
                     // The OV2640 capture pipeline can stall across control
@@ -655,7 +674,7 @@ void worker(common::Application &app) {
                     if (ret != 0 || queue_filled() || !pacer.due(esp_timer_get_time())) break;
                 }
             }
-            if (!viewer && !motion_enabled) capture_stalled_since = 0;
+            if (!viewer && !motion_enabled && !recording) capture_stalled_since = 0;
         }
         if (esp_timer_get_time() >= next_app) { app.main(); next_app = esp_timer_get_time() + 20000; }
         vTaskDelay(pdMS_TO_TICKS(2));

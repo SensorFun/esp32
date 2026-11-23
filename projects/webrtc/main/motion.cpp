@@ -303,8 +303,9 @@ void detect(void *) {
     for (;;) {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
         struct FinishJob {
-            ~FinishJob() { busy = false; cooperate(); }
+            ~FinishJob() { cooperate(); busy = false; }
         } finish_job;
+        if (recorder_manual_state() != ManualRecording::idle) continue;
         MotionSettings s;
         uint32_t current_generation;
         { Lock guard; s = settings; current_generation = generation; }
@@ -314,7 +315,7 @@ void detect(void *) {
         if (current_generation != seen_generation || width != last_width || height != last_height) {
             detector.reset();
             seen_generation = current_generation; last_width = width; last_height = height;
-            previous_frame = 0;
+            previous = previous_frame = 0;
         }
         // Flow is measured between consecutive analysed frames; convert the
         // speed threshold using their actual capture interval, which may be
@@ -409,15 +410,17 @@ bool motion_overlay_active() {
 cJSON *motion_status(bool include_overlay) {
     cJSON *status = cJSON_CreateObject();
     cJSON_AddStringToObject(status, "type", "motion_status");
+    const bool suspended = recorder_manual_state() != ManualRecording::idle;
     {
         Lock guard;
         cJSON_AddBoolToObject(status, "enabled", settings.enabled);
+        cJSON_AddBoolToObject(status, "analysis_suspended", suspended);
         cJSON_AddStringToObject(status, "method", kMethods[settings.method].id);
         cJSON_AddBoolToObject(status, "motion", settings.enabled && moving);
         cJSON_AddNumberToObject(status, "area", std::round(double(area) * 10) / 10);
         cJSON_AddNumberToObject(status, "speed", std::round(double(speed) * 10) / 10);
         cJSON_AddNumberToObject(status, "fps", std::round(double(rate) * 10) / 10);
-        if (const uint32_t dimensions = frame_dimensions) {
+        if (const uint32_t dimensions = suspended ? 0 : frame_dimensions.load()) {
             int width, height;
             motion::analysis_size(int(dimensions >> 16), int(dimensions & 0xffff), width, height);
             cJSON_AddNumberToObject(status, "analysis_width", width);
@@ -443,6 +446,30 @@ cJSON *motion_status(bool include_overlay) {
 cJSON *motion_command(const cJSON *request) {
     const cJSON *op = cJSON_GetObjectItemCaseSensitive(request, "op");
     if (!cJSON_IsString(op)) return nullptr;
+    const bool start_manual = !strcmp(op->valuestring, "recording_start");
+    if (start_manual || !strcmp(op->valuestring, "recording_stop")) {
+        const char *error = recorder_set_manual(start_manual);
+        if (start_manual && !error) {
+            // The worker is the only producer. Let any last analysis finish
+            // before taking the first manual frame, then start fresh after Stop.
+            {
+                Lock guard;
+                ++generation;
+                moving = false;
+                moving_since = last_motion = 0;
+                area = speed = rate = 0;
+                cols = rows = 0;
+                grid.clear();
+            }
+            while (busy.load()) vTaskDelay(1);
+            next_analysis = 0;
+        }
+        cJSON *reply = cJSON_CreateObject();
+        cJSON_AddStringToObject(reply, "type", "manual_recording");
+        if (error) cJSON_AddStringToObject(reply, "error", error);
+        recorder_status(reply);
+        return reply;
+    }
     if (!strcmp(op->valuestring, "motion_get")) return describe();
     if (!strcmp(op->valuestring, "motion_reset")) {
         MotionSettings defaults;

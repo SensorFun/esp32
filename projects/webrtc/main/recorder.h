@@ -4,7 +4,7 @@
 #include "motion.h"
 #include <cstdint>
 
-// Motion-triggered MJPEG AVI clips on the SD card, stored as
+// MJPEG AVI clips on the SD card, stored as
 // REC/YYYYMMDD/HHMMSS.AVI (UTC; 8.3 names work without FAT long-name support).
 void recorder_start();
 // PSRAM bytes reserved for buffered frames (pre-roll plus write queue).
@@ -13,6 +13,11 @@ size_t recorder_budget();
 bool recorder_frame_due(const MotionSettings &settings, int64_t now);
 // Copies an accepted JPEG frame for the recorder task.
 void recorder_feed(const camera_fb_t *frame, const MotionSettings &settings);
+enum class ManualRecording { idle, active, stopping };
+ManualRecording recorder_manual_state();
+const char *recorder_set_manual(bool start);
+bool recorder_manual_frame_due();
+void recorder_manual_feed(const camera_fb_t *frame);
 // One page of clips, newest first.
 cJSON *recorder_list(int offset);
 // Returns an error message, or nullptr once deleted.

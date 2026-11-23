@@ -38,6 +38,7 @@ struct Frame {
     uint32_t length;
     uint16_t width, height;
     int64_t time;
+    uint32_t manual_id;  // Zero for motion-triggered recording.
 };
 
 QueueHandle_t queue;
@@ -50,6 +51,8 @@ int64_t last_accept = 0;
 std::string active_clip, last_error, format_result;
 // Set by viewers, handled by the recorder task, which owns mounting.
 std::atomic<bool> format_requested{false};
+std::atomic<ManualRecording> manual_state{ManualRecording::idle};
+std::atomic<uint32_t> manual_id{0};
 int64_t clip_started = 0;
 uint32_t clip_frames = 0;
 
@@ -63,6 +66,11 @@ void release(Frame &frame) {
     heap_caps_free(frame.data);
     buffered -= frame.length;
     frame.data = nullptr;
+}
+
+void release_pending(std::deque<Frame> &pending) {
+    for (auto &frame : pending) release(frame);
+    pending.clear();
 }
 
 void set_error(const char *message) {
@@ -199,6 +207,7 @@ public:
         const uint64_t span = frames > 1 ? uint64_t(last_ - first_) * frames / (frames - 1) : kSecond / 10;
         const bool ok = avi_.close(span);
         ESP_LOGI(TAG, "Closed %s: %lu frames, %.1f s%s", name_.c_str(), (unsigned long)frames, span / 1e6, ok ? "" : " (write error)");
+        if (!ok) set_error("Could not finalize the recording on the SD card");
         finish();
     }
     void abort() {
@@ -222,17 +231,34 @@ void record(void *) {
     Clip clip;
     std::deque<Frame> pending;  // Pre-roll while idle; frames to write while recording.
     int64_t next_mount = 0, retry_open = 0;
+    uint32_t session = 0;
+    const auto finish_manual = [&] {
+        clip.close();
+        release_pending(pending);
+        session = 0;
+        manual_state = ManualRecording::idle;
+    };
     for (;;) {
         Frame frame;
         const bool received = xQueueReceive(queue, &frame, pdMS_TO_TICKS(200)) == pdTRUE;
-        if (received) pending.push_back(frame);
+        const auto mode = manual_state.load();
+        const uint32_t current_session = mode == ManualRecording::idle ? 0 : manual_id.load();
+        if (current_session != session) {
+            clip.close();
+            release_pending(pending);
+            session = current_session;
+            retry_open = 0;
+        }
+        if (received) {
+            if (frame.manual_id == session) pending.push_back(frame);
+            else release(frame);
+        }
         const int64_t now = esp_timer_get_time();
         const MotionSettings s = motion_settings();
         if (format_requested) {
             // Close files first; frames captured meanwhile are dropped.
             clip.close();
-            for (auto &item : pending) release(item);
-            pending.clear();
+            release_pending(pending);
             esp_err_t err;
             {
                 Guard sd(sd_lock);
@@ -253,17 +279,21 @@ void record(void *) {
             sd_card::mount();
             next_mount = now + 10 * kSecond;
         }
-        const bool wanted = s.enabled && s.record && sd_card::state() == sd_card::State::mounted;
+        const bool wanted = (session || (s.enabled && s.record)) && sd_card::state() == sd_card::State::mounted;
         if (!wanted) {
-            clip.close();
-            for (auto &item : pending) release(item);
-            pending.clear();
+            if (session) {
+                set_error("SD card unavailable; manual recording stopped");
+                finish_manual();
+            } else {
+                clip.close();
+                release_pending(pending);
+            }
             continue;
         }
-        bool moving;
-        int64_t since, last;
-        motion_activity(moving, since, last);
-        if (!clip.is_open()) {
+        bool moving = false;
+        int64_t since = 0, last = 0;
+        if (!session) motion_activity(moving, since, last);
+        if (!clip.is_open() && !session) {
             // Keep the pre-roll window plus the confirmation time, so a clip
             // starts before the motion that triggered it.
             // The pre-record length never exceeds what PSRAM holds at the
@@ -284,32 +314,40 @@ void record(void *) {
         }
         while (!pending.empty()) {
             Frame &item = pending.front();
-            if (!clip.matches(item)) {
+            if (!clip.is_open() || !clip.matches(item)) {
                 // A resolution change continues in a new clip at the new size.
                 clip.close();
-                if (!clip.open(item, s.overwrite_oldest)) break;
+                if (!clip.open(item, s.overwrite_oldest)) {
+                    if (session) finish_manual();
+                    break;
+                }
             }
             if (!clip.write(item, s.overwrite_oldest)) {
                 ESP_LOGE(TAG, "SD write failed; unmounting card");
                 clip.abort();
                 set_error("SD card write failed");
-                Guard sd(sd_lock);
-                sd_card::unmount(sd_card::State::error);
+                { Guard sd(sd_lock); sd_card::unmount(sd_card::State::error); }
+                if (session) finish_manual();
                 break;
             }
             release(item);
             pending.pop_front();
-            if (!clip.is_open()) break;  // Closed for lack of space.
+            if (!clip.is_open()) {  // Closed for lack of space.
+                if (session) finish_manual();
+                break;
+            }
         }
-        if (clip.is_open() && ((!moving && now - last > int64_t(s.post_seconds) * kSecond) ||
+        if (session && mode == ManualRecording::stopping && !uxQueueMessagesWaiting(queue)) {
+            finish_manual();
+        }
+        if (clip.is_open() && ((!session && !moving && now - last > int64_t(s.post_seconds) * kSecond) ||
                                now - clip.started() > int64_t(s.max_clip_seconds) * kSecond)) {
             clip.close();  // Continuing motion opens the next clip immediately.
         }
         if (!clip.is_open()) {
             // Frames left after a failed open or write are dropped.
             if (sd_card::state() != sd_card::State::mounted) {
-                for (auto &item : pending) release(item);
-                pending.clear();
+                release_pending(pending);
             }
         }
     }
@@ -323,6 +361,12 @@ void add_card(cJSON *object) {
         cJSON_AddNumberToObject(card, "total_mb", double(total >> 20));
         cJSON_AddNumberToObject(card, "free_mb", double(free >> 20));
     }
+}
+
+void add_manual_state(cJSON *object) {
+    const auto state = manual_state.load();
+    cJSON_AddStringToObject(object, "manual_recording",
+        state == ManualRecording::active ? "active" : state == ManualRecording::stopping ? "stopping" : "idle");
 }
 }  // namespace
 
@@ -350,11 +394,10 @@ bool recorder_frame_due(const MotionSettings &s, int64_t now) {
            now - last_accept >= kSecond / s.record_fps;
 }
 
-void recorder_feed(const camera_fb_t *frame, const MotionSettings &s) {
-    const int64_t now = esp_timer_get_time();
-    if (!recorder_frame_due(s, now) || buffered + frame->len > budget) return;
+static void queue_frame(const camera_fb_t *frame, int64_t now, uint32_t session) {
+    if (frame->format != PIXFORMAT_JPEG || buffered + frame->len > budget) return;
     Frame copy{static_cast<uint8_t *>(heap_caps_malloc(frame->len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)), uint32_t(frame->len),
-               uint16_t(frame->width), uint16_t(frame->height), now};
+               uint16_t(frame->width), uint16_t(frame->height), now, session};
     if (!copy.data) return;
     memcpy(copy.data, frame->buf, frame->len);
     buffered += copy.length;
@@ -362,7 +405,49 @@ void recorder_feed(const camera_fb_t *frame, const MotionSettings &s) {
     if (xQueueSend(queue, &copy, 0) != pdTRUE) release(copy);
 }
 
+void recorder_feed(const camera_fb_t *frame, const MotionSettings &s) {
+    const int64_t now = esp_timer_get_time();
+    if (recorder_frame_due(s, now)) queue_frame(frame, now, 0);
+}
+
+ManualRecording recorder_manual_state() { return manual_state.load(); }
+
+const char *recorder_set_manual(bool start) {
+    if (!start) {
+        auto expected = ManualRecording::active;
+        manual_state.compare_exchange_strong(expected, ManualRecording::stopping);
+        return nullptr;
+    }
+    if (manual_state != ManualRecording::idle) return "A manual recording is already active or finishing";
+    if (format_requested) return "Wait until the SD card finishes formatting";
+    switch (sd_card::state()) {
+        case sd_card::State::unsupported: return "This board has no SD card slot";
+        case sd_card::State::absent: return "No SD card inserted";
+        case sd_card::State::formatting: return "Wait until the SD card finishes formatting";
+        case sd_card::State::error: return "SD card unavailable";
+        case sd_card::State::mounted: break;
+    }
+    set_error(nullptr);
+    if (++manual_id == 0) ++manual_id;
+    last_accept = 0;
+    manual_state = ManualRecording::active;
+    return nullptr;
+}
+
+static bool manual_frame_due(int64_t now) {
+    return manual_state == ManualRecording::active && sd_card::state() == sd_card::State::mounted &&
+           buffered < budget && now - last_accept >= kSecond / motion_settings().record_fps;
+}
+
+bool recorder_manual_frame_due() { return manual_frame_due(esp_timer_get_time()); }
+
+void recorder_manual_feed(const camera_fb_t *frame) {
+    const int64_t now = esp_timer_get_time();
+    if (manual_frame_due(now)) queue_frame(frame, now, manual_id.load());
+}
+
 void recorder_status(cJSON *status) {
+    add_manual_state(status);
     {
         Guard guard(state_lock);
         cJSON_AddBoolToObject(status, "recording", !active_clip.empty());
@@ -379,6 +464,7 @@ void recorder_status(cJSON *status) {
 }
 
 const char *recorder_request_format() {
+    if (manual_state != ManualRecording::idle) return "Stop the manual recording before formatting the SD card";
     const sd_card::State state = sd_card::state();
     if (state == sd_card::State::unsupported) return "This board has no SD card slot";
     if (state == sd_card::State::formatting || format_requested) return "The SD card is already being formatted";
@@ -392,6 +478,7 @@ const char *recorder_request_format() {
 cJSON *recorder_list(int offset) {
     cJSON *reply = cJSON_CreateObject();
     cJSON_AddStringToObject(reply, "type", "recordings");
+    add_manual_state(reply);
     cJSON *files = cJSON_AddArrayToObject(reply, "files");
     if (format_requested || sd_card::state() == sd_card::State::formatting) {
         add_card(reply);

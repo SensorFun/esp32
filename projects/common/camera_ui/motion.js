@@ -194,7 +194,8 @@ function defineElements() {
       const pills = [], notes = [];
       const recording = this.description?.values?.record;
       if (this.shows('detection')) {
-        if (!s.enabled) pills.push(['Detection off', '']);
+        if (s.analysis_suspended) pills.push(['Motion analysis paused during manual recording', '']);
+        else if (!s.enabled) pills.push(['Detection off', '']);
         else pills.push([s.motion ? 'Motion detected' : 'No motion', s.motion ? 'on' : ''], [`Moving area ${(s.area ?? 0).toFixed(1)}%`, ''], [`Speed ${(s.speed ?? 0).toFixed(1)} px/s`, ''], [`${(s.fps ?? 0).toFixed(1)} analyses/s`, '']);
         if (s.analysis_width && s.analysis_height) pills.push([`Analysis ${s.analysis_width} × ${s.analysis_height} px`, '']);
       }
@@ -202,7 +203,7 @@ function defineElements() {
         if (s.recording) pills.push([`Recording ${formatDuration(s.clip_seconds)}`, 'rec']);
         // The recordings list below shows the card itself; the full panel says it here.
         if (!this.getAttribute('group')) notes.push(cardText(s.sd));
-        if (!s.enabled && recording && this.getAttribute('group')) notes.push('Clips are recorded only while motion detection is on (Motion detection tab)');
+        if (!s.enabled && recording && this.getAttribute('group')) notes.push('Automatic recording requires motion detection (Motion detection tab)');
         if (s.recorder_error) notes.push(s.recorder_error);
         if (s.clock === false) notes.push('Camera clock not set yet; clips are named by uptime until it syncs.');
       }
@@ -308,7 +309,7 @@ function defineElements() {
   }
 
   class Recordings extends HTMLElement {
-    constructor() { super(); this.attachShadow({ mode: 'open' }); this.list = null; this.transfer = null; this.cache = null; this.player = null; this.recording = false; this.formatting = false; }
+    constructor() { super(); this.attachShadow({ mode: 'open' }); this.list = null; this.transfer = null; this.cache = null; this.player = null; this.recording = false; this.formatting = false; this.manual = null; this.manualPending = false; this.manualError = ''; }
     onVisibilityChange = () => { void this.keepScreenAwake(); };
     connectedCallback() { document.addEventListener('visibilitychange', this.onVisibilityChange); }
     disconnectedCallback() {
@@ -338,18 +339,28 @@ function defineElements() {
       this.stopPlayer();
       this.finishTransfer();
       this.list = null; this.cache = null; this.recording = false; this.formatting = false;
+      this.manual = null; this.manualPending = false; this.manualError = '';
       this.hidden = true; this.shadowRoot.innerHTML = '';
     }
     handle(message) {
       if (message.type === 'recordings') {
         this.list = message; this.hidden = false;
+        this.manual = message.manual_recording ?? this.manual;
         if (message.error && this.formatting) this.formatting = false;  // The camera refused to format.
         // Keep an open confirmation dialog; render once it closes.
         if (this.shadowRoot.querySelector('dialog[open]')) return;
         this.render(); if (message.error) this.say(message.error);
       }
       else if (message.type === 'download') this.downloadStarted(message);
-      else if (message.type === 'motion_status') {
+      else if (message.type === 'motion_status' || message.type === 'manual_recording') {
+        const wasManual = this.manual && this.manual !== 'idle';
+        this.manual = message.manual_recording ?? this.manual;
+        if (message.type === 'manual_recording') {
+          this.manualPending = false;
+          this.manualError = message.error || '';
+        }
+        const finishedManual = wasManual && this.manual === 'idle';
+        if (finishedManual && message.recorder_error) this.manualError = message.recorder_error;
         if (this.formatting && message.sd?.state !== 'formatting' && message.format_result) {
           // The camera clears format_result when a format starts, so its return marks the end.
           this.formatting = false;
@@ -361,9 +372,23 @@ function defineElements() {
           if (card) card.textContent = cardText(message.sd);
         }
         // Refresh once a clip finishes so it appears with its final length.
-        if (this.recording && !message.recording && this.list) this.request(this.list.offset || 0);
+        if (((this.recording && !message.recording) || finishedManual) && this.list) this.request(finishedManual ? 0 : this.list.offset || 0);
         this.recording = Boolean(message.recording);
+        this.updateRecordingActions();
       }
+    }
+    updateRecordingActions() {
+      const record = this.shadowRoot.querySelector('.record');
+      if (!record) return;
+      const active = this.manual === 'active', stopping = this.manual === 'stopping';
+      const card = this.list.sd?.state;
+      record.hidden = this.manual === null;
+      record.disabled = this.manualPending || stopping || this.formatting || (!active && card !== 'mounted');
+      record.textContent = active ? 'Stop recording' : 'Start recording';
+      this.shadowRoot.querySelector('.manual-status').textContent = this.manualError ||
+        (stopping ? 'Finalizing recording…' : active ? 'Manual recording · motion analysis paused' : '');
+      this.shadowRoot.querySelector('.format').disabled = active || stopping || this.manualPending || this.formatting ||
+        Boolean(this.transfer) || !['mounted', 'error'].includes(card);
     }
     request(offset = 0) { command(this, { op: 'recordings', offset }); }
     confirmFormat() {
@@ -534,7 +559,9 @@ function defineElements() {
         dialog{background:#17201a;color:#e4eadd;border:1px solid #8c4a3d;border-radius:10px;padding:22px;width:min(440px,calc(100vw - 32px))}dialog::backdrop{background:#000b}
         dialog h3{color:#ffb1a6;font-size:18px}dialog p{line-height:1.6;color:#d0dcc6;margin:0 0 18px}button.erase{background:#c4473a;border-color:#c4473a;color:#fff}
         @media(max-width:600px){li{grid-template-columns:1fr}li .actions button{flex:1;min-width:0}header .actions{width:100%}}
-      </style><section><header><div><h2>Recordings</h2><p class="muted card"></p></div><div class="actions"><button type="button" class="secondary refresh">Refresh</button><button type="button" class="danger format">Format SD card</button></div></header>
+        .manual-status:empty{display:none}
+      </style><section><header><div><h2>Recordings</h2><p class="muted card"></p></div><div class="actions"><button type="button" class="record" hidden></button><button type="button" class="secondary refresh">Refresh</button><button type="button" class="danger format">Format SD card</button></div></header>
+      <p class="muted manual-status" aria-live="polite"></p>
       <dialog aria-labelledby="format-title" aria-describedby="format-text"><form method="dialog"><h3 id="format-title">Format the SD card?</h3><p id="format-text">This erases everything on the card, including all recordings and any other files, and creates a new FAT volume. It cannot be undone. Recording pauses until it finishes.</p><div class="actions"><button value="cancel" class="secondary keep">Cancel</button><button value="format" class="erase">Erase and format</button></div></form></dialog>
       <div class="transfer" hidden><progress value="0" max="1"></progress><div class="actions"><span class="transfer-text muted"></span><button type="button" class="secondary cancel">Cancel</button></div></div>
       <div class="player" hidden><img alt="Recorded clip"><input type="range" min="0" value="0" aria-label="Clip position"><div class="actions"><button type="button" class="play">Pause</button><button type="button" class="secondary save-clip">Download</button><button type="button" class="secondary close">Close</button><span class="time"></span></div></div>
@@ -542,9 +569,14 @@ function defineElements() {
       const root = this.shadowRoot;
       root.querySelector('.card').textContent = cardText(list.sd);
       root.querySelector('.refresh').onclick = () => this.request(list.offset || 0);
-      const format = root.querySelector('.format');
-      format.disabled = this.formatting || Boolean(this.transfer) || !['mounted', 'error'].includes(list.sd?.state);
-      format.onclick = () => this.confirmFormat();
+      root.querySelector('.format').onclick = () => this.confirmFormat();
+      root.querySelector('.record').onclick = () => {
+        this.manualPending = true;
+        this.manualError = '';
+        this.updateRecordingActions();
+        command(this, { op: this.manual === 'active' ? 'recording_stop' : 'recording_start' });
+      };
+      this.updateRecordingActions();
       if (this.transfer) {
         root.querySelector('.transfer').hidden = false;
         root.querySelector('.cancel').onclick = () => this.cancel();
@@ -597,7 +629,7 @@ function defineElements() {
       }
       if (!list.files.length) {
         const empty = document.createElement('li'); empty.className = 'muted';
-        empty.textContent = list.sd?.state === 'mounted' ? 'No recordings yet. Enable motion detection and SD card recording above.' : cardText(list.sd);
+        empty.textContent = list.sd?.state === 'mounted' ? 'No recordings yet.' : cardText(list.sd);
         items.append(empty);
       }
       const pages = root.querySelector('.pages');
