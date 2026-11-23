@@ -138,7 +138,10 @@ bool ensure_space(bool overwrite) {
     { Guard guard(state_lock); active = active_clip; }
     for (const auto &clip : all_clips()) {
         if (clip == active) continue;
-        if (remove_clip(clip)) ESP_LOGI(TAG, "Card full: deleted oldest clip %s", clip.c_str());
+        if (remove_clip(clip)) {
+            diagnostic_event("warning", "SD space low; oldest recording deleted");
+            ESP_LOGI(TAG, "Card full: deleted oldest clip %s", clip.c_str());
+        }
         if (!sd_card::space(total, free) || free >= reserve) return free >= reserve;
     }
     return false;
@@ -179,6 +182,7 @@ public:
             Guard guard(state_lock);
             active_clip = name_; clip_started = first.time; clip_frames = 0; last_error.clear();
         }
+        diagnostic_eventf("info", "Recording started: %ux%u", unsigned(first.width), unsigned(first.height));
         ESP_LOGI(TAG, "Recording %s at %ux%u", name_.c_str(), first.width, first.height);
         return true;
     }
@@ -208,6 +212,7 @@ public:
         // Spread the measured span over the frame count; frame times mark starts.
         const uint64_t span = frames > 1 ? uint64_t(last_ - first_) * frames / (frames - 1) : kSecond / 10;
         const bool ok = avi_.close(span);
+        diagnostic_eventf(ok ? "info" : "error", "Recording closed: %lu frames; %.1f s; success=%d", (unsigned long)frames, span / 1e6, int(ok));
         ESP_LOGI(TAG, "Closed %s: %lu frames, %.1f s%s", name_.c_str(), (unsigned long)frames, span / 1e6, ok ? "" : " (write error)");
         if (!ok) set_error("Could not finalize the recording on the SD card");
         finish();

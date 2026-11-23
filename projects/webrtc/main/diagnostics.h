@@ -6,3 +6,5 @@ void diagnostic_event(const char *level, const char *message);
 cJSON *diagnostic_logs(uint32_t after);
 
 void diagnostic_boot();
+
+void diagnostic_eventf(const char *level, const char *format, ...) __attribute__((format(printf, 2, 3)));

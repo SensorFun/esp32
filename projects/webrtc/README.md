@@ -407,7 +407,7 @@ The camera retains 48 entries in RAM; reboot clears this history. Entries contai
 uptime, severity, and a repeat count. Text is limited to 127 bytes. Each response
 contains at most four entries, with a firmware limit of one response every two
 seconds (under 1.5 KB per response). The viewer polls every 2.5 seconds while
-the page is visible and connected, retains 200 displayed lines, and reports gaps
+the page is visible and connected, retains 1,000 displayed lines, and reports gaps
 when older entries have expired. Pending controls take priority over log replies.
 Logs travel directly over the encrypted camera data channel; camera logs remain in the viewer.
 
@@ -425,3 +425,10 @@ read the dump partition using esptool `read-flash 0x3c0000 0x40000 core.bin`.
 Use ESP-IDF's `idf.py coredump-info` or `idf.py coredump-debug` with the matching
 project build to decode task stacks. Dumps contain memory and should be treated
 as private diagnostic files.
+
+Downloaded diagnostic reports include board, firmware version, ELF hash, ESP-IDF
+version, reset reason, and browser export time. Main events include Wi-Fi
+disconnect reason/RSSI, signaling and peer failures, settings saves/resets,
+recording start/stop/errors, SD mount/format failures and space reclamation.
+Internal RAM free/largest/minimum and Wi-Fi RSSI are sampled once per minute.
+Device history remains bounded to 48 events, and reports identify history gaps.

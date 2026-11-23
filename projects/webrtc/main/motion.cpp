@@ -1,3 +1,4 @@
+#include "diagnostics.h"
 #include "motion.h"
 #include "optical_flow.h"
 #include "recorder.h"
@@ -240,6 +241,7 @@ void use(const MotionSettings &next) {
 cJSON *save(const MotionSettings &next) {
     if (store(next) != ESP_OK) return describe("Could not save motion settings");
     use(next);
+    diagnostic_eventf("info", "Motion settings saved: detection=%d recording=%d", int(next.enabled), int(next.record));
     ESP_LOGI(TAG, "Settings saved: detection %s, recording %s", next.enabled ? "on" : "off", next.record ? "on" : "off");
     return describe(nullptr, true);
 }

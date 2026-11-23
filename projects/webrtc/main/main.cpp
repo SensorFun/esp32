@@ -1,6 +1,7 @@
 #include "common/application.h"
 #include "diagnostics.h"
 #include "esp_system.h"
+#include "esp_app_desc.h"
 #include "provisioning.h"
 #include "local_http.h"
 #include "tls_identity.h"
@@ -25,6 +26,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
+#include "esp_event.h"
 #include "esp_heap_caps.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -120,6 +122,8 @@ struct Lock {
 int send_text(cJSON *json) {
     if (!json) return -1;
     const cJSON *type = cJSON_GetObjectItemCaseSensitive(json, "type");
+    const cJSON *error = cJSON_GetObjectItemCaseSensitive(json, "error");
+    if (cJSON_IsString(error)) diagnostic_event("error", error->valuestring);
     // Telemetry can wait; never crowd out a setting acknowledgement while
     // the reliable channel is waiting for memory or SCTP send capacity.
     if (cJSON_IsString(type) && !strcmp(type->valuestring, "motion_status") && !replies.empty()) {
@@ -438,9 +442,15 @@ void start_server() {
     ESP_LOGI(TAG, "Local camera ready: https://" IPSTR "/", IP2STR(&ip.ip));
 }
 void worker(common::Application &app) {
+    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED,
+        [](void *, esp_event_base_t, int32_t, void *data) {
+            const auto *event = static_cast<wifi_event_sta_disconnected_t *>(data);
+            diagnostic_eventf("warning", "Wi-Fi disconnected: reason=%u RSSI=%d", unsigned(event->reason), int(event->rssi));
+        }, nullptr));
     char boot[80];
     snprintf(boot, sizeof(boot), "Application started; reset reason %d", int(esp_reset_reason()));
     diagnostic_event("info", boot);
+    diagnostic_eventf("info", "Board %s; firmware %s; IDF %s", app.board().name, esp_app_get_description()->version, esp_app_get_description()->idf_ver);
     switch (esp_reset_reason()) {
     case ESP_RST_PANIC: diagnostic_event("error", "Previous boot ended in a panic"); break;
     case ESP_RST_INT_WDT:
@@ -519,6 +529,12 @@ void worker(common::Application &app) {
             if (now - last_heap_report >= 60000000) {
                 // Wi-Fi, DMA and TLS sessions compete for internal RAM.
                 last_heap_report = now;
+                wifi_ap_record_t ap{};
+                esp_wifi_sta_get_ap_info(&ap);
+                diagnostic_eventf("info", "Health RAM free=%u largest=%u minimum=%u; Wi-Fi RSSI=%d dBm",
+                    unsigned(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+                    unsigned(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+                    unsigned(heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)), int(ap.rssi));
                 ESP_LOGI(TAG, "Internal RAM: free %u, largest %u, lowest %u",
                          unsigned(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
                          unsigned(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
@@ -542,7 +558,18 @@ void worker(common::Application &app) {
                         if (now >= next_logs && replies.size() < 4) {
                             const cJSON *after = cJSON_GetObjectItemCaseSensitive(request, "after");
                             const double cursor = cJSON_IsNumber(after) ? after->valuedouble : 0;
-                            send_text(diagnostic_logs(cursor >= 0 && cursor <= UINT32_MAX ? uint32_t(cursor) : 0));
+                            cJSON *logs = diagnostic_logs(cursor >= 0 && cursor <= UINT32_MAX ? uint32_t(cursor) : 0);
+                            if (cursor == 0) {
+                                const auto *description = esp_app_get_description();
+                                cJSON_AddStringToObject(logs, "board", app.board().name);
+                                cJSON_AddStringToObject(logs, "firmware", description->version);
+                                cJSON_AddStringToObject(logs, "idf", description->idf_ver);
+                                char hash[65];
+                                for (unsigned i = 0; i < 32; ++i) snprintf(hash + 2 * i, 3, "%02x", description->app_elf_sha256[i]);
+                                cJSON_AddStringToObject(logs, "elf_sha256", hash);
+                                cJSON_AddNumberToObject(logs, "reset_reason", int(esp_reset_reason()));
+                            }
+                            send_text(logs);
                             next_logs = now + 2000000;
                         }
                     }

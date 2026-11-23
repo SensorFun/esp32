@@ -1,3 +1,4 @@
+#include "diagnostics.h"
 #include "camera_controls.h"
 #include "camera_frames.h"
 #include "camera_timing.h"
@@ -431,6 +432,7 @@ cJSON *camera_command(const cJSON *request) {
                 if (reset || store_values(values) == ESP_OK) {
                     cJSON_Delete(previous); cJSON_Delete(defaults);
                     cJSON *reply = camera_settings();
+                    diagnostic_event("info", reset ? "Camera defaults applied" : "Camera settings saved");
                     cJSON_AddBoolToObject(reply, reset ? "reset" : "saved", true);
                     return reply;
                 }
@@ -442,6 +444,7 @@ cJSON *camera_command(const cJSON *request) {
             }
             cJSON_Delete(previous);
         }
+        diagnostic_event("error", error);
         cJSON_Delete(defaults);
         cJSON *reply = cJSON_CreateObject(); cJSON_AddStringToObject(reply, "type", "error"); cJSON_AddStringToObject(reply, "error", error); return reply;
     }

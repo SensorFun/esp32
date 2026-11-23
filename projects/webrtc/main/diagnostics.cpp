@@ -6,6 +6,7 @@
 #endif
 #include "freertos/FreeRTOS.h"
 #include <cstdio>
+#include <cstdarg>
 #include <cstring>
 
 namespace {
@@ -83,4 +84,13 @@ void diagnostic_boot() {
         diagnostic_event("info", text);
     }
 #endif
+}
+
+void diagnostic_eventf(const char *level, const char *format, ...) {
+    char text[128];
+    va_list args;
+    va_start(args, format);
+    vsnprintf(text, sizeof(text), format, args);
+    va_end(args);
+    diagnostic_event(level, text);
 }

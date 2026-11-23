@@ -1,4 +1,5 @@
 #include "sd_card.h"
+#include "diagnostics.h"
 #include "esp_log.h"
 #include <atomic>
 
@@ -46,6 +47,7 @@ esp_err_t mount_card(bool format_if_needed) {
         // Retries run every few seconds with no card inserted; report the first
         // failure only, and keep the driver quiet afterwards.
         if (!quiet) {
+            diagnostic_eventf("warning", "SD unavailable: %s", esp_err_to_name(err));
             ESP_LOGW(TAG, "No usable SD card (%s); motion is still detected but not recorded", esp_err_to_name(err));
             esp_log_level_set("sdmmc_common", ESP_LOG_NONE);
             esp_log_level_set("sdmmc_init", ESP_LOG_NONE);
@@ -58,6 +60,7 @@ esp_err_t mount_card(bool format_if_needed) {
     }
     ESP_LOGI(TAG, "Mounted %s card, %llu MB", card->cid.name,
              (unsigned long long)(uint64_t(card->csd.capacity) * card->csd.sector_size / (1024 * 1024)));
+    diagnostic_eventf("info", "SD mounted: %llu MB", (unsigned long long)(uint64_t(card->csd.capacity) * card->csd.sector_size / (1024 * 1024)));
     current = State::mounted;
     quiet = false;
     return ESP_OK;
@@ -75,9 +78,11 @@ esp_err_t mount() {
 
 esp_err_t format() {
 #if defined(SD_MMC_D0_GPIO_NUM)
+    diagnostic_event("warning", "SD formatting started");
     current = State::formatting;
     esp_err_t err = card ? ESP_OK : mount_card(true);
     if (err == ESP_OK) err = esp_vfs_fat_sdcard_format(kRoot, card);
+    diagnostic_eventf(err == ESP_OK ? "info" : "error", "SD format result: %s", esp_err_to_name(err));
     if (err == ESP_OK) ESP_LOGI(TAG, "SD card formatted");
     else ESP_LOGE(TAG, "SD card format failed: %s", esp_err_to_name(err));
     current = card ? State::mounted : err == ESP_FAIL ? State::error : State::absent;
@@ -93,6 +98,7 @@ void unmount(State reason) {
         esp_vfs_fat_sdcard_unmount(kRoot, card);
         card = nullptr;
     }
+    diagnostic_event("warning", "SD unmounted");
     current = reason;
 #else
     (void)reason;

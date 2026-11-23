@@ -10,7 +10,8 @@ class CameraLogs extends HTMLElement {
       p{line-height:1.5;color:#b7c9ab}button:focus-visible{outline:2px solid white;outline-offset:3px}
     </style><section><h2>Diagnostics</h2><p>Recent main events from this boot. Updates while connected.</p><button type="button">Download logs</button><p role="status">Connect a camera to view logs.</p><pre aria-label="Camera diagnostic events"></pre></section>`;
     this.shadowRoot.querySelector('button').onclick = () => {
-      const url = URL.createObjectURL(new Blob([this.lines.join('\n')], { type: 'text/plain' }));
+      const report = ['Camera diagnostics', `Exported ${new Date().toISOString()}`, ...this.lines].join('\n');
+      const url = URL.createObjectURL(new Blob([report], { type: 'text/plain' }));
       const link = document.createElement('a'); link.href = url; link.download = 'camera-diagnostics.txt'; link.click();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
     };
@@ -28,19 +29,20 @@ class CameraLogs extends HTMLElement {
   }
   recordBrowser(message) {
     this.lines.push(`[Browser ${new Date().toISOString()}] ${message}`);
-    this.lines = this.lines.slice(-200);
+    this.lines = this.lines.slice(-1000);
     this.shadowRoot.querySelector('pre').textContent = this.lines.join('\n');
   }
   reset() { if (this.online) this.recordBrowser('Camera connection closed. Final device events may be unavailable.'); this.connected = false; }
   handle(data) {
     if (data.type !== 'logs') return;
+    if (data.board) this.recordBrowser(`Board ${data.board}; firmware ${data.firmware}; IDF ${data.idf}; ELF ${data.elf_sha256}; reset reason ${data.reset_reason}`);
     if (data.gap) this.lines.push('Some older events expired from the camera buffer.');
     for (const entry of data.entries || []) {
       if (entry.id <= this.cursor) continue;
       this.cursor = entry.id;
       this.lines.push(`[${(entry.ms / 1000).toFixed(1)}s] ${entry.level}: ${entry.message}${entry.repeats > 1 ? ` (repeated ${entry.repeats} times)` : ''}`);
     }
-    this.lines = this.lines.slice(-200);
+    this.lines = this.lines.slice(-1000);
     const output = this.shadowRoot.querySelector('pre');
     const bottom = output.scrollHeight - output.scrollTop - output.clientHeight < 30;
     output.textContent = this.lines.join('\n');
