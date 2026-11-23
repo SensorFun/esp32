@@ -18,7 +18,7 @@ import urllib.request
 
 import serial
 from playwright.sync_api import sync_playwright
-from camera_panel import allowed_values, check_settings_panel, set_control
+from camera_panel import allowed_values, check_settings_panel, set_control, slide
 
 
 class CameraConsole(serial.Serial):
@@ -257,6 +257,16 @@ def main():
                 set_control(panel, control, value)
                 wait_js(page, "v=>window.lastResponse?.controls?.some(c=>c.name===v.name&&c.value===v.value)", arg={'name': control['name'], 'value': value}, timeout=10000)
         print('Every list value and switch state applied through the GUI and read back')
+        # Sliders: top and bottom stops, then the exact original typed back in.
+        for control in current['controls']:
+            if control['kind'] != 'range':
+                continue
+            for position in (10, 0):
+                slide(page, panel, control, position, lambda expression, arg: wait_js(page, expression, arg=arg, timeout=10000))
+            page.evaluate('window.lastResponse=null')
+            set_control(panel, control, control['value'])
+            wait_js(page, "v=>window.lastResponse?.controls?.some(c=>c.name===v.name&&c.value===v.value)", arg={'name': control['name'], 'value': control['value']}, timeout=10000)
+        print('Every slider reached its top and bottom stops; exact values restored')
         stats = page.evaluate("async()=>Array.from((await pc.getStats()).values()).filter(s=>s.type==='transport').map(s=>({dtlsState:s.dtlsState,tlsVersion:s.tlsVersion,dtlsCipher:s.dtlsCipher}))")
         assert any(s['dtlsState'] == 'connected' for s in stats), stats
         print('WebRTC transport:', stats)

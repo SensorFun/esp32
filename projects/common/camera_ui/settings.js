@@ -2,15 +2,27 @@
 // the React website imports it. The camera describes its own controls (from
 // config/frame_grabber/sensors/<sensor>.yaml): "switch" controls are On/Off
 // switches, "list" controls offer their labelled values, and only "range"
-// controls with many values use a number field.
+// controls with many values use a 10-step slider with an exact number beside it.
 class CameraSettings extends HTMLElement {
   constructor() { super(); this.attachShadow({ mode: 'open' }); }
   set settings(value) {
     this.value = value;
-    if (this.dirty && !value.saved && !value.reset) return;
+    if (this.dirty && !value.saved && !value.reset) { this.sync(value); return; }
     this.dirty = false; this.pending = false;
     this.render(value.reset ? 'Defaults applied. Select Save to keep them after reboot.' :
       value.saved ? 'Settings saved on camera.' : 'Changes take effect immediately. Select Save to keep them after reboot.');
+  }
+  // Show what the camera applied during live edits: a driver may clamp a
+  // value (the OV3660 limits AEC to the current frame length). The field
+  // being edited keeps the user's text.
+  sync(value) {
+    const active = this.shadowRoot.activeElement;
+    for (const c of value.controls || []) {
+      const input = this.shadowRoot.querySelector(`[name="${c.name}"]`);
+      if (!input || input === active) continue;
+      if (input.type === 'checkbox') input.checked = c.value === 1;
+      else if (input.value !== String(c.value)) { input.value = c.value; input.dispatchEvent(new Event('sync')); }
+    }
   }
   set error(message) {
     this.shadowRoot.querySelectorAll('button').forEach(button => { button.disabled = false; });
@@ -26,6 +38,8 @@ class CameraSettings extends HTMLElement {
       h2{font-size:20px;font-weight:500;margin:0 0 20px}.fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));gap:16px}
       label{display:flex;flex-direction:column;gap:7px;min-width:0}label.counter{flex-direction:row;align-items:center;justify-content:space-between;gap:12px;align-self:end}label.counter span{min-width:0;overflow-wrap:anywhere}label.counter input{width:88px;flex:none;text-align:right;font-variant-numeric:tabular-nums}input,select,button{font:inherit;min-height:44px;border-radius:6px;padding:10px;border:1px solid #415335}
       label.select-row{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:12px}
+      label.slider-row .slider{display:flex;align-items:center;gap:12px;min-width:0}label.slider-row .slider input[type=number]{width:88px;flex:none;text-align:right;font-variant-numeric:tabular-nums}
+      input[type=range]{flex:1;min-width:0;padding:0;border:none;background:transparent;accent-color:#00d4cb;cursor:pointer}
       label.switch-row{flex-direction:row;align-items:center;justify-content:space-between;gap:12px;min-height:44px;cursor:pointer;align-self:end}label.switch-row span{min-width:0;overflow-wrap:anywhere}
       input[type=checkbox]{appearance:none;-webkit-appearance:none;flex:none;width:52px;min-width:52px;height:30px;min-height:30px;padding:0;margin:0;border-radius:15px;background:#2a352c;position:relative;cursor:pointer;transition:background .15s}
       input[type=checkbox]::before{content:"";position:absolute;top:3px;left:3px;width:22px;height:22px;border-radius:50%;background:#d8e8cb;transition:transform .15s}
@@ -39,7 +53,10 @@ class CameraSettings extends HTMLElement {
     const fields = this.shadowRoot.querySelector('.fields');
     const valueOf = control => control.type === 'checkbox' ? Number(control.checked) :
       control.name === 'timing_profile' ? control.value : Number(control.value);
-    const add = (name, title, control) => {
+    // Range sliders move in 10 steps: 11 evenly spaced values from min to max.
+    const positions = c => Array.from({ length: 11 }, (_, i) => Math.round(c.min + i * (c.max - c.min) / 10));
+    const nearest = (stops, value) => stops.reduce((best, stop, i) => Math.abs(stop - value) < Math.abs(stops[best] - value) ? i : best, 0);
+    const add = (name, title, control, slider) => {
       const label = document.createElement('label');
       const text = document.createElement('span'); text.textContent = title;
       // Number fields hold one to four digits: keep them on the label's line.
@@ -47,7 +64,19 @@ class CameraSettings extends HTMLElement {
       if (control.type === 'checkbox') label.className = 'switch-row';
       if (control.tagName === 'SELECT') label.className = 'select-row';
       control.name = name; control.setAttribute('aria-label', title);
-      label.append(text, control); fields.append(label);
+      if (slider) {
+        // The slider picks one of the stops; the number field takes any exact value.
+        label.className = 'slider-row';
+        const row = document.createElement('div'); row.className = 'slider';
+        const stops = positions({ min: Number(control.min), max: Number(control.max) });
+        const show = () => { slider.setAttribute('aria-valuetext', control.value); };
+        slider.addEventListener('input', () => { control.value = stops[slider.value]; show(); control.dispatchEvent(new Event('input')); });
+        const follow = () => { if (control.value !== '') slider.value = nearest(stops, Number(control.value)); show(); };
+        control.addEventListener('input', follow); control.addEventListener('sync', follow);
+        slider.value = nearest(stops, Number(control.value)); show();
+        row.append(slider, control); label.append(text, row);
+      } else label.append(text, control);
+      fields.append(label);
       control.addEventListener('input', () => {
         this.dirty = true;
         if (!control.checkValidity() || control.value === '') return;
@@ -75,7 +104,9 @@ class CameraSettings extends HTMLElement {
         select(c.name, title, c.options, c.value);
       } else {
         const input = document.createElement('input'); input.type = 'number'; input.min = c.min; input.max = c.max; input.step = 1; input.value = c.value; input.required = true;
-        add(c.name, title, input);
+        const slider = document.createElement('input'); slider.type = 'range'; slider.min = 0; slider.max = 10; slider.step = 1;
+        slider.setAttribute('aria-label', title);
+        add(c.name, title, input, slider);
       }
     }
     this.shadowRoot.querySelector('[role=status]').textContent = message;
@@ -90,7 +121,7 @@ class CameraSettings extends HTMLElement {
     this.shadowRoot.querySelector('form').onsubmit = event => {
       event.preventDefault();
       const settings = {};
-      for (const input of this.shadowRoot.querySelectorAll('input:not(:disabled),select')) settings[input.name] = valueOf(input);
+      for (const input of this.shadowRoot.querySelectorAll('input[name]:not(:disabled),select')) settings[input.name] = valueOf(input);
       send({ op: 'apply', settings });
     };
     this.shadowRoot.querySelectorAll('button[type=button]').forEach(button => { button.onclick = () => send({ op: 'reset_defaults' }); });

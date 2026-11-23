@@ -63,7 +63,7 @@ class CameraProfileTests(unittest.TestCase):
         self.assertIn('{"aec_value", Kind::range, 300, 0, 1536, nullptr, 0}', ov3660)
         # OV2640 uses the 2x-128x scale; OV3660 takes a raw ceiling (reset value 248).
         self.assertIn('{"gain_ceiling", Kind::list, 0, 0, 6, options_ov2640_gain_ceiling, 7}', ov2640)
-        self.assertIn('{"gain_ceiling", Kind::range, 248, 0, 511, nullptr, 0}', ov3660)
+        self.assertIn('{"gain_ceiling", Kind::range, 248, 0, 255, nullptr, 0}', ov3660)
         self.assertIn('{"agc_gain", Kind::range, 10, 0, 30, nullptr, 0}', gc0308)
         self.assertIn('{"sharpness", Kind::list, 0, -2, 2,', gc0308)
 

@@ -103,7 +103,10 @@ for controls with many values: JPEG quality, AGC gain, AEC value and the
 OV3660's raw gain ceiling). Several OV3660 ranges are wider than the OV2640's
 (brightness/contrast -3 to 3, saturation -4 to 4, AE level -5 to 5, AGC gain
 0-64, AEC value 0-1536); its gain ceiling is a raw register value with the
-driver's reset value 248 as the default, not the OV2640's 2x-128x scale.
+driver's reset value 248 as the default, not the OV2640's 2x-128x scale. It is
+limited to 0-255 because the driver keeps it in an 8-bit status field. Each
+number field has a 10-step slider beside it that moves between 11 evenly spaced
+values from minimum to maximum; the number field still accepts any exact value.
 CMake generates the tables from the YAML and rejects unknown controls,
 malformed value sets and defaults outside them. GC gain defaults to 10
 (hardware global gain 0x15, near the driver default 0x14); 0 would write zero

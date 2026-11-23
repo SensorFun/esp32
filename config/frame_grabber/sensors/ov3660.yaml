@@ -18,7 +18,9 @@ controls:
   jpeg_quality: {default: 12, range: [2, 63]}
   # A raw AEC gain ceiling register (0x3A18/0x3A19, 1/16x steps), not the
   # OV2640's 2x-128x scale. 248 (about 15.5x) is the driver's reset value.
-  gain_ceiling: {default: 248, range: [0, 511]}
+  # The register (and CameraWebServer) allow more, but the driver keeps the
+  # value in an 8-bit status field, so above 255 it reads back and saves wrong.
+  gain_ceiling: {default: 248, range: [0, 255]}
   colorbar: {default: 0, switch: true}
   horizontal_mirror: {default: 0, switch: true}
   vertical_flip: {default: 0, switch: true}
