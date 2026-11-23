@@ -93,13 +93,27 @@ assert.equal(context.viewer.verified('00'.repeat(32)), false);
         subprocess.run(['node', '--input-type=module', '-e', script], check=True)
 
     def test_every_viewer_must_authenticate(self):
-        # Local sessions used to skip the password; the gate must cover all peers.
         main = (ROOT / 'projects/webrtc/main/main.cpp').read_text()
-        self.assertIn('send_text(peer_auth.begin(peer_offer, answer));', main)
-        self.assertIn('if (!peer_auth.allowed()) {', main)
+        local_peer = main[main.index('esp_err_t session('):main.index('void remote_events()')]
+        remote_peer = main[main.index('void remote_events()'):main.index('void start_server()')]
+        for peer in (local_peer, remote_peer):
+            self.assertRegex(peer, r'cfg\.on_channel_open\s*=\s*on_channel;')
+            self.assertRegex(peer, r'cfg\.on_data\s*=\s*on_data;')
+        channel_open = main[main.index('int on_channel('):main.index('int on_data(')]
+        self.assertIn('send_text(peer_auth.begin(peer_offer, answer));', channel_open)
+        self.assertNotIn('remote_peer', channel_open)
+
+        # Both peers must verify the password and return before commands are queued.
+        receive = main[main.index('int on_data('):main.index('void close_peer() {')]
+        self.assertNotIn('remote_peer', receive)
+        before_enqueue = receive[:receive.index('commands.emplace_back(')]
+        self.assertRegex(
+            before_enqueue,
+            r'if\s*\(\s*!peer_auth\.allowed\(\)\s*\)\s*\{\s*'
+            r'send_text\(peer_auth\.verify\(request\)\);\s*'
+            r'cJSON_Delete\(request\);\s*return 0;\s*\}',
+        )
         self.assertIn('const bool viewer = channel_ready && peer_auth.allowed();', main)
-        self.assertNotIn('remote_peer && !', main)
-        self.assertNotIn('!remote_peer ||', main)
         self.assertNotIn('httpd_start(', main, 'The viewer is served over HTTPS only')
         viewer = (ROOT / 'projects/webrtc/main/viewer.html').read_text()
         self.assertIn('type="password"', viewer)
