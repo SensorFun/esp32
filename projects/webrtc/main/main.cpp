@@ -1,6 +1,7 @@
 #include "common/application.h"
 #include "diagnostics.h"
 #include "esp_system.h"
+#include "esp_attr.h"
 #include "esp_app_desc.h"
 #include "esp_core_dump.h"
 #include "esp_flash.h"
@@ -124,6 +125,16 @@ struct Transfer {
 } transfer;
 uint32_t transfer_ids = 0;
 bool playback_active = false, media_paused = false;
+// Board restarts for a camera that would not recover. Kept in RTC memory
+// across software resets so a sensor that never returns cannot cause an
+// endless reboot loop; cleared by power-on and by the first good frame.
+RTC_NOINIT_ATTR uint32_t camera_restart_magic, camera_restarts;
+constexpr uint32_t kCameraRestartMagic = 0x43414d52;
+constexpr uint32_t kMaxCameraRestarts = 2;
+uint32_t &camera_restart_count() {
+    if (camera_restart_magic != kCameraRestartMagic) { camera_restart_magic = kCameraRestartMagic; camera_restarts = 0; }
+    return camera_restarts;
+}
 void pause_media(bool paused) {
     if (paused == media_paused) return;
     motion_pause(paused);
@@ -423,7 +434,14 @@ void remote_events() {
             if (remote_peer && !peer_auth.allowed()) close_peer();
             continue;
         }
-        if (event.type == ESP_PEER_SIGNALING_MSG_BYE) { if (remote_peer) close_peer(); continue; }
+        if (event.type == ESP_PEER_SIGNALING_MSG_BYE) {
+            // Signaling is shared by whoever joins the room next. Once the
+            // viewer has proven the password, only its own peer connection
+            // (channel close, failure or heartbeat timeout) ends the session,
+            // so a refused second viewer's bye cannot disconnect it.
+            if (remote_peer && !peer_auth.allowed()) close_peer();
+            continue;
+        }
         if (event.type == 1 && !remote_peer) {
             if (peer) { remote_send(4, "busy"); continue; }
             if (!RemoteAuth::configured()) { remote_send(4, "password_not_configured"); continue; }
@@ -526,6 +544,36 @@ void worker(common::Application &app) {
     diagnostic_boot();
     bool network_ready = false;
     bool camera_ready = false, capture_fault = false;
+    if (esp_reset_reason() == ESP_RST_POWERON || esp_reset_reason() == ESP_RST_BROWNOUT) camera_restart_count() = 0;
+    // Recovery after a failed start or a stalled capture: retry after 2 s and
+    // 10 s, cutting sensor power each time; then restart the board (limited by
+    // kMaxCameraRestarts); then keep retrying once a minute.
+    int recovery_attempts = 0;
+    int64_t next_recovery = 0;
+    bool camera_proven = false, fault_reported = false, settings_pending = false;
+    const auto camera_failed = [&](esp_err_t err, const char *what) {
+        capture_fault = true;
+        ++recovery_attempts;
+        diagnostic_eventf("error", "%s failed: %s (0x%x)", what, esp_err_to_name(err), unsigned(err));
+        ESP_LOGE(TAG, "%s failed: %s (attempt %d)", what, esp_err_to_name(err), recovery_attempts);
+        const int64_t now = esp_timer_get_time();
+        if (recovery_attempts < 3) { next_recovery = now + (recovery_attempts == 1 ? 2000000 : 10000000); return; }
+        uint32_t &restarts = camera_restart_count();
+        if (restarts < kMaxCameraRestarts) {
+            ++restarts;
+            diagnostic_event("error", "Camera did not recover; restarting the board");
+            ESP_LOGE(TAG, "Camera did not recover; restarting (%u of %u)", unsigned(restarts), unsigned(kMaxCameraRestarts));
+            vTaskDelay(pdMS_TO_TICKS(100));
+            esp_restart();
+        }
+        if (recovery_attempts == 3) diagnostic_event("error", "Camera restart limit reached; retrying once a minute");
+        next_recovery = now + 60000000;
+    };
+    const auto frame_ok = [&] {
+        if (camera_proven) return;
+        camera_proven = true;
+        camera_restart_count() = 0;
+    };
     camera_fb_t *fb = nullptr;
     size_t offset = 0;
     uint32_t sequence = 0;
@@ -537,6 +585,18 @@ void worker(common::Application &app) {
     uint8_t packet[CHUNK + 16];
     int64_t next_app = 0;
     for (;;) {
+        if (camera_ready && capture_fault && esp_timer_get_time() >= next_recovery) {
+            // A faulted camera holds no framebuffer: the stall that caused it
+            // had none, and capture stays off while faulted.
+            diagnostic_eventf("warning", "Camera recovery attempt %d with sensor power cycle", recovery_attempts + 1);
+            const esp_err_t recovered = camera_recover(true);
+            if (recovered == ESP_OK) {
+                capture_fault = false;
+                recovery_attempts = 0;
+                settings_pending = true;
+                diagnostic_event("info", "Camera recovered");
+            } else camera_failed(recovered, "Camera recovery");
+        }
         if (!provisioning_is_ready()) {
             if (network_ready) diagnostic_event("warning", "Wi-Fi unavailable");
             network_ready = false;
@@ -549,6 +609,7 @@ void worker(common::Application &app) {
             if (camera_ready && !capture_fault && camera_capture_idle(!camera_stream_images() && !motion_enabled && !recording) &&
                 (recorder_manual_frame_due() || (motion_enabled && motion_frame_due()))) {
                 if (camera_fb_t *frame = camera_frame_get()) {
+                    frame_ok();
                     if (recording) recorder_manual_feed(frame); else motion_feed(frame);
                     camera_frame_return(frame);
                 }
@@ -574,8 +635,11 @@ void worker(common::Application &app) {
                 vTaskDelay(pdMS_TO_TICKS(250));
                 started = camera_start();
             }
-            ESP_ERROR_CHECK(started); camera_ready = true;
-            diagnostic_event("info", "Camera initialized");
+            // Never abort: keep Wi-Fi, viewers, logs and core dump download
+            // reachable, and recover the camera on the schedule above.
+            camera_ready = true;
+            if (started == ESP_OK) diagnostic_event("info", "Camera initialized");
+            else camera_failed(started, "Camera initialization");
         }
         if (!server) start_server();
         if (!sntp_started) {
@@ -663,13 +727,24 @@ void worker(common::Application &app) {
                     else {
                         cJSON *error = cJSON_CreateObject();
                         cJSON_AddStringToObject(error, "type", "error");
-                        cJSON_AddStringToObject(error, "error", "Camera capture unavailable or paused. Close recorded video to resume; restart if recovery failed.");
+                        cJSON_AddStringToObject(error, "error", capture_fault
+                            ? "The camera sensor is not responding; recovery is in progress."
+                            : "Camera settings are paused during downloads and recorded video playback.");
                         send_text(error);
                     }
                     cJSON_Delete(request);
                 }
             }
             const bool viewer = channel_ready && peer_auth.allowed();
+            if (!capture_fault) fault_reported = false;
+            else if (viewer && !fault_reported) {
+                cJSON *error = cJSON_CreateObject();
+                cJSON_AddStringToObject(error, "type", "error");
+                cJSON_AddStringToObject(error, "error", "The camera sensor is not responding; recovery is in progress.");
+                send_text(error);
+                fault_reported = true;
+            }
+            if (viewer && settings_pending) { send_text(camera_settings()); settings_pending = false; }
             const auto manual = recorder_manual_state();
             if (viewer && now >= next_status) {
                 const bool overlay = manual == ManualRecording::idle && camera_stream_images() && motion_overlay_active();
@@ -802,6 +877,7 @@ void worker(common::Application &app) {
                 if (streaming) { offset = 0; ++sequence; last_progress = esp_timer_get_time(); }
                 if (fb) {
                     capture_stalled_since = 0;
+                    frame_ok();
                     if (recording) recorder_manual_feed(fb);
                     else if (manual == ManualRecording::idle) motion_feed(fb);
                 }
@@ -819,13 +895,9 @@ void worker(common::Application &app) {
                         if (viewer) send_text(camera_settings());
                     } else {
                         // A failed probe may free the driver and invalidate the
-                        // sensor pointer. Stop all capture and sensor commands.
-                        capture_fault = true;
-                        diagnostic_eventf("error", "Camera recovery failed: %s (0x%x); capture disabled", esp_err_to_name(recovered), unsigned(recovered));
-                        cJSON *error = cJSON_CreateObject();
-                        cJSON_AddStringToObject(error, "type", "error");
-                        cJSON_AddStringToObject(error, "error", "Camera capture unavailable or paused. Close recorded video to resume; restart if recovery failed.");
-                        send_text(error);
+                        // sensor pointer; capture and sensor commands stay off
+                        // until a scheduled recovery succeeds.
+                        camera_failed(recovered, "Camera capture recovery");
                     }
                 }
                 if (fb && !streaming) { camera_frame_return(fb); fb = nullptr; }

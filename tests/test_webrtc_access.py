@@ -119,3 +119,23 @@ assert.equal(context.viewer.verified('00'.repeat(32)), false);
         viewer = (ROOT / 'projects/webrtc/main/viewer.html').read_text()
         self.assertIn('type="password"', viewer)
         self.assertNotIn('No pairing or access key', viewer)
+
+    def test_signaling_bye_cannot_end_an_authenticated_session(self):
+        # After the viewer's socket drops, a second viewer can join the room and
+        # be refused as busy; its bye must not close the authenticated session.
+        main = (ROOT / 'projects/webrtc/main/main.cpp').read_text()
+        remote = main[main.index('void remote_events()'):main.index('void start_server()')]
+        bye = remote[remote.index('ESP_PEER_SIGNALING_MSG_BYE'):]
+        bye = bye[:bye.index('continue;')]
+        self.assertRegex(bye, r'if\s*\(\s*remote_peer\s*&&\s*!peer_auth\.allowed\(\)\s*\)\s*close_peer\(\);')
+        # Only a browser that started a session (the camera answered ready) sends bye.
+        site = (ROOT / 'site/src/projects/webrtc/RemoteCamera.jsx').read_text()
+        self.assertNotIn('notifyPeer: true', site)
+        self.assertEqual(site.count('notifyPeer: Boolean(session.peer)'), 2)
+
+    def test_camera_failures_never_abort(self):
+        main = (ROOT / 'projects/webrtc/main/main.cpp').read_text()
+        self.assertNotIn('ESP_ERROR_CHECK(started)', main)
+        self.assertNotIn('ESP_ERROR_CHECK(camera_recover', main)
+        self.assertIn('camera_recover(true)', main)
+        self.assertIn('kMaxCameraRestarts', main)

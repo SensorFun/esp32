@@ -82,7 +82,7 @@ export function RemoteCamera({ onSessionState }) {
     connection.current = null;
     if (session) {
       clearInterval(session.heartbeat); clearTimeout(session.timeout);
-      session.socket?.close({ notifyPeer: true }); session.channel?.close(); session.peer?.close();
+      session.socket?.close({ notifyPeer: Boolean(session.peer) }); session.channel?.close(); session.peer?.close();
       if (session.url) URL.revokeObjectURL(session.url);
     }
     logs.current?.recordBrowser(message);
@@ -90,7 +90,7 @@ export function RemoteCamera({ onSessionState }) {
     for (const view of motionViews()) view.reset();
     if (image.current) image.current.removeAttribute('src');
   }
-  useEffect(() => () => { generation.current++; onSessionState('idle'); const session = connection.current; if (session) { clearInterval(session.heartbeat); clearTimeout(session.timeout); session.socket?.close({ notifyPeer: true }); session.peer?.close(); if (session.url) URL.revokeObjectURL(session.url); } }, []);
+  useEffect(() => () => { generation.current++; onSessionState('idle'); const session = connection.current; if (session) { clearInterval(session.heartbeat); clearTimeout(session.timeout); session.socket?.close({ notifyPeer: Boolean(session.peer) }); session.peer?.close(); if (session.url) URL.revokeObjectURL(session.url); } }, []);
   function command(message) { const channel = connection.current?.channel; if (connection.current?.authenticated && channel?.readyState === 'open') channel.send(JSON.stringify(message)); }
   async function connect() {
     let secret = password;

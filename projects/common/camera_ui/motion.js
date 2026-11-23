@@ -372,6 +372,9 @@ function defineElements() {
           this.list.sd = message.sd;
           const card = this.shadowRoot.querySelector('.card');
           if (card) card.textContent = cardText(message.sd);
+          // A card inserted, removed or remounted while connected changes the
+          // files too; the list was fetched for the previous card state.
+          if (message.sd.state !== 'formatting') this.request(0);
         }
         // Refresh once a clip finishes so it appears with its final length.
         if (((this.recording && !message.recording) || finishedManual) && this.list) this.request(finishedManual ? 0 : this.list.offset || 0);

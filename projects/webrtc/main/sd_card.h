@@ -16,6 +16,10 @@ esp_err_t mount();
 // Call only from the task that owns mounting, with no files open.
 esp_err_t format();
 void unmount(State reason);
+// Asks a mounted card for its status. A card that no longer answers was
+// removed or reseated: it is unmounted as absent so the next mount
+// initializes it again. Call only from the task that owns mounting.
+bool check();
 State state();
 const char *state_name();
 // Returns false when unmounted or the volume cannot report its size.

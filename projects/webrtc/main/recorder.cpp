@@ -238,7 +238,7 @@ private:
 void record(void *) {
     Clip clip;
     std::deque<Frame> pending;  // Pre-roll while idle; frames to write while recording.
-    int64_t next_mount = 0, retry_open = 0;
+    int64_t next_mount = 0, next_check = 0, retry_open = 0;
     uint32_t session = 0;
     const auto finish_manual = [&] {
         clip.close();
@@ -291,11 +291,20 @@ void record(void *) {
             next_mount = esp_timer_get_time() + 10 * kSecond;
             continue;
         }
+        // There is no card-detect pin. A card removed or reseated while mounted
+        // keeps the old volume and fails every read, so probe it while no clip
+        // is open; an open clip finds out from its next write.
+        if (sd_card::state() == sd_card::State::mounted && !clip.is_open() && now >= next_check) {
+            next_check = now + 2 * kSecond;
+            Guard sd(sd_lock);
+            if (!sd_card::check()) next_mount = now;  // Remount as soon as a card answers.
+        }
         const sd_card::State state = sd_card::state();
         if (state != sd_card::State::mounted && state != sd_card::State::unsupported && state != sd_card::State::formatting && now >= next_mount) {
             Guard sd(sd_lock);
             sd_card::mount();
-            next_mount = now + 10 * kSecond;
+            // A live-inserted card should appear within a few seconds.
+            next_mount = now + 3 * kSecond;
         }
         const bool wanted = (session || (s.enabled && s.record)) && sd_card::state() == sd_card::State::mounted;
         if (!wanted) {

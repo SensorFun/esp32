@@ -6,6 +6,8 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "driver/gpio.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "nvs.h"
 #include <string>
 #include <cstring>
@@ -26,6 +28,9 @@ static const char *sensor_name;
 static const SensorProfile *profile;
 static std::string factory_settings;
 static bool stream_images = true;
+// True only after camera_start succeeds. A failed start can free the driver,
+// leaving `sensor` dangling, so nothing may touch the sensor until then.
+static bool sensor_ready = false;
 static bool capture_idle;
 static int64_t capture_idle_retry;
 static constexpr char stream_setting[] = "stream_images";
@@ -104,6 +109,7 @@ static void settle() {
     }
 }
 esp_err_t camera_start(bool restore_saved) {
+    sensor_ready = false;
     camera_config_t cfg{};
     cfg.pin_pwdn = PWDN_GPIO_NUM; cfg.pin_reset = RESET_GPIO_NUM;
     cfg.pin_xclk = XCLK_GPIO_NUM; cfg.pin_sccb_sda = SIOD_GPIO_NUM; cfg.pin_sccb_scl = SIOC_GPIO_NUM;
@@ -172,6 +178,7 @@ esp_err_t camera_start(bool restore_saved) {
         if (restore_err != ESP_OK) return restore_err;
     }
     if (stream_images) settle();
+    sensor_ready = true;
     return ESP_OK;
 }
 static bool set_resolution(framesize_t size) {
@@ -334,7 +341,14 @@ static esp_err_t restore_settings() {
     }
     return ret;
 }
+static cJSON *unavailable() {
+    cJSON *reply = cJSON_CreateObject();
+    cJSON_AddStringToObject(reply, "type", "error");
+    cJSON_AddStringToObject(reply, "error", "The camera sensor is not responding; recovery is in progress.");
+    return reply;
+}
 cJSON *camera_settings() {
+    if (!sensor_ready) return unavailable();
     cJSON *reply = cJSON_CreateObject();
     cJSON_AddStringToObject(reply, "type", "settings");
     cJSON_AddStringToObject(reply, "sensor", sensor_name);
@@ -383,39 +397,64 @@ cJSON *camera_settings() {
     }
     return reply;
 }
-static esp_err_t restart_camera_at_defaults() {
-    camera_frames_pause();
-    esp_err_t err = esp_camera_deinit();
-    if (err == ESP_OK) err = camera_start(false);
-    camera_frames_resume();
-    return err;
+// Cuts sensor power through the PWDN line (on the AI Thinker board it switches
+// the camera's regulators), clearing a sensor that no longer answers on SCCB.
+// The driver's own init pulse is only 10 ms. Boards without the line skip it.
+static void power_cycle_sensor() {
+    if (PWDN_GPIO_NUM < 0) return;
+    const auto pin = gpio_num_t(PWDN_GPIO_NUM);
+    gpio_reset_pin(pin);
+    gpio_set_direction(pin, GPIO_MODE_OUTPUT);
+    gpio_set_level(pin, 1);
+    vTaskDelay(pdMS_TO_TICKS(300));
+    gpio_set_level(pin, 0);
+    vTaskDelay(pdMS_TO_TICKS(100));
 }
 
-esp_err_t camera_recover() {
-    constexpr size_t count = sizeof(controls) / sizeof(controls[0]);
-    int values[count]{};
-    bool enabled[count]{};
-    const int profile = timing.selected();
-    const auto size = static_cast<framesize_t>(sensor->status.framesize);
-    const int expected_sensor = sensor->id.PID;
-    for (size_t i = 0; i < count; ++i) {
-        enabled[i] = supported(controls[i]);
-        if (enabled[i]) values[i] = controls[i].get(sensor);
+// User controls to restore after recovery, captured while the sensor was last
+// known good: after a failed attempt the sensor can no longer be read.
+static constexpr size_t control_count = sizeof(controls) / sizeof(controls[0]);
+static struct {
+    bool valid = false;
+    framesize_t size = FRAMESIZE_QVGA;
+    int profile = 0, sensor_id = 0;
+    int values[control_count]{};
+    bool enabled[control_count]{};
+} restore_point;
+
+esp_err_t camera_recover(bool power_cycle) {
+    if (sensor_ready) {
+        restore_point.valid = true;
+        restore_point.size = static_cast<framesize_t>(sensor->status.framesize);
+        restore_point.profile = timing.selected();
+        restore_point.sensor_id = sensor->id.PID;
+        for (size_t i = 0; i < control_count; ++i) {
+            restore_point.enabled[i] = supported(controls[i]);
+            if (restore_point.enabled[i]) restore_point.values[i] = controls[i].get(sensor);
+        }
     }
-    const esp_err_t err = restart_camera_at_defaults();
-    if (err != ESP_OK) return err;
-    if (sensor->id.PID != expected_sensor) return ESP_ERR_INVALID_STATE;
-    if (!set_resolution(size)) return ESP_FAIL;
-    for (size_t i = 0; i < count; ++i) {
-        if (enabled[i] && controls[i].set(sensor, values[i]) != 0) return ESP_FAIL;
+    sensor_ready = false;
+    camera_frames_pause();
+    esp_camera_deinit();  // Harmless when a failed start already freed the driver.
+    if (power_cycle) power_cycle_sensor();
+    // Without a restore point (the camera never started this boot), restore
+    // the saved settings as a normal start would.
+    esp_err_t err = camera_start(!restore_point.valid);
+    camera_frames_resume();
+    if (err != ESP_OK || !restore_point.valid) return err;
+    if (sensor->id.PID != restore_point.sensor_id) return ESP_ERR_INVALID_STATE;
+    if (!set_resolution(restore_point.size)) return ESP_FAIL;
+    for (size_t i = 0; i < control_count; ++i) {
+        if (restore_point.enabled[i] && controls[i].set(sensor, restore_point.values[i]) != 0) return ESP_FAIL;
     }
     // set_resolution re-read the native baseline after its driver reset;
     // re-reading it now would capture the default profile's scaled value.
-    if (!is_gc() && timing.selected() != profile && timing.apply(profile)) return ESP_FAIL;
+    if (!is_gc() && timing.selected() != restore_point.profile && timing.apply(restore_point.profile)) return ESP_FAIL;
     settle();
     return ESP_OK;
 }
 cJSON *camera_command(const cJSON *request) {
+    if (!sensor_ready) return unavailable();
     const auto *op = cJSON_GetObjectItemCaseSensitive(request, "op");
     if (cJSON_IsString(op) && !strcmp(op->valuestring, "get")) return camera_settings();
     if (cJSON_IsString(op) && (!strcmp(op->valuestring, "apply") || !strcmp(op->valuestring, "reset_defaults"))) {

@@ -62,7 +62,12 @@ esp_err_t mount_card(bool format_if_needed) {
              (unsigned long long)(uint64_t(card->csd.capacity) * card->csd.sector_size / (1024 * 1024)));
     diagnostic_eventf("info", "SD mounted: %llu MB", (unsigned long long)(uint64_t(card->csd.capacity) * card->csd.sector_size / (1024 * 1024)));
     current = State::mounted;
-    quiet = false;
+    if (quiet) {
+        esp_log_level_set("sdmmc_common", ESP_LOG_WARN);
+        esp_log_level_set("sdmmc_init", ESP_LOG_WARN);
+        esp_log_level_set("vfs_fat_sdmmc", ESP_LOG_WARN);
+        quiet = false;
+    }
     return ESP_OK;
 }
 }  // namespace
@@ -102,6 +107,19 @@ void unmount(State reason) {
     current = reason;
 #else
     (void)reason;
+#endif
+}
+
+bool check() {
+#if defined(SD_MMC_D0_GPIO_NUM)
+    if (!card) return false;
+    if (sdmmc_get_status(card) == ESP_OK) return true;
+    ESP_LOGW(TAG, "SD card stopped responding; treating it as removed");
+    diagnostic_event("warning", "SD card stopped responding; treating it as removed");
+    unmount(State::absent);
+    return false;
+#else
+    return false;
 #endif
 }
 
