@@ -1,4 +1,6 @@
 #include "common/application.h"
+#include "diagnostics.h"
+#include "esp_system.h"
 #include "provisioning.h"
 #include "local_http.h"
 #include "tls_identity.h"
@@ -96,13 +98,15 @@ std::deque<std::string> replies;
 RemoteAuth peer_auth;
 bool channel_ready = false, failed = false, remote_peer = false;
 uint16_t stream_id;
-int64_t activity = 0;
+int64_t activity = 0, next_logs = 0;
 extern const unsigned char page_start[] asm("_binary_viewer_html_start");
 extern const unsigned char page_end[] asm("_binary_viewer_html_end");
 extern const unsigned char settings_start[] asm("_binary_settings_js_start");
 extern const unsigned char settings_end[] asm("_binary_settings_js_end");
 extern const unsigned char motion_start_js[] asm("_binary_motion_js_start");
 extern const unsigned char motion_end_js[] asm("_binary_motion_js_end");
+extern const unsigned char logs_start[] asm("_binary_logs_js_start");
+extern const unsigned char logs_end[] asm("_binary_logs_js_end");
 // One recording download at a time; its chunks replace video frames until done.
 // `buffered` is the offset of the chunk already read into the packet buffer,
 // kept for a retry after backpressure instead of reading the card again.
@@ -162,6 +166,7 @@ void set_clock(const cJSON *request) {
 }
 int on_state(esp_peer_state_t state, void *) {
     ESP_LOGI(TAG, "Peer state %d", int(state));
+    diagnostic_event("info", ("WebRTC peer state " + std::to_string(int(state))).c_str());
     if (state == ESP_PEER_STATE_DISCONNECTED || state == ESP_PEER_STATE_CONNECT_FAILED ||
         state == ESP_PEER_STATE_DATA_CHANNEL_CLOSED || state == ESP_PEER_STATE_DATA_CHANNEL_DISCONNECTED) {
         channel_ready = false;
@@ -196,6 +201,7 @@ int on_data(esp_peer_data_frame_t *frame, void *) {
     if (!request) return 0;
     if (!peer_auth.allowed()) {
         send_text(peer_auth.verify(request));
+        diagnostic_event(peer_auth.allowed() ? "info" : "warning", peer_auth.allowed() ? "Viewer authenticated" : "Viewer authentication rejected");
         cJSON_Delete(request); return 0;
     }
     activity = esp_timer_get_time();
@@ -215,6 +221,8 @@ int on_data(esp_peer_data_frame_t *frame, void *) {
     return 0;
 }
 void close_peer() {
+    if (peer) diagnostic_event("info", "Viewer disconnected");
+    next_logs = 0;
     channel_ready = false;
     camera_peer_transport_ready(false);
     if (peer) { esp_peer_close(peer); peer = nullptr; }
@@ -254,6 +262,11 @@ esp_err_t motion_script(httpd_req_t *r) {
     httpd_resp_set_type(r, "application/javascript");
     httpd_resp_set_hdr(r, "Cache-Control", "no-store");
     return httpd_resp_send(r, reinterpret_cast<const char *>(motion_start_js), motion_end_js - motion_start_js - 1);
+}
+esp_err_t logs_script(httpd_req_t *r) {
+    if (!same_origin(r)) return respond(r, "403 Forbidden", "{}");
+    httpd_resp_set_type(r, "application/javascript");
+    return httpd_resp_send(r, reinterpret_cast<const char *>(logs_start), logs_end - logs_start - 1);
 }
 esp_err_t session(httpd_req_t *r) {
     if (!same_origin(r)) return respond(r, "403 Forbidden", "{\"error\":\"Use the local device page\"}");
@@ -411,6 +424,8 @@ void start_server() {
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &route));
     route.uri = "/camera-settings.js"; route.handler = settings_script;
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &route));
+    route.uri = "/camera-logs.js"; route.handler = logs_script;
+    ESP_ERROR_CHECK(httpd_register_uri_handler(server, &route));
     route.uri = "/camera-motion.js"; route.handler = motion_script;
     ESP_ERROR_CHECK(httpd_register_uri_handler(server, &route));
     route.uri = "/api/session"; route.handler = session;
@@ -422,6 +437,10 @@ void start_server() {
     ESP_LOGI(TAG, "Local camera ready: https://" IPSTR "/", IP2STR(&ip.ip));
 }
 void worker(common::Application &app) {
+    char boot[80];
+    snprintf(boot, sizeof(boot), "Application started; reset reason %d", int(esp_reset_reason()));
+    diagnostic_event("info", boot);
+    bool network_ready = false;
     bool camera_ready = false;
     camera_fb_t *fb = nullptr;
     size_t offset = 0;
@@ -435,6 +454,8 @@ void worker(common::Application &app) {
     int64_t next_app = 0;
     for (;;) {
         if (!provisioning_is_ready()) {
+            if (network_ready) diagnostic_event("warning", "Wi-Fi unavailable");
+            network_ready = false;
             { Lock guard; if (fb) { camera_frame_return(fb); fb = nullptr; } close_peer(); }
             if (server) { ESP_ERROR_CHECK(httpd_ssl_stop(server)); server = nullptr; }
             // Keep detecting and recording while Wi-Fi is down.
@@ -451,6 +472,8 @@ void worker(common::Application &app) {
             vTaskDelay(pdMS_TO_TICKS(recording || motion_enabled ? 10 : 100));
             continue;
         }
+        if (!network_ready) diagnostic_event("info", "Wi-Fi ready");
+        network_ready = true;
         if (!camera_ready) {
             // Modem sleep delays packets until the AP's DTIM. Continuous video
             // must not fill the TX queue while the radio is sleeping.
@@ -461,12 +484,14 @@ void worker(common::Application &app) {
             // from a clean driver state before giving up and restarting.
             esp_err_t started = camera_start();
             for (int attempt = 2; started != ESP_OK && attempt <= 3; ++attempt) {
+                diagnostic_event("error", "Camera initialization failed; retrying");
                 ESP_LOGW(TAG, "Camera start failed (%s); retrying (%d of 3)", esp_err_to_name(started), attempt);
                 esp_camera_deinit();
                 vTaskDelay(pdMS_TO_TICKS(250));
                 started = camera_start();
             }
             ESP_ERROR_CHECK(started); camera_ready = true;
+            diagnostic_event("info", "Camera initialized");
         }
         if (!server) start_server();
         if (!sntp_started) {
@@ -501,7 +526,15 @@ void worker(common::Application &app) {
                 if (request) {
                     const cJSON *op = cJSON_GetObjectItemCaseSensitive(request, "op");
                     cJSON *reply = nullptr;
-                    if (cJSON_IsString(op) && !strcmp(op->valuestring, "time")) set_clock(request);
+                    if (cJSON_IsString(op) && !strcmp(op->valuestring, "logs_get")) {
+                        if (now >= next_logs && replies.empty()) {
+                            const cJSON *after = cJSON_GetObjectItemCaseSensitive(request, "after");
+                            const double cursor = cJSON_IsNumber(after) ? after->valuedouble : 0;
+                            send_text(diagnostic_logs(cursor >= 0 && cursor <= UINT32_MAX ? uint32_t(cursor) : 0));
+                            next_logs = now + 2000000;
+                        }
+                    }
+                    else if (cJSON_IsString(op) && !strcmp(op->valuestring, "time")) set_clock(request);
                     else if (cJSON_IsString(op) && !strcmp(op->valuestring, "recording_download")) start_transfer(request);
                     else if (cJSON_IsString(op) && !strcmp(op->valuestring, "recording_cancel")) stop_transfer();
                     else if (cJSON_IsString(op) && !strcmp(op->valuestring, "sd_format")) {
@@ -642,6 +675,7 @@ void worker(common::Application &app) {
                     // The OV2640 capture pipeline can stall across control
                     // changes/reconnects. Recover with no held buffer and
                     // retain the connection and all current user settings.
+                    diagnostic_event("warning", "Restarting stalled camera capture");
                     ESP_LOGW(TAG, "Restarting stalled camera capture");
                     ESP_ERROR_CHECK(camera_recover());
                     capture_stalled_since = 0;

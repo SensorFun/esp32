@@ -1,4 +1,5 @@
 #include "remote_signaling.h"
+#include "diagnostics.h"
 #include "camera_signaling.h"
 #include "esp_peer_signaling.h"
 #include "camera_access.h"
@@ -41,10 +42,11 @@ int ice_info(esp_peer_signaling_ice_info_t *info, void *) {
     xSemaphoreGive(ice_mutex);
     return 0;
 }
-int on_connected(void *) { connected = true; ESP_LOGI("remote", "Private signaling connected"); return 0; }
+int on_connected(void *) { connected = true; diagnostic_event("info", "Signaling connected"); ESP_LOGI("remote", "Private signaling connected"); return 0; }
 int on_close(void *) {
     connected = false;
     interrupted = true;
+    diagnostic_event("warning", "Signaling disconnected; reconnecting");
     ESP_LOGW("remote", "Private signaling disconnected; rebuilding membership");
     queue(ESP_PEER_SIGNALING_MSG_TRANSPORT_LOST, "", 0);
     return 0;
@@ -87,7 +89,7 @@ void task(void *) {
             CameraSignalingConfig signaling_cfg{room, signaling_secret, CONFIG_CAMERA_SIGNALING_STUN_URL};
             cfg.extra_cfg = &signaling_cfg; cfg.extra_size = sizeof(signaling_cfg);
             int ret = esp_peer_signaling_start(&cfg, camera_signaling_impl(), &signaling);
-            if (ret) { ESP_LOGW("remote", "Signaling unavailable: %d; retry in 10 seconds", ret); vTaskDelay(pdMS_TO_TICKS(10000)); continue; }
+            if (ret) { diagnostic_event("warning", "Signaling unavailable; retrying"); ESP_LOGW("remote", "Signaling unavailable: %d; retry in 10 seconds", ret); vTaskDelay(pdMS_TO_TICKS(10000)); continue; }
         }
         RemoteEvent *event = nullptr;
         if (xQueueReceive(outgoing, &event, pdMS_TO_TICKS(100)) == pdTRUE) {

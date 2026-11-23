@@ -5,6 +5,7 @@ import { base, currentRoute } from '../../routes.mjs';
 import { stunOnlyServers } from './ice.mjs';
 import { Icon } from '../../components/Icon';
 import '../../../../projects/common/camera_ui/settings.js';
+import '../../../../projects/common/camera_ui/logs.js';
 import '../../../../projects/common/camera_ui/motion.js';
 
 const cameraCookie = 'esp32_camera_mac';
@@ -49,7 +50,8 @@ export function RemoteCamera({ onSessionState }) {
   const recordingPanel = useRef(null);
   const recordings = useRef(null);
   const overlay = useRef(null);
-  const motionViews = () => [motionPanel.current, recordingPanel.current, recordings.current, overlay.current].filter(Boolean);
+  const logs = useRef(null);
+  const motionViews = () => [motionPanel.current, recordingPanel.current, recordings.current, overlay.current, logs.current].filter(Boolean);
   useEffect(() => { if (settings && settingsPanel.current) settingsPanel.current.settings = settings; }, [settings]);
   useEffect(() => {
     // Camera, motion, and recording panels all request commands with this event.
@@ -126,6 +128,7 @@ export function RemoteCamera({ onSessionState }) {
           } else if (message.type === 'auth_ok') {
             if (session.authenticated || !verifyServer(message.signature, session.expectedSignature)) throw Error('Camera identity verification failed');
             session.authenticated = true; session.expectedSignature = null;
+            if (logs.current) logs.current.connected = true;
             startAuthenticated();
           } else if (message.type === 'auth_error') { savedAccess.current = null; throw Error(message.error || 'Camera authentication failed'); }
           else if (session.authenticated && message.type === 'settings') {
@@ -247,6 +250,7 @@ export function RemoteCamera({ onSessionState }) {
       <div data-label="Camera settings">{settings ? <sensorfan-camera-settings className="remote-settings" ref={settingsPanel} /> : <p className="muted">Connect a camera to adjust its settings.</p>}</div>
       <div data-label="Motion detection" hidden><sensorfan-motion-settings ref={motionPanel} group="detection" hidden data-testid="motion-settings" /></div>
       <div data-label="SD card recording" hidden><sensorfan-motion-settings ref={recordingPanel} group="recording" hidden data-testid="recording-settings" /><sensorfan-recordings ref={recordings} hidden data-testid="recordings" /></div>
+    <div data-label="Diagnostics" hidden><sensorfan-camera-logs ref={logs} /></div>
     </sensorfan-camera-tabs>
   </section>;
 }

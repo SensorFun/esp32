@@ -1,3 +1,4 @@
+#include "diagnostics.h"
 #include "recorder.h"
 #include "avi_writer.h"
 #include "sd_card.h"
@@ -75,6 +76,7 @@ void release_pending(std::deque<Frame> &pending) {
 
 void set_error(const char *message) {
     Guard guard(state_lock);
+    if (message && last_error != message) diagnostic_event("error", message);
     last_error = message ? message : "";
 }
 

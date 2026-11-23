@@ -393,3 +393,21 @@ protected by this change.
 
 Remote connections are direct-only. Restrictive NATs may prevent connections;
 the firmware does not silently enable TURN as a fallback.
+
+## Diagnostics
+
+The shared **Diagnostics** tab works in local and remote viewers after camera
+password verification. It shows startup/reset reason, Wi-Fi and signaling
+connections, viewer/peer events, camera initialization/capture recovery, and
+recording errors. **Download logs** saves the displayed history as plain text.
+Only selected application messages are collected, never credentials, signaling
+payloads, images, or per-frame messages.
+
+The camera retains 48 entries in RAM; reboot clears this history. Entries contain
+uptime, severity, and a repeat count. Text is limited to 127 bytes. Each response
+contains at most four entries, with a firmware limit of one response every two
+seconds (under 1.5 KB per response). The viewer polls every 2.5 seconds only while
+the tab is visible and connected, retains 200 displayed lines, and reports gaps
+when older entries have expired. Pending controls take priority over log replies.
+Logs travel directly over the encrypted camera data channel; this does not store
+camera logs on the signaling server or preserve a crash trace across reboot.

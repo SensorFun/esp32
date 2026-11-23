@@ -111,6 +111,7 @@ assert.equal(context.viewer.verified('00'.repeat(32)), false);
             before_enqueue,
             r'if\s*\(\s*!peer_auth\.allowed\(\)\s*\)\s*\{\s*'
             r'send_text\(peer_auth\.verify\(request\)\);\s*'
+            r'diagnostic_event\([^;]+;\s*'
             r'cJSON_Delete\(request\);\s*return 0;\s*\}',
         )
         self.assertIn('const bool viewer = channel_ready && peer_auth.allowed();', main)

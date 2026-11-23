@@ -13,9 +13,10 @@
 <div data-label="Camera settings"><sensorfan-camera-settings id="settings-panel" hidden></sensorfan-camera-settings></div>
 <div data-label="Motion detection" hidden><sensorfan-motion-settings id="motion-panel" group="detection" hidden></sensorfan-motion-settings></div>
 <div data-label="SD card recording" hidden><sensorfan-motion-settings id="recording-panel" group="recording" hidden></sensorfan-motion-settings><sensorfan-recordings id="recordings" hidden></sensorfan-recordings></div>
+<div data-label="Diagnostics" hidden><sensorfan-camera-logs id="logs-panel"></sensorfan-camera-logs></div>
 </sensorfan-camera-tabs>
 <p><small>JPEG frames, camera commands, and recordings travel over encrypted WebRTC. Reset to Default applies the firmware’s camera defaults. Select Save to keep them after reboot.</small></p>
-<script id="settings-module" type="module" src="/camera-settings.js"></script><script id="motion-module" type="module" src="/camera-motion.js"></script>
+<script id="logs-module" type="module" src="/camera-logs.js"></script><script id="settings-module" type="module" src="/camera-settings.js"></script><script id="motion-module" type="module" src="/camera-motion.js"></script>
 <script>
 'use strict';
 const $=id=>document.getElementById(id);
@@ -62,9 +63,9 @@ function startFps(){
 }
 $('preview').onload=()=>{if(channel?.readyState==='open'&&objectURL&&$('preview').getAttribute('src')===objectURL)displayedFrames++;};
 function status(text){$('status').textContent=text;}
-const motionViews=()=>[$('motion-panel'),$('recording-panel'),$('recordings'),$('overlay')];
-Promise.all(['sensorfan-camera-settings','sensorfan-motion-settings','sensorfan-recordings','sensorfan-motion-overlay'].map(name=>customElements.whenDefined(name))).then(()=>{$('connect').disabled=false;});
-for(const id of ['settings-module','motion-module'])$(id).addEventListener('error',()=>status('Camera controls could not load. Reload this page to retry.'));
+const motionViews=()=>[$('motion-panel'),$('recording-panel'),$('recordings'),$('overlay'),$('logs-panel')];
+Promise.all(['sensorfan-camera-settings','sensorfan-motion-settings','sensorfan-recordings','sensorfan-motion-overlay','sensorfan-camera-logs'].map(name=>customElements.whenDefined(name))).then(()=>{$('connect').disabled=false;});
+for(const id of ['settings-module','motion-module','logs-module'])$(id).addEventListener('error',()=>status('Camera controls could not load. Reload this page to retry.'));
 async function api(method,body){const response=await fetch('/api/session',{method,headers:{'Content-Type':'application/sdp'},body,cache:'no-store'});if(!response.ok)throw Error(await response.text());return response;}
 function command(value){if(channel?.readyState==='open')channel.send(JSON.stringify(value));}
 document.addEventListener('camera-command',event=>command(event.detail));
@@ -85,7 +86,7 @@ function settings(data){
  $('settings-panel').hidden=false;$('settings-panel').settings=data;
 }
 function authenticated(current){
- if(current!==run)return;authed=true;expected=null;startFps();status('Connected: DTLS encrypted camera data and controls');
+ if(current!==run)return;authed=true;expected=null;$('logs-panel').connected=true;startFps();status('Connected: DTLS encrypted camera data and controls');
  command({op:'time',now:Date.now()});command({op:'get'});command({op:'motion_get'});command({op:'recordings'});ping=setInterval(()=>command({op:'ping'}),5000);
 }
 async function authenticate(data,current){
