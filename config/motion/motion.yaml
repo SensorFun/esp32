@@ -1,0 +1,37 @@
+# Motion detection and SD card recording: defaults and allowed values.
+#
+# The webrtc firmware embeds this file when it is built (and flash builds
+# first), and the Motion tab offers exactly these values:
+#   switch: true             -> an On/Off switch; default true or false
+#   options: [...]           -> a list of numbers
+#   range: [min, max, step]  -> a number on that grid; default on the grid
+# Settings a user saved on the camera take precedence over these defaults;
+# "Reset to Default" in the Motion tab, or flashing with clear_nvs=true,
+# brings them back.
+name: motion
+detection:
+  # Analyse the camera continuously, even with no viewer connected.
+  enabled: {default: true, switch: true}
+  # Analysis-image pixels per second that mark a cell as moving.
+  min_speed: {default: 4, range: [0.25, 40, 0.25]}
+  # Percent of cells that must move to report motion.
+  min_area: {default: 1, range: [1, 30, 0.5]}
+  # Analysis grid cell size in analysis-image pixels.
+  cell: {default: 8, options: [5, 8, 10, 20]}
+  # Flat cells below this texture are skipped.
+  min_texture: {default: 5, range: [0, 50, 0.5]}
+  # Blur radius in pixels before measuring flow.
+  blur: {default: 1, range: [0, 2, 1]}
+  # Seconds motion must last before recording starts.
+  trigger_seconds: {default: 1, range: [0.1, 10.9, 0.1]}
+  # Highlight moving cells over the picture.
+  overlay: {default: true, switch: true}
+recording:
+  # Store a clip on the SD card while motion lasts.
+  record: {default: true, switch: true}
+  # Seconds to keep recording after motion stops.
+  post_seconds: {default: 10, range: [1, 300, 1]}
+  # Longer motion continues in a new clip (seconds).
+  max_clip_seconds: {default: 120, range: [10, 900, 1]}
+  # Replace the oldest clips when the card is full; otherwise stop recording.
+  overwrite_oldest: {default: true, switch: true}

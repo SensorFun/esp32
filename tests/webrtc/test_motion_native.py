@@ -4,11 +4,14 @@ from pathlib import Path
 import shutil
 import struct
 import subprocess
+import sys
 import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 MAIN = ROOT / 'projects/webrtc/main'
+sys.path.insert(0, str(MAIN))
+import generate_motion  # noqa: E402
 
 
 @unittest.skipUnless(shutil.which('g++'), 'g++ is required')
@@ -18,7 +21,8 @@ class MotionNativeTests(unittest.TestCase):
         cls.temp = tempfile.TemporaryDirectory()
         folder = Path(cls.temp.name)
         binary = folder / 'motion_test'
-        subprocess.run(['g++', '-std=c++17', '-O2', '-Wall', '-Wextra', '-Werror', f'-I{MAIN}',
+        generate_motion.write(ROOT, folder / 'motion_config.h')
+        subprocess.run(['g++', '-std=c++17', '-O2', '-Wall', '-Wextra', '-Werror', f'-I{folder}', f'-I{MAIN}',
                         str(ROOT / 'tests/webrtc/native/motion_test.cpp'), str(MAIN / 'optical_flow.cpp'), str(MAIN / 'avi_writer.cpp'),
                         '-o', str(binary)], check=True)
         cls.avi = folder / 'clip.avi'

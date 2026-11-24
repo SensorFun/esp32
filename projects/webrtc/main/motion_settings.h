@@ -1,20 +1,21 @@
 #pragma once
 
-// Motion detection and SD recording settings. The firmware's field table is
-// the single source of truth: viewers render whatever motion_command returns.
+// Motion detection and SD recording settings. Defaults and allowed values come
+// from config/motion/motion.yaml (motion_config.h is generated from it at build
+// time); viewers render whatever motion_command returns.
+#include "motion_config.h"
 struct MotionSettings {
-    bool enabled = true;
+    bool enabled = motion_config::enabled;
     int method = 0;              // Index into the detection method list.
-    // Detection defaults chosen on the camera's settings page.
-    float min_speed = 8.0f;      // Analysis-image pixels per second, independent of the analysis rate.
-    float min_area = 5.0f;       // Percent of cells.
-    int cell = 8;
-    float min_texture = 5.0f;
-    int blur = 1;
-    float trigger_seconds = 1.0f;
-    bool overlay = true;
-    bool record = true;
-    int post_seconds = 10;
-    int max_clip_seconds = 120;
-    bool overwrite_oldest = true;
+    float min_speed = motion_config::min_speed;  // Analysis-image pixels per second, independent of the analysis rate.
+    float min_area = motion_config::min_area;    // Percent of cells.
+    int cell = motion_config::cell;
+    float min_texture = motion_config::min_texture;
+    int blur = motion_config::blur;
+    float trigger_seconds = motion_config::trigger_seconds;
+    bool overlay = motion_config::overlay;
+    bool record = motion_config::record;
+    int post_seconds = motion_config::post_seconds;
+    int max_clip_seconds = motion_config::max_clip_seconds;
+    bool overwrite_oldest = motion_config::overwrite_oldest;
 };

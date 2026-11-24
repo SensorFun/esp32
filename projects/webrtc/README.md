@@ -241,6 +241,16 @@ driven by the same data-channel commands. The firmware describes every setting
 Changes apply on the camera right away, like camera settings; select Save to store
 them in NVS so they survive a reboot.
 
+Defaults and allowed values for both tabs are in `config/motion/motion.yaml`, in
+the same `switch`/`options`/`range` format as the sensor profiles (a `range` is
+`[min, max, step]`). The build generates `motion_config.h` from it
+(`main/generate_motion.py`), and flashing builds first. A missing or unknown
+setting, or a default outside its allowed values, fails the build. Settings saved
+on the camera take precedence: select Reset to Default, or flash with
+`clear_nvs=true`, to use new defaults. A sensor restart (a capture size switch or
+recovery) pauses analysis for 1 s while auto exposure settles, so the change in
+brightness is not reported as motion.
+
 - **Detection** runs on the board even with no viewer connected, and while Wi-Fi
   is down. Native JPEG cameras capture at 160 × 120 by default; the **Detect
   motion** checkbox only runs the algorithm. The selected resolution is used for

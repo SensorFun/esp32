@@ -10,6 +10,7 @@ from pathlib import Path
 from functools import partial
 import struct
 import subprocess
+import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -81,6 +82,10 @@ def read_clip(path):
 def build_runner(output):
     # The shared decoder header supplies its own configuration on both targets.
     (output / "sdkconfig.h").write_text("#pragma once\n")
+    # Firmware defaults come from config/motion/motion.yaml, as in the build.
+    sys.path.insert(0, str(MAIN))
+    import generate_motion
+    generate_motion.write(ROOT, output / "motion_config.h")
     obj = output / "motion_jpeg.o"
     includes = [f"-I{folder}" for folder in (output, MAIN)]
     subprocess.run(["cc", "-std=c11", "-O2", *includes, "-c", MAIN / "motion_jpeg.c", "-o", obj], check=True)

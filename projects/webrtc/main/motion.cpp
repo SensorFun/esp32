@@ -12,6 +12,8 @@
 #include "freertos/task.h"
 #include "nvs.h"
 #include <algorithm>
+#include <array>
+#include <cstdio>
 #include <atomic>
 #include <cmath>
 #include <cstring>
@@ -35,7 +37,13 @@ struct Field {
 
 // Detection methods. Add new detectors here and dispatch on settings.method.
 constexpr Option kMethods[] = {{"optical_flow", 0, "Optical flow"}};
-constexpr Option kCells[] = {{nullptr, 5, "5 px"}, {nullptr, 8, "8 px"}, {nullptr, 10, "10 px"}, {nullptr, 20, "20 px"}};
+// Numeric options without a label are shown as the number and the field's unit.
+constexpr auto kCells = [] {
+    std::array<Option, std::size(motion_config::cell_options)> options{};
+    for (size_t i = 0; i < options.size(); ++i) options[i] = {nullptr, double(motion_config::cell_options[i]), nullptr};
+    return options;
+}();
+#define RANGE(member) motion_config::member##_range.min, motion_config::member##_range.max, motion_config::member##_range.step
 
 #define FIELD_BOOL(member) [](const MotionSettings &s) { return double(s.member); }, [](MotionSettings &s, double v) { s.member = v != 0; }
 #define FIELD_INT(member) [](const MotionSettings &s) { return double(s.member); }, [](MotionSettings &s, double v) { s.member = int(std::lround(v)); }
@@ -44,18 +52,19 @@ const Field kFields[] = {
     {"enabled", "Detect motion", "detection", "", "Analyse the camera continuously, even with no viewer connected.", Kind::boolean, 0, 1, 1, nullptr, 0, FIELD_BOOL(enabled)},
     {"method", "Method", "detection", "", "Detection algorithm.", Kind::select, 0, 0, 1, kMethods, std::size(kMethods), FIELD_INT(method)},
     // Stored as min_speed: an older min_flow value (pixels per frame) is not reinterpreted.
-    {"min_speed", "Minimum speed", "detection", "px/s", "Speed in analysis-image pixels that marks a cell as moving. Independent of the analysis rate.", Kind::number, 0.25, 40, 0.25, nullptr, 0, FIELD_FLOAT(min_speed)},
-    {"min_area", "Moving area", "detection", "%", "Share of cells that must move to report motion. 30% of the picture is always enough.", Kind::number, 1, 30, 0.5, nullptr, 0, FIELD_FLOAT(min_area)},
-    {"cell", "Cell size", "detection", "px", "Analysis grid in analysis-image pixels. Smaller cells notice smaller objects.", Kind::select, 0, 0, 1, kCells, std::size(kCells), FIELD_INT(cell)},
-    {"min_texture", "Minimum texture", "detection", "", "Skips flat cells where flow is unreliable. Higher values ignore more of the scene.", Kind::number, 0, 50, 0.5, nullptr, 0, FIELD_FLOAT(min_texture)},
-    {"blur", "Smoothing", "detection", "px", "Blur radius before measuring flow; reduces sensor noise.", Kind::number, 0, 2, 1, nullptr, 0, FIELD_INT(blur)},
-    {"trigger_seconds", "Motion duration", "detection", "s", "Motion must last this long before recording starts.", Kind::number, 0.1, 10.9, 0.1, nullptr, 0, FIELD_FLOAT(trigger_seconds)},
+    {"min_speed", "Minimum speed", "detection", "px/s", "Speed in analysis-image pixels that marks a cell as moving. Independent of the analysis rate.", Kind::number, RANGE(min_speed), nullptr, 0, FIELD_FLOAT(min_speed)},
+    {"min_area", "Moving area", "detection", "%", "Share of cells that must move to report motion. 30% of the picture is always enough.", Kind::number, RANGE(min_area), nullptr, 0, FIELD_FLOAT(min_area)},
+    {"cell", "Cell size", "detection", "px", "Analysis grid in analysis-image pixels. Smaller cells notice smaller objects.", Kind::select, 0, 0, 1, kCells.data(), kCells.size(), FIELD_INT(cell)},
+    {"min_texture", "Minimum texture", "detection", "", "Skips flat cells where flow is unreliable. Higher values ignore more of the scene.", Kind::number, RANGE(min_texture), nullptr, 0, FIELD_FLOAT(min_texture)},
+    {"blur", "Smoothing", "detection", "px", "Blur radius before measuring flow; reduces sensor noise.", Kind::number, RANGE(blur), nullptr, 0, FIELD_INT(blur)},
+    {"trigger_seconds", "Motion duration", "detection", "s", "Motion must last this long before recording starts.", Kind::number, RANGE(trigger_seconds), nullptr, 0, FIELD_FLOAT(trigger_seconds)},
     {"overlay", "Show motion in preview", "detection", "", "Highlight moving cells over the live picture.", Kind::boolean, 0, 1, 1, nullptr, 0, FIELD_BOOL(overlay)},
     {"record", "Record to SD card", "recording", "", "Store a clip while motion lasts, at the selected camera resolution.", Kind::boolean, 0, 1, 1, nullptr, 0, FIELD_BOOL(record)},
-    {"post_seconds", "Keep recording", "recording", "s", "Continue this long after motion stops.", Kind::number, 1, 300, 1, nullptr, 0, FIELD_INT(post_seconds)},
-    {"max_clip_seconds", "Maximum clip length", "recording", "s", "Longer motion continues in a new clip.", Kind::number, 10, 900, 1, nullptr, 0, FIELD_INT(max_clip_seconds)},
+    {"post_seconds", "Keep recording", "recording", "s", "Continue this long after motion stops.", Kind::number, RANGE(post_seconds), nullptr, 0, FIELD_INT(post_seconds)},
+    {"max_clip_seconds", "Maximum clip length", "recording", "s", "Longer motion continues in a new clip.", Kind::number, RANGE(max_clip_seconds), nullptr, 0, FIELD_INT(max_clip_seconds)},
     {"overwrite_oldest", "Replace oldest clips when full", "recording", "", "Otherwise recording stops when the card is full.", Kind::boolean, 0, 1, 1, nullptr, 0, FIELD_BOOL(overwrite_oldest)},
 };
+#undef RANGE
 #undef FIELD_BOOL
 #undef FIELD_INT
 #undef FIELD_FLOAT
@@ -196,7 +205,12 @@ cJSON *describe(const char *error = nullptr, bool saved = false) {
                 cJSON *option = cJSON_CreateObject();
                 if (field.options[i].id) cJSON_AddStringToObject(option, "value", field.options[i].id);
                 else cJSON_AddNumberToObject(option, "value", field.options[i].number);
-                cJSON_AddStringToObject(option, "label", field.options[i].label);
+                if (field.options[i].label) cJSON_AddStringToObject(option, "label", field.options[i].label);
+                else {
+                    char label[32];
+                    snprintf(label, sizeof(label), "%g%s%s", field.options[i].number, *field.unit ? " " : "", field.unit);
+                    cJSON_AddStringToObject(option, "label", label);
+                }
                 cJSON_AddItemToArray(options, option);
             }
         }
