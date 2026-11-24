@@ -44,7 +44,7 @@ const Field kFields[] = {
     {"method", "Method", "detection", "", "Detection algorithm.", Kind::select, 0, 0, 1, kMethods, std::size(kMethods), FIELD_INT(method)},
     // Stored as min_speed: an older min_flow value (pixels per frame) is not reinterpreted.
     {"min_speed", "Minimum speed", "detection", "px/s", "Speed in analysis-image pixels that marks a cell as moving. Independent of the analysis rate.", Kind::number, 0.25, 40, 0.25, nullptr, 0, FIELD_FLOAT(min_speed)},
-    {"min_area", "Moving area", "detection", "%", "Share of cells that must move to report motion.", Kind::number, 0.5, 100, 0.5, nullptr, 0, FIELD_FLOAT(min_area)},
+    {"min_area", "Moving area", "detection", "%", "Share of cells that must move to report motion. 30% of the picture is always enough.", Kind::number, 1, 30, 0.5, nullptr, 0, FIELD_FLOAT(min_area)},
     {"cell", "Cell size", "detection", "px", "Analysis grid in analysis-image pixels. Smaller cells notice smaller objects.", Kind::select, 0, 0, 1, kCells, std::size(kCells), FIELD_INT(cell)},
     {"min_texture", "Minimum texture", "detection", "", "Skips flat cells where flow is unreliable. Higher values ignore more of the scene.", Kind::number, 0, 50, 0.5, nullptr, 0, FIELD_FLOAT(min_texture)},
     {"blur", "Smoothing", "detection", "px", "Blur radius before measuring flow; reduces sensor noise.", Kind::number, 0, 2, 1, nullptr, 0, FIELD_INT(blur)},

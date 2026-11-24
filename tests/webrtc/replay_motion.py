@@ -17,7 +17,7 @@ MAIN = ROOT / "projects/webrtc/main"
 # Motion settings returned by motion_get. Recording/UI fields do not affect the detector.
 RANGES = {
     "blur": (0, 2, 1), "min_speed": (0.25, 40, 0.25),
-    "min_texture": (0, 50, 0.5), "min_area": (0.5, 100, 0.5), "trigger_seconds": (0, 30, 0.5),
+    "min_texture": (0, 50, 0.5), "min_area": (1, 30, 0.5), "trigger_seconds": (0, 30, 0.5),
 }
 # Settings from older firmware (analysis_fps, pre_seconds) are accepted and ignored.
 IGNORED = {"overlay", "record", "record_fps", "analysis_fps", "pre_seconds", "post_seconds",

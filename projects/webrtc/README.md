@@ -255,7 +255,7 @@ them in NVS so they survive a reboot.
   A cell moves when its speed reaches **Minimum speed** (analysis pixels per second;
   the detector converts it using the measured time between analysed frames, so
   the achieved analysis rate does not change sensitivity). Motion is reported when
-  **Moving area** percent of cells move. Flat cells below **Minimum texture** are
+  **Moving area** percent of cells move (1-30%). Flat cells below **Minimum texture** are
   ignored. **Method** lists the available detectors; optical flow is the first.
 - **Show motion in preview** draws the moving cells, MOTION, and REC over the live picture.
 - **Recording settings** are in the **SD card recording** tab, above the recordings;
