@@ -84,7 +84,8 @@ python tests/webrtc/replay_motion.py --jobs 6
 python tests/webrtc/replay_motion.py --matrix tests/webrtc/config/motion-replay.json --jobs 6
 ```
 
-The default inputs are the camera's MJPEG AVI files in `tests/data/motion/`.
+The default input is `camera-2026-11-23_14-59-34.avi` in `tests/data/motion/`.
+The default case checks for motion at 160 × 120 analysis resolution.
 Pass clip paths to select other fixtures. The runner compiles the firmware's
 C++ detector and its JPEG decoder (`projects/webrtc/main/tjpgd/`) with the
 host C and C++ compilers; no firmware build is needed.

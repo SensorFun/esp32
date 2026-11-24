@@ -102,5 +102,5 @@ direct_dependencies:
 - espressif/media_lib_sal
 - idf
 manifest_hash: 089fa1ba3bb2090533cd7e2894fddf239ff411e1bac9543ffad192b0cddeb1de
-target: esp32s3
+target: esp32
 version: 3.0.0

@@ -14,6 +14,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
 MAIN = ROOT / "projects/webrtc/main"
+DEFAULT_CLIP = ROOT / "tests/data/motion/camera-2026-11-23_14-59-34.avi"
 # Motion settings returned by motion_get. Recording/UI fields do not affect the detector.
 RANGES = {
     "blur": (0, 2, 1), "min_speed": (0.25, 40, 0.25),
@@ -107,11 +108,14 @@ def run_case(case, *, executable, video_output, video_deps):
     triggers = [row for row in trace if row["trigger"]]
     invalid = sum(row["result"] == "invalid" for row in trace)
     analyzed = sum(row["result"] == "analyzed" for row in trace)
-    passed = not invalid and (analyzed > 0 or values.get("enabled") is False) and (
+    sizes = sorted({(row["width"], row["height"]) for row in trace if row["result"] == "analyzed"})
+    expected_size = scenario.get("expect_analysis_size")
+    correct_size = expected_size is None or sizes == [tuple(expected_size)]
+    passed = correct_size and not invalid and (analyzed > 0 or values.get("enabled") is False) and (
         expected is None or bool(detected) == expected)
     result = {"clip": str(file), "profile": name, "settings_overrides": values, "scenario": scenario,
             "frame_us": frame_us, "input_frames": len(frames_in), "admitted": len(trace),
-            "analyzed": analyzed, "invalid": invalid, "detected": len(detected),
+            "analyzed": analyzed, "analysis_sizes": sizes, "invalid": invalid, "detected": len(detected),
             "first_motion_us": detected[0]["complete_us"] if detected else None,
             "first_trigger_us": triggers[0]["complete_us"] if triggers else None,
             "passed": passed, "trace": trace}
@@ -126,7 +130,7 @@ def run_case(case, *, executable, video_output, video_deps):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("clips", nargs="*", type=Path, help="Defaults to tests/data/motion/*.avi")
+    parser.add_argument("clips", nargs="*", type=Path, help=f"Defaults to {DEFAULT_CLIP.relative_to(ROOT)}")
     parser.add_argument("--matrix", type=Path, help="JSON profiles and scenarios to cross with the clips")
     parser.add_argument("--jobs", type=int, default=os.cpu_count() or 1)
     parser.add_argument("--report", type=Path, default=ROOT / "build/motion-replay/report.json")
@@ -135,13 +139,13 @@ def main():
     if args.jobs < 1:
         parser.error("--jobs must be positive")
     try:
-        files = args.clips or sorted((ROOT / "tests/data/motion").glob("*.avi"))
-        if not files:
-            raise ValueError("No AVI fixtures found")
+        files = args.clips or [DEFAULT_CLIP]
+        original = {"name": "original", "expect_motion": True}
+        if files == [DEFAULT_CLIP]:
+            original["expect_analysis_size"] = [160, 120]
         matrix = json.loads(args.matrix.read_text()) if args.matrix else {
             "profiles": {"firmware-defaults-enabled": {}},
-            "scenarios": [{"name": "original", "expect_motion": True},
-                          {"name": "static", "freeze": True, "expect_motion": False}],
+            "scenarios": [original],
         }
         profiles = [(name, entry.get("values", entry)) for name, entry in matrix["profiles"].items()]
         scenarios = matrix["scenarios"]
@@ -150,6 +154,10 @@ def main():
         for _, values in profiles:
             profile_args(values)
         for scenario in scenarios:
+            size = scenario.get("expect_analysis_size")
+            if size is not None and (not isinstance(size, list) or len(size) != 2 or
+                                     any(type(value) is not int or value < 1 for value in size)):
+                raise ValueError(f"Invalid expected analysis size {size!r}")
             if (not isinstance(scenario["name"], str) or
                 type(scenario.get("frame_stride", 1)) is not int or scenario.get("frame_stride", 1) < 1 or
                 type(scenario.get("work_us", 0)) is not int or scenario.get("work_us", 0) < 0 or
