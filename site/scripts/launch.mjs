@@ -11,9 +11,15 @@ const { values } = parseArgs({ args: process.argv.slice(3), options: {
   outDir: { type: 'string' },
   base: { type: 'string' },
   'firmware-dir': { type: 'string' },
+  'cache-dir': { type: 'string' },
 } });
 const firmwareDir = values['firmware-dir'];
 if (firmwareDir !== undefined && action !== 'dev') throw Error('--firmware-dir is only available with npm run dev');
+// Vite rewrites its dependency bundles in this folder while serving. Dev
+// servers running side by side (parallel board tests) each need their own, or
+// one server deletes the bundles another server's page is loading.
+const cacheDir = values['cache-dir'];
+if (cacheDir !== undefined && action !== 'dev') throw Error('--cache-dir is only available with npm run dev');
 if (values.base !== undefined && !/^\/([\w.-]+\/)*$/.test(values.base)) throw Error('--base must be a path such as / or /folder/');
 if (action === 'build') await build({ ...(values.base ? { base: values.base } : {}), ...(values.outDir ? { build: { outDir: values.outDir } } : {}) });
 else if (action === 'dev') {
@@ -24,7 +30,7 @@ else if (action === 'dev') {
     plugins.push(localFirmwarePlugin(fileURLToPath(new URL('../..', import.meta.url)), root));
     console.log(`Local flasher firmware: ${root}`);
   }
-  const server = await createServer({ plugins, server: { host: '127.0.0.1' } });
+  const server = await createServer({ plugins, server: { host: '127.0.0.1' }, ...(cacheDir ? { cacheDir: path.resolve(cacheDir) } : {}) });
   await server.listen();
   server.printUrls();
 }

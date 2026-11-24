@@ -26,9 +26,11 @@ disk or logs; the random camera password lives only in this process.
 """
 import re
 import secrets
+import shutil
 import ssl
 import subprocess
 import sys
+import tempfile
 from threading import Thread
 import time
 import urllib.request
@@ -178,9 +180,13 @@ class SerialBridge:
         page.add_init_script(BRIDGE_SCRIPT.replace('INFO', repr(self.info()).replace("'", '"')))
 
 
-def start_flasher_site():
-    """Starts the loopback dev server with the workspace's local builds."""
-    server = subprocess.Popen(['node', 'scripts/launch.mjs', 'dev', '--firmware-dir', str(ROOT / 'build')],
+def start_flasher_site(cache_dir):
+    """Starts the loopback dev server with the workspace's local builds.
+
+    Parallel workers each run a server; a private Vite cache keeps one from
+    deleting the dependency bundles another server's page is loading."""
+    server = subprocess.Popen(['node', 'scripts/launch.mjs', 'dev', '--firmware-dir', str(ROOT / 'build'),
+                               '--cache-dir', str(cache_dir)],
                               cwd=ROOT / 'site', stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     deadline = time.monotonic() + 60
     output = []
@@ -261,7 +267,13 @@ def test_browser_flash_then_usb_provision(board, wifi_credentials):
     print('Building firmware…', flush=True)
     if subprocess.call([sys.executable, 'tests/webrtc/boards_launcher.py', '--build', device], cwd=ROOT):
         raise RuntimeError('Firmware build failed')
-    server, site = start_flasher_site()
+    # Inside the site folder, which the dev server may serve files from.
+    cache_dir = Path(tempfile.mkdtemp(prefix='.vite-test-', dir=ROOT / 'site' / 'node_modules'))
+    try:
+        server, site = start_flasher_site(cache_dir)
+    except Exception:
+        shutil.rmtree(cache_dir, ignore_errors=True)
+        raise
     bridge = SerialBridge(port)
     try:
         with sync_playwright() as playwright:
@@ -372,3 +384,4 @@ def test_browser_flash_then_usb_provision(board, wifi_credentials):
             server.wait(timeout=10)
         except subprocess.TimeoutExpired:
             server.kill()
+        shutil.rmtree(cache_dir, ignore_errors=True)
