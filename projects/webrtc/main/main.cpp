@@ -800,7 +800,9 @@ void worker(common::Application &app) {
             if (viewer && settings_pending) { send_text(camera_settings()); settings_pending = false; }
             const auto manual = recorder_manual_state();
             if (viewer && now >= next_status) {
-                const bool overlay = manual == ManualRecording::idle && camera_stream_images() && motion_overlay_active();
+                // Viewers draw the moving cells over the picture, or over a blank
+                // canvas while image streaming is off.
+                const bool overlay = manual == ManualRecording::idle && motion_overlay_active();
                 cJSON *status = motion_status(overlay);
                 cJSON_AddNumberToObject(status, "capture_fps", std::round(double(grab_fps) * 10) / 10);
                 send_text(status);

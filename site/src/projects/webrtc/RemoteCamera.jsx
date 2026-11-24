@@ -38,6 +38,8 @@ export function RemoteCamera({ onSessionState }) {
   const [settings, setSettings] = useState(null);
   const [transport, setTransport] = useState('—');
   const [fps, setFps] = useState(0);
+  // Height of the blank 640-wide canvas shown while image streaming is off: the picture's aspect ratio.
+  const [blankHeight, setBlankHeight] = useState(480);
   const image = useRef(null);
   const connection = useRef(null);
   // Only a non-extractable key derived from the password is kept, so Connect
@@ -132,7 +134,10 @@ export function RemoteCamera({ onSessionState }) {
           else if (session.authenticated && message.type === 'error') { setStatus(message.error); if (settingsPanel.current) settingsPanel.current.error = message.error; }
           else if (session.authenticated) {
             // The camera's grab rate, whether or not images are streamed.
-            if (message.type === 'motion_status') setFps(Number.isFinite(message.capture_fps) ? message.capture_fps : 0);
+            if (message.type === 'motion_status') {
+              setFps(Number.isFinite(message.capture_fps) ? message.capture_fps : 0);
+              if (message.analysis_width > 0 && message.analysis_height > 0) setBlankHeight(Math.round(640 * message.analysis_height / message.analysis_width));
+            }
             for (const view of motionViews()) view.handle(message);
           }
         } catch (error) { if (alive()) stop(error.message); }
@@ -235,7 +240,7 @@ export function RemoteCamera({ onSessionState }) {
         <label htmlFor="camera-mac">Camera MAC address</label><input id="camera-mac" value={camera} placeholder="AA:BB:CC:DD:EE:FF" autoComplete="off" disabled={state !== 'idle'} onChange={e => { savedAccess.current = null; setCamera(e.target.value); }} /><label htmlFor="camera-access-password">Camera password</label><input id="camera-access-password" type="password" autoComplete="current-password" value={password} disabled={state !== 'idle'} onChange={e => setPassword(e.target.value)} /><div className="remote-actions"><button type="submit" className="button rtc-primary" disabled={(!password && !savedAccess.current) || !camera || state !== 'idle'}>Connect camera</button><button type="button" className="button rtc-secondary" disabled={state === 'idle'} onClick={() => stop()}>Disconnect</button></div></form>
       <p className="muted">Direct WebRTC</p><p role="status" data-testid="remote-status">{status}</p>
     </div>
-    <div className="monitor"><div className="monitor-top"><span>CAMERA PREVIEW</span><span data-testid="remote-fps" title="Frames the camera grabs per second for live video, motion detection or recording · 1-second average">{fps.toFixed(1)} FPS</span><span>{transport}</span></div><div className="remote-preview"><div className="preview-frame" hidden={settings?.stream_images === 0}><img ref={image} alt="Remote camera stream" data-testid="remote-image" /><sensorfan-motion-overlay ref={overlay} /></div>{state !== 'connected' && <span>Awaiting encrypted camera stream</span>}{settings?.stream_images === 0 && <span role="status">Camera image streaming is off.</span>}</div></div>
+    <div className="monitor"><div className="monitor-top"><span>CAMERA PREVIEW</span><span data-testid="remote-fps" title="Frames the camera grabs per second for live video, motion detection or recording · 1-second average">{fps.toFixed(1)} FPS</span><span>{transport}</span></div><div className="remote-preview"><div className={settings?.stream_images === 0 ? 'preview-frame blank' : 'preview-frame'}><img ref={image} alt="Remote camera stream" data-testid="remote-image" hidden={settings?.stream_images === 0} />{settings?.stream_images === 0 && <canvas className="blank-frame" width={640} height={blankHeight} data-testid="remote-blank" aria-label="Camera image streaming is off; motion is still shown" />}<sensorfan-motion-overlay ref={overlay} /></div>{state !== 'connected' && <span>Awaiting encrypted camera stream</span>}{settings?.stream_images === 0 && <span role="status">Camera image streaming is off.</span>}</div></div>
     <sensorfan-camera-tabs>
       <div data-label="Camera settings">{settings ? <sensorfan-camera-settings className="remote-settings" ref={settingsPanel} /> : <p className="muted">Connect a camera to adjust its settings.</p>}</div>
       <div data-label="Motion detection" hidden><sensorfan-motion-settings ref={motionPanel} group="detection" hidden data-testid="motion-settings" /></div>
