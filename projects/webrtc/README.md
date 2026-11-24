@@ -86,9 +86,14 @@ stale room slot after reprovisioning.
 
 ## Camera controls
 
-Each sensor has its own profile in `config/frame_grabber/sensors/`:
-`ov2640.yaml`, `ov3660.yaml` and `gc0308.yaml`. The frame grabber families
-`ov.yaml` and `gc.yaml` only list their sensors. Each device also selects
+Each sensor's profile is its frame grabber family's shared settings plus its own
+file in `config/frame_grabber/sensors/` (`ov2640.yaml`, `ov3660.yaml`,
+`gc0308.yaml`). `ov.yaml` lists the OV sensors and holds what they share in
+`common`: the light timing, `clock_2x`, and 15 identical controls (JPEG quality,
+mirroring, white balance, exposure switches, pixel corrections). A sensor file
+holds only its differing controls (ranges, gain ceiling, OV3660 sharpness and
+denoise) and overrides any shared entry it repeats. `gc.yaml` only lists its
+sensor. Each device also selects
 `config/lens/general.yaml` (currently without overrides). The firmware embeds
 all three profiles and picks one by sensor PID at runtime, so the settings panel
 always shows the installed sensor's controls and nothing else. GC0308 captures
@@ -137,6 +142,17 @@ sensor's maximum frame rate.
 
 The profile names match the server. The OV5647/P4's absolute HTS/VTS values are
 sensor-specific. The shared OV profile defaults to **Mid light** (`mid_light`).
+
+`clock_2x` (shared, on) doubles the sensor clock, which raised streaming speed
+on the ESP32-CAM. The OV2640 sets its internal doubler (`CLKRC` bit 7), which
+Light timing's divider bits leave intact. On the OV3660 it is experimental: the
+driver's JPEG PLL pre-divider changes from /3 to /1.5 (`0x303D`), and the pixel
+clock divider (`0x3824`) doubles first, so the ESP32 still receives a 10 MHz
+pixel clock; other PLL settings are left alone. The driver resets these
+registers on each resolution change, and the firmware reapplies them. With the
+default Mid light, the doubled OV2640 clock divided by two equals the native
+clock; High light runs it at twice the native rate. Settings replies report the
+readback as `clock_2x`.
 
 The stream is hardware JPEG, initially 320x240 unless saved settings select
 another resolution. Streaming has no fixed FPS cap. The viewers' FPS is the

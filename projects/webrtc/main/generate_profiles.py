@@ -1,7 +1,8 @@
 """Generate per-sensor camera control tables from the workspace YAML.
 
-config/frame_grabber/<family>.yaml lists sensors; each sensor's controls, their
-allowed values and defaults live in config/frame_grabber/sensors/<sensor>.yaml.
+config/frame_grabber/<family>.yaml lists sensors and may hold a `common` section
+shared by all of them; config/frame_grabber/sensors/<sensor>.yaml adds each
+sensor's own controls and overrides any shared key or control it repeats.
 Every listed sensor is embedded: the firmware detects the installed one at
 runtime and offers exactly its controls. Unknown controls, malformed value
 sets and out-of-range defaults fail the build rather than being dropped.
@@ -25,8 +26,10 @@ MEMBERS = {
 # Sensors the firmware can detect (camera_controls.cpp) and their profiles.
 SENSORS = ('ov2640', 'ov3660', 'gc0308')
 TIMING = ('high_light', 'mid_light', 'low_light')
-# Sensors with OV light timing (CLKRC or HTS line period control).
+# Sensors with OV light timing (CLKRC or HTS line period control) and clock_2x.
 TIMED = {'ov2640', 'ov3660'}
+# Keys a sensor profile (shared section merged with the sensor file) may hold.
+PROFILE_KEYS = {'timing_profile', 'clock_2x', 'controls'}
 
 
 def integer(value):
@@ -73,12 +76,31 @@ def control_spec(sensor, name, spec):
     return {'name': name, 'kind': kind, 'default': default, 'low': low, 'high': high, 'options': options}
 
 
-def load_sensor(root, sensor):
-    profile = yaml.safe_load((root / 'config/frame_grabber/sensors' / f'{sensor}.yaml').read_text())
-    if not isinstance(profile, dict) or profile.get('name') != sensor:
+def load_family(root, family):
+    listed = yaml.safe_load((root / 'config/frame_grabber' / f'{family}.yaml').read_text())
+    if (not isinstance(listed, dict) or listed.get('name') != family or not isinstance(listed.get('sensors'), list)
+            or set(listed) - {'name', 'sensors', 'common'}):
+        raise ValueError(f'{family}.yaml must have name: {family}, a sensors list and an optional common section only')
+    common = listed.get('common', {})
+    if not isinstance(common, dict) or set(common) - PROFILE_KEYS or not isinstance(common.get('controls', {}), dict):
+        raise ValueError(f'{family}.yaml: common may hold only {sorted(PROFILE_KEYS)}, with controls as a mapping')
+    return listed['sensors'], common
+
+
+def load_sensor(root, sensor, common):
+    own = yaml.safe_load((root / 'config/frame_grabber/sensors' / f'{sensor}.yaml').read_text())
+    if not isinstance(own, dict) or own.get('name') != sensor:
         raise ValueError(f'sensors/{sensor}.yaml: name must be {sensor}')
-    if set(profile) - {'name', 'timing_profile', 'controls'}:
-        raise ValueError(f'{sensor}: unknown keys {set(profile) - {"name", "timing_profile", "controls"}}')
+    if set(own) - PROFILE_KEYS - {'name'}:
+        raise ValueError(f'{sensor}: unknown keys {set(own) - PROFILE_KEYS - {"name"}}')
+    if not isinstance(own.get('controls', {}), dict):
+        raise ValueError(f'{sensor}: controls must be a mapping')
+    # The sensor file overrides shared keys, and shared controls one by one.
+    profile = {**common, **own, 'controls': {**common.get('controls', {}), **own.get('controls', {})}}
+    # Double the sensor clock: OV2640 CLKRC doubler, OV3660 PLL pre-divider.
+    clock_2x = profile.get('clock_2x', False)
+    if not isinstance(clock_2x, bool) or (clock_2x and sensor not in TIMED):
+        raise ValueError(f'{sensor}: clock_2x must be true or false, and only OV sensors support it')
     timing = profile.get('timing_profile')
     if (sensor in TIMED) != (timing is not None) or (timing is not None and timing not in TIMING):
         raise ValueError(f'{sensor}: timing_profile must be one of {TIMING} for OV sensors and absent otherwise')
@@ -89,19 +111,19 @@ def load_sensor(root, sensor):
     if unknown:
         raise ValueError(f'{sensor}: unmapped camera controls {sorted(unknown)}')
     specs = [control_spec(sensor, name, controls[name]) for name in MEMBERS if name in controls]
-    return {'sensor': sensor, 'timing': TIMING.index(timing) if timing else -1, 'controls': specs}
+    return {'sensor': sensor, 'timing': TIMING.index(timing) if timing else -1, 'clock_2x': clock_2x, 'controls': specs}
 
 
 def generate(root):
+    shared = {}
     sensors = []
     for family in ('ov', 'gc'):
-        listed = yaml.safe_load((root / 'config/frame_grabber' / f'{family}.yaml').read_text())
-        if listed.get('name') != family or not isinstance(listed.get('sensors'), list) or set(listed) - {'name', 'sensors'}:
-            raise ValueError(f'{family}.yaml must have name: {family} and a sensors list only')
-        sensors += listed['sensors']
+        listed, common = load_family(root, family)
+        sensors += listed
+        shared.update({sensor: common for sensor in listed if isinstance(sensor, str)})
     if sorted(sensors) != sorted(SENSORS):
         raise ValueError(f'Frame grabbers must list each detectable sensor once: {SENSORS}')
-    profiles = [load_sensor(root, sensor) for sensor in SENSORS]
+    profiles = [load_sensor(root, sensor, shared[sensor]) for sensor in SENSORS]
     lines = ['// Generated from config/frame_grabber; do not edit.', 'static Control controls[] = {']
     for name, member in MEMBERS.items():
         method = {'awb': 'whitebal', 'agc': 'gain_ctrl', 'aec': 'exposure_ctrl'}.get(member, member)
@@ -113,7 +135,7 @@ def generate(root):
               'struct Option { int value; const char *label; };',
               'enum class Kind { range, list, toggle };',
               'struct ControlSpec { const char *name; Kind kind; int value, low, high; const Option *options; size_t option_count; };',
-              'struct SensorProfile { const char *sensor; int timing_profile; const ControlSpec *controls; size_t count; };']
+              'struct SensorProfile { const char *sensor; int timing_profile; bool clock_2x; const ControlSpec *controls; size_t count; };']
     kinds = {'range': 'Kind::range', 'options': 'Kind::list', 'switch': 'Kind::toggle'}
     for profile in profiles:
         for spec in profile['controls']:
@@ -128,7 +150,7 @@ def generate(root):
     lines.append('static const SensorProfile profiles[] = {')
     for profile in profiles:
         sensor = profile['sensor']
-        lines.append(f'{{"{sensor}", {profile["timing"]}, controls_{sensor}, sizeof(controls_{sensor}) / sizeof(ControlSpec)}},')
+        lines.append(f'{{"{sensor}", {profile["timing"]}, {str(profile["clock_2x"]).lower()}, controls_{sensor}, sizeof(controls_{sensor}) / sizeof(ControlSpec)}},')
     lines.append('};')
     return '\n'.join(lines) + '\n'
 

@@ -1,5 +1,37 @@
 name: ov
-# OV sensors this frame grabber family supports. Each sensor's controls,
-# allowed values and defaults are in sensors/<sensor>.yaml; the firmware
-# detects the installed sensor at runtime and uses its profile.
+# OV sensors this frame grabber family supports. The firmware detects the
+# installed sensor at runtime and uses its profile: the shared settings under
+# `common` below, plus sensors/<sensor>.yaml, which adds that sensor's own
+# controls and overrides any shared entry it repeats.
 sensors: [ov2640, ov3660]
+common:
+  timing_profile: mid_light
+  # Double the sensor clock: it doubles the frame-rate ceiling and moves the
+  # camera bus frequencies beside the PCB antenna; streaming got faster on the
+  # ESP32-CAM. OV2640: CLKRC bit 7, the internal doubler esp32-cam-fpv enables
+  # for JPEG. OV3660 (experimental): PLL pre-divider /3 -> /1.5, with the pixel
+  # clock divider doubled so the ESP32 still receives a 10 MHz pixel clock.
+  clock_2x: true
+  # Control formats, here and in sensors/<sensor>.yaml:
+  #   switch: true      -> an On/Off switch (0 = Off, 1 = On)
+  #   options: [...]    -> a list of numbers, or {value: label} for named values
+  #   range: [min, max] -> a number field, for controls with many values
+  # Ranges come from the pinned esp32-camera driver (2.1.6) and agree with
+  # Espressif's CameraWebServer limits.
+  controls:
+    # The driver accepts 0-63 (lower is better quality, larger frames).
+    jpeg_quality: {default: 12, range: [2, 63]}
+    colorbar: {default: 0, switch: true}
+    horizontal_mirror: {default: 0, switch: true}
+    vertical_flip: {default: 0, switch: true}
+    automatic_white_balance: {default: 1, switch: true}
+    awb_gain: {default: 1, switch: true}
+    white_balance_mode: {default: 0, options: {0: Auto, 1: Sunny, 2: Cloudy, 3: Office, 4: Home}}
+    automatic_gain: {default: 1, switch: true}
+    automatic_exposure: {default: 1, switch: true}
+    aec2: {default: 0, switch: true}
+    downsize: {default: 1, switch: true}
+    black_pixel_correction: {default: 0, switch: true}
+    white_pixel_correction: {default: 1, switch: true}
+    raw_gamma: {default: 1, switch: true}
+    lens_correction: {default: 1, switch: true}

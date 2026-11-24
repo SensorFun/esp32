@@ -148,6 +148,7 @@ esp_err_t camera_start(bool restore_saved) {
     profile = nullptr;
     for (const auto &candidate : profiles) if (!strcmp(candidate.sensor, sensor_name)) profile = &candidate;
     if (!profile) return ESP_ERR_NOT_SUPPORTED;
+    timing.set_clock_doubler(profile->clock_2x);
     if (sensor->set_framesize(sensor, FRAMESIZE_QVGA) || !restore_timing(0)) return ESP_FAIL;
     // The camera clock and the sensor's pixel bus run beside the PCB antenna.
     // At full drive strength their edges cut ESP32-CAM Wi-Fi throughput by
@@ -369,6 +370,7 @@ cJSON *camera_settings() {
         cJSON_AddStringToObject(reply, "timing_profile", timing_names[timing.selected()]);
         for (const char *name : timing_names) cJSON_AddItemToArray(profiles, cJSON_CreateString(name));
         cJSON_AddNumberToObject(reply, "timing_register", timing.readback());
+        if (timing.clock_doubler() >= 0) cJSON_AddBoolToObject(reply, "clock_2x", timing.clock_doubler() == 1);
         cJSON_AddStringToObject(reply, "timing_profile_status", sensor->id.PID == OV3660_PID
             ? "High light / Mid light / Low light: native / 2x / 3x line period"
             : "High light / Mid light / Low light: native / 2x / 4x line period");

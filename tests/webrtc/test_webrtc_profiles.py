@@ -18,11 +18,15 @@ def load(sensor):
 
 
 class CameraProfileTests(unittest.TestCase):
-    def generate(self, sensor=None, change=None, families=None):
+    def generate(self, sensor=None, change=None, families=None, family_change=None):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             target = root / 'config/frame_grabber'
             shutil.copytree(PROFILES, target)
+            if family_change:
+                listed = yaml.safe_load((target / 'ov.yaml').read_text())
+                family_change(listed)
+                (target / 'ov.yaml').write_text(yaml.safe_dump(listed))
             if sensor:
                 profile = load(sensor)
                 change(profile)
@@ -39,9 +43,9 @@ class CameraProfileTests(unittest.TestCase):
     def test_each_sensor_has_its_own_profile(self):
         result, content = self.generate()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('{"ov2640", 1, controls_ov2640', content)
-        self.assertIn('{"ov3660", 1, controls_ov3660', content)
-        self.assertIn('{"gc0308", -1, controls_gc0308', content)
+        self.assertIn('{"ov2640", 1, true, controls_ov2640', content)
+        self.assertIn('{"ov3660", 1, true, controls_ov3660', content)
+        self.assertIn('{"gc0308", -1, false, controls_gc0308', content)
         self.assertIn('s->set_whitebal(s, v)', content)
         ov2640, ov3660, gc0308 = (self.section(content, s) for s in ('ov2640', 'ov3660', 'gc0308'))
         # The OV2640 driver implements neither sharpness nor denoise.
@@ -107,13 +111,26 @@ class CameraProfileTests(unittest.TestCase):
             'reversed range': ('ov2640', control('aec_value', {'default': 300, 'range': [1200, 0]})),
             'unknown timing': ('ov2640', lambda profile: profile.__setitem__('timing_profile', 'unknown')),
             'GC timing': ('gc0308', lambda profile: profile.__setitem__('timing_profile', 'mid_light')),
-            'OV without timing': ('ov3660', lambda profile: profile.pop('timing_profile')),
+            'GC clock_2x': ('gc0308', lambda profile: profile.__setitem__('clock_2x', True)),
             'wrong name': ('gc0308', lambda profile: profile.__setitem__('name', 'gc')),
             'unknown key': ('gc0308', lambda profile: profile.__setitem__('extra', 1)),
+            'clock_2x not boolean': ('ov2640', lambda profile: profile.__setitem__('clock_2x', 1)),
+            'controls not a mapping': ('ov3660', lambda profile: profile.__setitem__('controls', [])),
         }
         for label, (sensor, change) in cases.items():
             with self.subTest(label):
                 result, _ = self.generate(sensor, change)
+                self.assertNotEqual(result.returncode, 0)
+        shared_cases = {
+            'OV without timing': lambda listed: listed['common'].pop('timing_profile'),
+            'unknown shared key': lambda listed: listed['common'].__setitem__('extra', 1),
+            'shared controls not a mapping': lambda listed: listed['common'].__setitem__('controls', []),
+            'unknown family key': lambda listed: listed.__setitem__('extra', 1),
+            'shared unknown control': lambda listed: listed['common']['controls'].__setitem__('zoom', {'default': 0, 'switch': True}),
+        }
+        for label, change in shared_cases.items():
+            with self.subTest(label):
+                result, _ = self.generate(family_change=change)
                 self.assertNotEqual(result.returncode, 0)
         with self.subTest('sensor missing from families'):
             result, _ = self.generate(families={'ov': ['ov2640']})
@@ -124,7 +141,35 @@ class CameraProfileTests(unittest.TestCase):
             with self.subTest(profile=name):
                 result, content = self.generate('ov2640', lambda profile: profile.__setitem__('timing_profile', name))
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertIn('{"ov2640", ' + str(index) + ', controls_ov2640', content)
+                self.assertRegex(content, r'\{"ov2640", ' + str(index) + r', (true|false), controls_ov2640')
+
+    def test_clock_doubler_flag(self):
+        # Shared by both OV sensors; a sensor file can override it.
+        result, content = self.generate()
+        self.assertIn(', true, controls_ov2640', content)
+        self.assertIn(', true, controls_ov3660', content)
+        result, content = self.generate('ov3660', lambda profile: profile.__setitem__('clock_2x', False))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(', true, controls_ov2640', content)
+        self.assertIn(', false, controls_ov3660', content)
+        result, content = self.generate(family_change=lambda listed: listed['common'].pop('clock_2x'))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(', false, controls_ov2640', content)
+
+    def test_shared_ov_settings(self):
+        result, content = self.generate()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        ov2640, ov3660 = self.section(content, 'ov2640'), self.section(content, 'ov3660')
+        # Shared controls reach both OV sensors without repeating them per sensor.
+        for line in ('{"jpeg_quality", Kind::range, 12, 2, 63, nullptr, 0}', '{"lens_correction", Kind::toggle, 1, 0, 1,'):
+            self.assertIn(line, ov2640)
+            self.assertIn(line, ov3660)
+        self.assertNotIn('jpeg_quality', (PROFILES / 'sensors/ov2640.yaml').read_text())
+        # A sensor file overrides a shared control for that sensor only.
+        result, content = self.generate('ov3660', lambda profile: profile['controls'].__setitem__('jpeg_quality', {'default': 20, 'range': [4, 63]}))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('{"jpeg_quality", Kind::range, 20, 4, 63,', self.section(content, 'ov3660'))
+        self.assertIn('{"jpeg_quality", Kind::range, 12, 2, 63,', self.section(content, 'ov2640'))
 
 
 class SharedSettingsPanelTests(unittest.TestCase):
