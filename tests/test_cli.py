@@ -15,7 +15,8 @@ class CommandTests(unittest.TestCase):
                 self.assertIn(f"-DIDF_TARGET={target}", cmd)
                 self.assertIn(f"-DSDKCONFIG={ROOT / 'build' / 'webrtc' / board / 'sdkconfig'}", cmd)
                 self.assertEqual(cmd[-3:], ["-p", "/dev/ttyUSB0", "flash"])
-                self.assertIn(f"-DSDKCONFIG_DEFAULTS={ROOT / 'projects/webrtc/sdkconfig.defaults'}", cmd)
+                board_defaults = ROOT / 'build' / 'webrtc' / board / 'board.defaults'
+                self.assertIn(f"-DSDKCONFIG_DEFAULTS={ROOT / 'projects/webrtc/sdkconfig.defaults'};{board_defaults}", cmd)
 
     def test_unknown_inputs_fail_before_invoking_idf(self):
         for project, board in [("missing", "esp32_ai-thinker_cam"), ("webrtc", "missing"), ("../server", "esp32_ai-thinker_cam")]:

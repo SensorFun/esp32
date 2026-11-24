@@ -3,4 +3,13 @@ esp32_ai-thinker_cam:
   header: esp32_ai-thinker_cam.h
   image: images/esp32_ai-thinker_cam.png
   target: esp32
+  # SPI flash clock (ESP-IDF CONFIG_ESPTOOLPY_FLASHFREQ_*); code runs from flash.
+  flash_freq: 80m
+  # PSRAM at 80 MHz streamed worse and once lost the access point for 11 s at
+  # -41 dBm: its clock runs beside this board's PCB antenna.
+  psram_freq: 40m
+  # Dynamic buffers (32) freed 28 KB of idle RAM but streamed worse here.
+  wifi_tx_buffers: {type: static, count: 16}
+  # lwIP's UDP path in IRAM, away from the flash cache camera copies evict.
+  lwip_iram: true
   supported_frame_grabber: [ov, gc]

@@ -8,7 +8,7 @@ import shutil
 import subprocess
 
 
-from .boards import load_board, load_catalog
+from .boards import BOARD_DEFAULTS, load_board, load_catalog, write_board_sdkconfig
 
 
 def command(root: Path, project: str, board: str, action: str, port: str | None, frame_grabber: str | None = None) -> list[str]:
@@ -23,14 +23,15 @@ def command(root: Path, project: str, board: str, action: str, port: str | None,
     defaults = [source / "sdkconfig.defaults"]
     defaults += [root / "boards" / item for item in config.get("sdkconfig_defaults", [])]
     defaults = [path for path in defaults if path.is_file()]
+    # Board values from config/boards, written by write_board_sdkconfig before idf.py runs.
+    defaults.append(build / BOARD_DEFAULTS)
     result = [
         "idf.py", "-C", str(source), "-B", str(build),
         f"-DIDF_TARGET={config['target']}", f"-DBOARD={board}",
         f"-DFRAME_GRABBER={frame_grabber if frame_grabber is not None else 'none'}",
         f"-DSDKCONFIG={build / 'sdkconfig'}",
     ]
-    if defaults:
-        result.append("-DSDKCONFIG_DEFAULTS=" + ";".join(map(str, defaults)))
+    result.append("-DSDKCONFIG_DEFAULTS=" + ";".join(map(str, defaults)))
     if port:
         result += ["-p", port]
     return result + [action]
@@ -60,4 +61,5 @@ def main() -> int:
         return 0
     if not shutil.which("idf.py"):
         parser.error("idf.py is unavailable; use docker/docker.sh or source ESP-IDF's export.sh")
+    write_board_sdkconfig(root, args.board, root / "build" / args.project / args.board)
     return subprocess.call(cmd)

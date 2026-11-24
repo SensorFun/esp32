@@ -5,5 +5,9 @@ esp32s3n16r8_goouuu_cam:
   header: esp32s3n16r8_espressif_cam.h
   image: images/esp32s3n16r8_goouuu_cam.jpg
   target: esp32s3
+  flash_freq: 80m
+  psram_freq: 80m
+  wifi_tx_buffers: {type: static, count: 16}
+  lwip_iram: false
   supported_frame_grabber: [ov, gc]
   sdkconfig_defaults: [esp32s3_n16r8.defaults]

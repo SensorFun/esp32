@@ -17,7 +17,7 @@ shared components.
 - `projects/common/application/`: shared setup/main lifecycle and board-specific NVS reset.
 - `projects/common/provisioning/`: reusable Wi-Fi setup page and credential storage.
 - `boards/`: pin headers and USB programming identities.
-- `config/boards/`: manufacturer dictionaries of board names, header paths, chip targets, and supported frame grabbers.
+- `config/boards/`: manufacturer dictionaries of board names, header paths, chip targets, memory clocks, network tuning, and supported frame grabbers.
 - `cmake/board.cmake`: shared board selection for native firmware projects.
 - `docker/`: base and development Docker images and Compose.
 - `config/`: Hydra firmware build and flash configuration; `config/firmware/` lists flashable firmware.
@@ -191,8 +191,27 @@ esp32_ai-thinker_cam:
   header: esp32_ai-thinker_cam.h
   image: images/esp32_ai-thinker_cam.png
   target: esp32
+  flash_freq: 80m
+  psram_freq: 40m
+  wifi_tx_buffers: {type: static, count: 16}
+  lwip_iram: true
   supported_frame_grabber: [ov]
 ```
+
+Each board also sets its memory clocks and network tuning:
+
+- `flash_freq` (required): the SPI flash clock its flash chip and wiring run
+  reliably (ESP32: `80m`, `40m`, `26m`, `20m`; ESP32-S3: `120m`, `80m`, `40m`,
+  `20m`). Code runs from flash through a small cache, so a slow clock slows
+  everything from networking to encryption.
+- `psram_freq` (boards with PSRAM): ESP32 `80m` or `40m` (80 MHz needs
+  `flash_freq: 80m`); ESP32-S3 `120m`, `80m` or `40m`. On the ESP32-CAM the
+  PSRAM clock runs beside the antenna, and 80 MHz disrupted Wi-Fi.
+- `wifi_tx_buffers` (required): `{type: static, count: 1-64}` or
+  `{type: dynamic, count: 1-128}`. Static buffers are reserved in internal RAM
+  at Wi-Fi start; Espressif recommends them with PSRAM.
+- `lwip_iram` (required): place lwIP's send and receive path in IRAM (about
+  10 KB of the IRAM-only heap).
 
 `header` is relative to `boards/`; several entries may share one header.
 `image` is relative to `config/boards/` and must be a file in `config/boards/images/`. Headers
@@ -217,9 +236,15 @@ entry name files under `boards/`.
 
 Firmware builds use native ESP-IDF. Project
 `sdkconfig.defaults` loads first, followed by any defaults explicitly listed in
-the board metadata.
+the board metadata, then `build/<project>/<board>/board.defaults`, which the
+build tools generate from the board's YAML values above.
 Changes to defaults affect newly generated sdkconfig values; use `menuconfig`
 for an existing configuration or remove that board's build directory to reset it.
+The YAML board values are the exception: before each build, a value in an
+existing sdkconfig that disagrees with the board's YAML is replaced, keeping
+every other setting. The host
+flasher and the browser-flasher packager refuse a build whose flash clock no
+longer matches the board's `flash_freq`.
 Device profiles supply known USB identities for host flash detection.
 The lower-level `esp32 flash` CLI still delegates to ESP-IDF.
 

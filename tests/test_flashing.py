@@ -29,10 +29,11 @@ class FlashTests(unittest.TestCase):
         (self.root / "boards").mkdir()
         (self.root / "config/boards").mkdir(parents=True)
         (self.root / "boards/shared.h").touch()
-        (self.root / "config/boards/test.yaml").write_text("test:\n  name: Test board\n  header: shared.h\n  target: esp32s3\n")
+        (self.root / "config/boards/test.yaml").write_text("test:\n  name: Test board\n  header: shared.h\n  target: esp32s3\n  flash_freq: 80m\n  wifi_tx_buffers: {type: static, count: 16}\n  lwip_iram: false\n")
         self.build = self.root / "build/hello_world/test"
         self.build.mkdir(parents=True)
         self.metadata = {
+            "flash_settings": {"flash_mode": "dio", "flash_size": "4MB", "flash_freq": "80m"},
             "flash_files": {"0x0": "bootloader.bin", "0x10000": "app.bin"},
             "extra_esptool_args": {"chip": "esp32s3", "before": "default-reset", "after": "hard-reset", "stub": True},
         }
@@ -110,6 +111,11 @@ class FlashTests(unittest.TestCase):
         metadata.write_text(json.dumps(self.metadata))
         with self.assertRaisesRegex(ValueError, "chip"):
             run_flash(self.root, self.config)
+        self.metadata["extra_esptool_args"]["chip"] = "esp32s3"
+        self.metadata["flash_settings"]["flash_freq"] = "40m"
+        metadata.write_text(json.dumps(self.metadata))
+        with self.assertRaisesRegex(ValueError, "flash clock"):
+            run_flash(self.root, self.config)
         metadata.unlink()
         with self.assertRaisesRegex(ValueError, "not built"):
             run_flash(self.root, self.config)
@@ -117,7 +123,7 @@ class FlashTests(unittest.TestCase):
 
     @patch("esp32_workspace.flashing.subprocess.call")
     def test_wrong_frame_grabber_build_cannot_be_flashed(self, call):
-        (self.root / "config/boards/test.yaml").write_text("test:\n  name: Test board\n  header: shared.h\n  target: esp32s3\n  supported_frame_grabber: [ov]\n")
+        (self.root / "config/boards/test.yaml").write_text("test:\n  name: Test board\n  header: shared.h\n  target: esp32s3\n  flash_freq: 80m\n  wifi_tx_buffers: {type: static, count: 16}\n  lwip_iram: false\n  supported_frame_grabber: [ov]\n")
         (self.root / "config/frame_grabber").mkdir()
         (self.root / "config/frame_grabber/ov.yaml").write_text("name: ov\n")
         self.config.frame_grabber = {"name": "ov"}

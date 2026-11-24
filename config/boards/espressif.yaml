@@ -3,4 +3,8 @@ esp32s3n16r8_espressif_cam:
   header: esp32s3n16r8_espressif_cam.h
   image: images/esp32s3n16r8_espressif_cam.png
   target: esp32s3
+  flash_freq: 80m
+  psram_freq: 80m
+  wifi_tx_buffers: {type: static, count: 16}
+  lwip_iram: false
   supported_frame_grabber: [ov, gc]

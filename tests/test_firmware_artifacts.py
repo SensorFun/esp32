@@ -25,7 +25,7 @@ class FirmwareArtifactTests(unittest.TestCase):
         (self.root / 'config/boards').mkdir(parents=True)
         (self.root / 'boards').mkdir()
         (self.root / 'boards/pins.h').write_text('#pragma once\n')
-        (self.root / 'config/boards/maker.yaml').write_text('test_board:\n  name: Test\n  header: pins.h\n  target: esp32s3\n')
+        (self.root / 'config/boards/maker.yaml').write_text('test_board:\n  name: Test\n  header: pins.h\n  target: esp32s3\n  flash_freq: 80m\n  wifi_tx_buffers: {type: static, count: 16}\n  lwip_iram: false\n')
         (self.root / 'config/firmware').mkdir()
         (self.root / 'config/firmware/webrtc.yaml').write_text('name: WebRTC\ndescription: Camera firmware\nboards: all\nprivate_settings: [CONFIG_CAMERA_SIGNALING_API_SECRET]\n')
         (self.root / 'projects/webrtc').mkdir(parents=True)
@@ -102,6 +102,7 @@ class FirmwareArtifactTests(unittest.TestCase):
     def test_invalid_builds_are_rejected(self):
         cases = {
             'chip': lambda: (self.build / 'flasher_args.json').write_text(json.dumps({**self.args, 'extra_esptool_args': {**self.args['extra_esptool_args'], 'chip': 'esp32'}})),
+            'flash clock': lambda: (self.build / 'flasher_args.json').write_text(json.dumps({**self.args, 'flash_settings': {**self.args['flash_settings'], 'flash_freq': '40m'}})),
             'does not belong': lambda: (self.build / 'firmware_selection.json').write_text('{"board":"other"}'),
             'Missing or invalid': lambda: (self.build / 'flasher_args.json').write_text(json.dumps({**self.args, 'flash_files': {'0x0': '../../../outside.bin'}})),
             'not built': lambda: (self.build / 'flasher_args.json').unlink(),

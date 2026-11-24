@@ -6,6 +6,7 @@ import subprocess
 
 from omegaconf import DictConfig, OmegaConf
 
+from .boards import write_board_sdkconfig
 from .cli import command
 
 
@@ -24,4 +25,5 @@ def run_firmware(root: Path, config: DictConfig, action: str) -> int:
         return 0
     if not shutil.which("idf.py"):
         raise RuntimeError("idf.py is unavailable; use docker/docker.sh or source ESP-IDF's export.sh")
+    write_board_sdkconfig(root.resolve(), config.board, root.resolve() / "build" / config.project / config.board)
     return subprocess.call(cmd)

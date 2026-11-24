@@ -45,6 +45,9 @@
 
 namespace {
 constexpr char TAG[] = "local_webrtc";
+// Data-channel message payload for video and downloads. Each message costs one
+// pass through esp_peer's SCTP and DTLS send path, so larger messages spend less
+// time per byte there; SCTP still splits each into MTU-sized datagrams.
 constexpr size_t CHUNK = 2048;
 // A viewer pings every 5 seconds. Browsers throttle timers in background tabs
 // and on sleeping phones, so the camera keeps the session through up to five
@@ -52,10 +55,10 @@ constexpr size_t CHUNK = 2048;
 // transfers count as activity too. Closed tabs disconnect at once.
 constexpr int64_t PEER_IDLE_US = 5 * 60 * 1000000LL;
 // Bulk traffic (video, recording downloads) is not rate limited. Each worker
-// pass sends up to this many chunks, and a burst ends early when the SCTP send
-// cache or the Wi-Fi TX queue is full, so the loop can service acknowledgements
-// and control replies before sending more.
-constexpr int BULK_CHUNKS_PER_PASS = 12;
+// pass sends up to 24 KiB, and a burst ends early when the SCTP send cache or
+// the Wi-Fi TX queue is full, so the loop can service acknowledgements and
+// control replies before sending more.
+constexpr int BULK_CHUNKS_PER_PASS = std::max<int>(1, 24576 / CHUNK);
 // Backpressure seen on bulk sends, for the periodic transport log: a full SCTP
 // send cache, a full Wi-Fi TX queue, and passes where a control reply waited.
 uint32_t full_cache, full_queue, reply_blocked;
@@ -628,7 +631,9 @@ void worker(common::Application &app) {
     bool sntp_started = false;
     uint32_t queue_full_seen = camera_transport_queue_full();
     int64_t next_transport_report = 0;
-    uint8_t packet[CHUNK + 16];
+    // Header plus one chunk; too large for the worker's stack, so it lives in PSRAM.
+    auto *packet = static_cast<uint8_t *>(heap_caps_malloc(CHUNK + 16, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    configASSERT(packet);
     motion::CaptureProfile motion_capture;
     const auto select_capture = [&](bool live, bool paused, ManualRecording manual) {
         const motion::Activity event = motion_activity();
@@ -901,11 +906,11 @@ void worker(common::Application &app) {
                 const auto share = [&](int64_t us) { return unsigned(us * 100 / window); };
                 ESP_LOGI(TAG, "Transport: send cache full %u, TX queue full %u, reply waits %u, RSSI %d dBm",
                          unsigned(full_cache), unsigned(full_queue), unsigned(reply_blocked), int(ap.rssi));
-                if (timing.since) ESP_LOGI(TAG, "Stream timing: %u.%u fps, %u KiB/s, avg frame %u B, %u passes; time in peer loop %u%%, camera wait %u%%, chunk send %u%% (%u us/chunk)",
+                if (timing.since) ESP_LOGI(TAG, "Stream timing: %u.%u fps, %u KiB/s, avg frame %u B, %u passes; time in peer loop %u%%, camera wait %u%%, chunk send %u%% (%u us/KiB, %u B chunks)",
                          unsigned(timing.frames * 10000000LL / window / 10), unsigned(timing.frames * 10000000LL / window % 10), unsigned(timing.bytes * 1000000 / window / 1024),
                          unsigned(timing.frames ? timing.bytes / timing.frames : 0), unsigned(timing.passes),
                          share(timing.loop_us), share(timing.capture_us), share(timing.send_us),
-                         unsigned(timing.bytes ? timing.send_us * CHUNK / int64_t(timing.bytes) : 0));
+                         unsigned(timing.bytes ? timing.send_us * 1024 / int64_t(timing.bytes) : 0), unsigned(CHUNK));
                 camera_udp_stats_t udp{};
                 camera_transport_udp_stats(&udp);
                 if (timing.since) ESP_LOGI(TAG, "UDP send: %u datagrams (%u B avg), in sendto %u%% (%u us avg, max %u us), %u calls >= 15 ms, shim retries %u%%",

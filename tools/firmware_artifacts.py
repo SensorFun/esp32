@@ -68,6 +68,8 @@ def package(root: Path, project: str, board: str, commit: str, release: bool = F
     flasher_args = json.loads(args_file.read_text())
     if flasher_args['extra_esptool_args']['chip'] != metadata['target']:
         raise ValueError(f'Build chip does not match {board}; rebuild it')
+    if flasher_args.get('flash_settings', {}).get('flash_freq') != metadata['flash_freq']:
+        raise ValueError(f'Build flash clock does not match flash_freq {metadata["flash_freq"]} for {board}; rebuild it')
     selection = json.loads((build / 'firmware_selection.json').read_text())
     if selection.get('board') != board:
         raise ValueError(f'firmware_selection.json does not belong to {board}; rebuild it')
@@ -129,12 +131,14 @@ def build_here(root: Path, project: str, board: str, *, signaling_credential: st
     # Firmware detects the sensor at runtime; the grabber only labels the build.
     grabber = 'ov' if 'ov' in grabbers else next(iter(grabbers), None)
     if signaling_credential is not None:
+        from esp32_workspace.boards import write_board_sdkconfig
         from esp32_workspace.cli import command
 
         build = root / 'build' / project / board
         if build.exists():
             raise ValueError(f'Public camera signaling requires a fresh build directory for {board}')
         cmd = command(root, project, board, 'build', None, grabber)
+        write_board_sdkconfig(root, board, build)
         env = {**os.environ, 'CAMERA_SIGNALING_API_SECRET': signaling_credential}
         subprocess.run(cmd, cwd=root, env=env, check=True)
         return

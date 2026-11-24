@@ -99,6 +99,8 @@ def run_flash(root: Path, config: DictConfig) -> int:
     extra = metadata["extra_esptool_args"]
     if extra["chip"] != board["target"]:
         raise ValueError("Build chip does not match the selected board; rebuild before flashing.")
+    if metadata.get("flash_settings", {}).get("flash_freq") != board["flash_freq"]:
+        raise ValueError(f"Build flash clock does not match the board's flash_freq ({board['flash_freq']}); rebuild before flashing.")
     for filename in metadata["flash_files"].values():
         artifact = (build / filename).resolve()
         if not artifact.is_relative_to(build.resolve()) or not artifact.is_file():
