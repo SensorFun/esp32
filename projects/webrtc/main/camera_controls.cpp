@@ -12,6 +12,7 @@
 #include <string>
 #include <cstring>
 #include <cmath>
+#include <atomic>
 struct Control {
     const char *name;
     int (*set)(sensor_t *, int);
@@ -87,6 +88,11 @@ static bool allowed(const Control &c, const cJSON *value) {
 }
 static bool restore_timing(int profile) { return is_gc() || (timing.initialize(sensor) == 0 && timing.apply(profile) == 0); }
 
+// When the sensor last restarted or changed size (esp_timer us).
+static std::atomic<int64_t> restarted_at{0};
+static void mark_restart() { restarted_at = esp_timer_get_time(); }
+int64_t camera_restarted_at() { return restarted_at; }
+
 static void settle() {
     // A sensor just reset, or moved to a different resolution/exposure, needs
     // a frame or two before auto exposure/gain converge; the first capture is
@@ -96,6 +102,7 @@ static void settle() {
         if (!fb) break;
         esp_camera_fb_return(fb);
     }
+    mark_restart();
 }
 esp_err_t camera_start(bool restore_saved) {
     sensor_ready = false;
@@ -168,6 +175,7 @@ esp_err_t camera_start(bool restore_saved) {
         if (restore_err != ESP_OK) return restore_err;
     }
     if (stream_images) settle();
+    else mark_restart();
     sensor_ready = true;
     return ESP_OK;
 }
@@ -218,10 +226,11 @@ static bool set_resolution(framesize_t size) {
         }
         return restore_timing(profile);
     };
-    if (apply(size)) return true;
+    const bool applied = apply(size);
     // Restore a working sensor configuration if any part of the update fails.
-    if (!apply(previous)) ESP_LOGE("camera", "Could not restore the previous resolution");
-    return false;
+    if (!applied && !apply(previous)) ESP_LOGE("camera", "Could not restore the previous resolution");
+    mark_restart();
+    return applied;
 }
 static cJSON *settings_values(bool streaming) {
     cJSON *value = cJSON_CreateObject();

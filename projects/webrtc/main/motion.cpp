@@ -1,6 +1,7 @@
 #include "diagnostics.h"
 #include "motion.h"
 #include "motion_detector.h"
+#include "camera_controls.h"
 #include "recorder.h"
 #include "esp_heap_caps.h"
 #include "esp_attr.h"
@@ -67,6 +68,9 @@ std::atomic<bool> busy{false}, media_paused{false};
 uint8_t *job = nullptr;
 size_t job_capacity = 0, job_length = 0;
 int64_t job_time = 0;  // Capture time of the frame in job.
+// Frames are not analysed this long after the sensor restarts.
+constexpr int64_t kSettleUs = 1000000;
+int64_t seen_restart = 0;  // Worker only.
 // Average JPEG size at the current stream resolution, measured by the worker.
 std::atomic<uint32_t> frame_dimensions{0};  // dimensions: width << 16 | height
 // Results, guarded by lock.
@@ -311,9 +315,22 @@ void motion_feed(const camera_fb_t *frame) {
     MotionSettings s = motion_settings();
     if (!s.enabled) return;
     const int64_t now = esp_timer_get_time();
+    // A sensor restart (a capture size switch, or recovery) restarts auto
+    // exposure and white balance. Measured on the ESP32-CAM, the first frames
+    // after a switch then changed brightness enough to show 12-29% of the
+    // picture moving and trigger motion. Analysis restarts once they settle.
+    const int64_t restarted = camera_restarted_at();
+    if (restarted != seen_restart) {
+        seen_restart = restarted;
+        Lock guard;
+        ++generation;
+        area = speed = 0;
+        grid.fill(0);
+    }
+    const bool settling = now - restarted < kSettleUs;
     // Every frame goes to the motion task, including small motion-idle ones
     // (a few KB to copy), so the worker can grab the next frame meanwhile.
-    if (!busy) {
+    if (!busy && !settling) {
         if (frame->len > job_capacity) {
             heap_caps_free(job);
             job = static_cast<uint8_t *>(heap_caps_malloc(frame->len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));

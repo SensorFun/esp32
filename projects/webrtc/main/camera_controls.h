@@ -1,5 +1,6 @@
 #pragma once
 #include "esp_err.h"
+#include <cstdint>
 #include "cJSON.h"
 #include "camera_frames.h"
 esp_err_t camera_start(bool restore_saved = true);
@@ -18,3 +19,6 @@ cJSON *camera_command(const cJSON *request);
 esp_err_t camera_select_motion_idle(bool idle);
 bool camera_capture_change_needed(bool idle);
 bool camera_is_motion_idle();
+// When the sensor last restarted or changed capture size (esp_timer us). Auto
+// exposure and white balance take about a second to settle after that.
+int64_t camera_restarted_at();
