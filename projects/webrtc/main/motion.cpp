@@ -348,6 +348,8 @@ cJSON *motion_status(bool include_overlay) {
     {
         Lock guard;
         cJSON_AddBoolToObject(status, "enabled", settings.enabled);
+        // Viewers warn over the picture when motion should record but the card cannot.
+        cJSON_AddBoolToObject(status, "record", settings.record);
         cJSON_AddBoolToObject(status, "analysis_suspended", suspended);
         cJSON_AddStringToObject(status, "method", kMethods[settings.method].id);
         cJSON_AddBoolToObject(status, "motion", settings.enabled && activity.moving);

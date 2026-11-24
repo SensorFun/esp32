@@ -623,6 +623,16 @@ with sync_playwright() as p:
         assert page.evaluate("motionHarness.state.commands.filter(c=>c.op==='motion_reset').length") == 0
         overlay = page.locator('sensorfan-motion-overlay')
         expect(overlay.get_by_text('MOTION', exact=True)).to_be_visible()
+        # Motion that should record without a usable card is flagged over the picture.
+        expect(overlay.get_by_text(re.compile('^NOT RECORDING'))).to_be_hidden()
+        page.evaluate("motionHarness.status({record: true, recording: false, sd: {state: 'absent'}})")
+        expect(overlay.get_by_text('NOT RECORDING · NO SD CARD', exact=True)).to_be_visible()
+        expect(overlay.get_by_text('● REC', exact=True)).to_be_hidden()
+        page.evaluate("motionHarness.status({record: true, recording: false, sd: {state: 'absent'}, motion: false})")
+        expect(overlay.get_by_text(re.compile('^NOT RECORDING'))).to_be_hidden()
+        page.evaluate("motionHarness.status({record: false, recording: false, sd: {state: 'absent'}})")
+        expect(overlay.get_by_text(re.compile('^NOT RECORDING'))).to_be_hidden()
+        page.evaluate("motionHarness.status({record: true})")
         preview = page.locator('[data-testid=remote-image], #preview').first.bounding_box()
         box = overlay.bounding_box()
         assert all(abs(box[key] - preview[key]) <= 1 for key in ('x', 'y', 'width', 'height')), (box, preview)

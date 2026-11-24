@@ -706,7 +706,7 @@ function defineElements() {
       super();
       this.attachShadow({ mode: 'open' }).innerHTML = `<style>:host{display:block;pointer-events:none}canvas{width:100%;height:100%;display:block}
         span{position:absolute;top:8px;left:8px;font:600 12px system-ui,sans-serif;letter-spacing:.5px;padding:4px 8px;border-radius:4px;background:#000a;color:#ffd58a}span[hidden]{display:none}
-        span.rec{left:auto;right:8px;color:#ffb1a6}</style><canvas></canvas><span class="motion" hidden>MOTION</span><span class="rec" hidden>● REC</span>`;
+        span.rec,span.nosd{left:auto;right:8px;color:#ffb1a6}span.nosd{max-width:calc(100% - 96px);text-align:right}</style><canvas></canvas><span class="motion" hidden>MOTION</span><span class="rec" hidden>● REC</span><span class="nosd" role="status" hidden></span>`;
     }
     reset() { this.status = null; this.draw(); }
     handle(message) { if (message.type === 'motion_status') { this.status = message; this.draw(); } }
@@ -715,6 +715,13 @@ function defineElements() {
       const s = this.status;
       this.shadowRoot.querySelector('.motion').hidden = !s?.motion;
       this.shadowRoot.querySelector('.rec').hidden = !s?.recording;
+      // Motion that should be recorded, but the card cannot take it.
+      const card = s?.sd?.state;
+      const problem = s?.motion && s.record && !s.recording && card && card !== 'mounted'
+        ? ({ absent: 'NO SD CARD', error: 'SD CARD ERROR', formatting: 'SD CARD FORMATTING', unsupported: 'NO SD CARD SLOT' })[card] || 'SD CARD UNAVAILABLE' : '';
+      const nosd = this.shadowRoot.querySelector('.nosd');
+      nosd.hidden = !problem;
+      if (nosd.textContent !== (problem ? `NOT RECORDING · ${problem}` : '')) nosd.textContent = problem ? `NOT RECORDING · ${problem}` : '';
       const width = Math.round(canvas.clientWidth * devicePixelRatio), height = Math.round(canvas.clientHeight * devicePixelRatio);
       if (canvas.width !== width || canvas.height !== height) { canvas.width = width; canvas.height = height; }
       const context = canvas.getContext('2d');
