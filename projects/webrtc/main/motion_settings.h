@@ -3,18 +3,14 @@
 // Motion detection and SD recording settings. The firmware's field table is
 // the single source of truth: viewers render whatever motion_command returns.
 struct MotionSettings {
-    bool enabled = false;
+    bool enabled = true;
     int method = 0;              // Index into the detection method list.
-    // Defaults tuned on tests/data/motion/camera-2026-11-23_14-59-34.avi: a
-    // person crossing the street is detected while swaying palm fronds and
-    // trees are not, at the clip's 6.5 fps and at half that. Minimum speed has
-    // the widest margin (6-10 px/s all stay clean); 1.5% area or texture 8 let
-    // background through.
+    // Detection defaults chosen on the camera's settings page.
     float min_speed = 8.0f;      // Analysis-image pixels per second, independent of the analysis rate.
-    float min_area = 2.0f;       // Percent of cells.
-    int cell = 10;
-    float min_texture = 12.0f;
-    int blur = 2;
+    float min_area = 5.0f;       // Percent of cells.
+    int cell = 8;
+    float min_texture = 5.0f;
+    int blur = 1;
     float trigger_seconds = 1.0f;
     bool overlay = true;
     bool record = true;

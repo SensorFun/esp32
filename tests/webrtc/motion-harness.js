@@ -8,7 +8,7 @@
     { name: 'min_speed', label: 'Minimum speed', group: 'detection', type: 'number', unit: 'px/s', min: 0.25, max: 40, step: 0.25, help: 'Speed that marks a cell as moving.' },
     { name: 'cell', label: 'Cell size', group: 'detection', type: 'select', unit: 'px', help: 'Analysis grid.', options: [5, 8, 10, 20].map(value => ({ value, label: `${value} px` })) },
     { name: 'blur', label: 'Smoothing', group: 'detection', type: 'number', unit: 'px', min: 0, max: 2, step: 1, help: 'Blur radius.' },
-    { name: 'trigger_seconds', label: 'Motion duration', group: 'detection', type: 'number', unit: 's', min: 0, max: 30, step: 0.5, help: 'Motion must last this long.' },
+    { name: 'trigger_seconds', label: 'Motion duration', group: 'detection', type: 'number', unit: 's', min: 0.1, max: 10.9, step: 0.1, help: 'Motion must last this long.' },
     { name: 'record', label: 'Record to SD card', group: 'recording', type: 'boolean', help: 'Store clips.' },
     { name: 'post_seconds', label: 'Keep recording', group: 'recording', type: 'number', unit: 's', min: 1, max: 300, step: 1, help: 'After motion stops.' },
   ];

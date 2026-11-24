@@ -48,7 +48,7 @@ const Field kFields[] = {
     {"cell", "Cell size", "detection", "px", "Analysis grid in analysis-image pixels. Smaller cells notice smaller objects.", Kind::select, 0, 0, 1, kCells, std::size(kCells), FIELD_INT(cell)},
     {"min_texture", "Minimum texture", "detection", "", "Skips flat cells where flow is unreliable. Higher values ignore more of the scene.", Kind::number, 0, 50, 0.5, nullptr, 0, FIELD_FLOAT(min_texture)},
     {"blur", "Smoothing", "detection", "px", "Blur radius before measuring flow; reduces sensor noise.", Kind::number, 0, 2, 1, nullptr, 0, FIELD_INT(blur)},
-    {"trigger_seconds", "Motion duration", "detection", "s", "Motion must last this long before recording starts.", Kind::number, 0, 30, 0.5, nullptr, 0, FIELD_FLOAT(trigger_seconds)},
+    {"trigger_seconds", "Motion duration", "detection", "s", "Motion must last this long before recording starts.", Kind::number, 0.1, 10.9, 0.1, nullptr, 0, FIELD_FLOAT(trigger_seconds)},
     {"overlay", "Show motion in preview", "detection", "", "Highlight moving cells over the live picture.", Kind::boolean, 0, 1, 1, nullptr, 0, FIELD_BOOL(overlay)},
     {"record", "Record to SD card", "recording", "", "Store a clip while motion lasts, at the selected camera resolution.", Kind::boolean, 0, 1, 1, nullptr, 0, FIELD_BOOL(record)},
     {"post_seconds", "Keep recording", "recording", "s", "Continue this long after motion stops.", Kind::number, 1, 300, 1, nullptr, 0, FIELD_INT(post_seconds)},
@@ -104,7 +104,11 @@ bool read_value(const Field &field, const cJSON *item, double &value) {
 }
 
 void write_value(cJSON *object, const Field &field, const MotionSettings &values) {
-    const double value = field.get(values);
+    double value = field.get(values);
+    // Floats hold 0.1 steps inexactly (10.9 reads back as 10.8999996...), which
+    // read_value would reject when the saved settings are loaded. Write numbers
+    // on the field's step grid.
+    if (field.kind == Kind::number) value = field.min + std::round((value - field.min) / field.step) * field.step;
     if (field.kind == Kind::boolean) cJSON_AddBoolToObject(object, field.name, value != 0);
     else if (field.kind == Kind::select && field.options[0].id) cJSON_AddStringToObject(object, field.name, field.options[size_t(value)].id);
     else cJSON_AddNumberToObject(object, field.name, value);
