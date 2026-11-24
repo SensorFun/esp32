@@ -8,13 +8,15 @@ class CameraTiming {
 public:
     // Doubles the sensor clock. The driver rewrites the clock registers on every
     // mode change, so initialize() (called after each one) applies it again.
+    // It applies up to `max_size` (YAML clock_2x.max_resolution); larger sizes
+    // keep the driver's clock.
     // OV2640: CLKRC bit 7, the internal doubler; light timings change bits 5:0.
     // OV3660 (experimental): the driver's JPEG PLL divides by 3 before the VCO
     // (0x303D bits 5:4 = 3); /1.5 (1) doubles SYSCLK, and the pixel clock divider
     // (0x3824) is doubled first, so the ESP32 keeps receiving a 10 MHz pixel
     // clock. Other PLL settings, such as raw capture, are left alone.
     // Off leaves the driver's own values untouched.
-    void set_clock_doubler(bool enabled) { doubler_ = enabled; }
+    void set_clock_doubler(bool enabled, int max_size) { doubler_ = enabled; doubler_max_ = max_size; }
     // 1 when the sensor clock is doubled, 0 when not, -1 for other sensors.
     int clock_doubler() const {
         if (!sensor_) return -1;
@@ -31,11 +33,12 @@ public:
     int initialize(sensor_t *sensor) {
         sensor_ = sensor;
         if (sensor_->id.PID == OV3660_PID) {
-            if (doubler_ && double_ov3660_pll()) return -1;
+            if (doubling() && double_ov3660_pll()) return -1;
             baseline_ = sensor_->get_reg(sensor_, 0x380c, 0x1fff);
         }
         else if (sensor_->id.PID == OV2640_PID) {
-            if (doubler_ && (sensor_->set_reg(sensor_, 0x111, 0x80, 0x80) || sensor_->get_reg(sensor_, 0x111, 0x80) != 0x80)) return -1;
+            if (doubling() &&
+                (sensor_->set_reg(sensor_, 0x111, 0x80, 0x80) || sensor_->get_reg(sensor_, 0x111, 0x80) != 0x80)) return -1;
             baseline_ = sensor_->get_reg(sensor_, 0x111, 0x3f);
         }
         else return -1;
@@ -65,6 +68,7 @@ public:
                                 sensor_->id.PID == OV3660_PID ? 0x1fff : 0x3f);
     }
 private:
+    bool doubling() const { return doubler_ && int(sensor_->status.framesize) <= doubler_max_; }
     int double_ov3660_pll() {
         const int pre = sensor_->get_reg(sensor_, 0x303d, 0x30);
         if (pre < 0) return -1;
@@ -78,4 +82,5 @@ private:
     sensor_t *sensor_ = nullptr;
     int baseline_ = -1, selected_ = 0;
     bool doubler_ = false;
+    int doubler_max_ = -1;
 };

@@ -143,9 +143,13 @@ sensor's maximum frame rate.
 The profile names match the server. The OV5647/P4's absolute HTS/VTS values are
 sensor-specific. The shared OV profile defaults to **Mid light** (`mid_light`).
 
-`clock_2x` (shared, on) doubles the sensor clock, which raised streaming speed
-on the ESP32-CAM. The OV2640 sets its internal doubler (`CLKRC` bit 7), which
-Light timing's divider bits leave intact. On the OV3660 it is experimental: the
+`clock_2x` (shared: `{enabled: true, max_resolution: 800x600}`) doubles the
+sensor clock up to `max_resolution`, which raised streaming speed on the
+ESP32-CAM; larger sizes keep the driver's clock. A sensor file can override
+either key. The OV2640 sets its internal doubler (`CLKRC` bit 7), which Light
+timing's divider bits leave intact. Above 800 x 600 the OV2640 switches to its
+UXGA mode, where the doubled pixel clock outran capture and every JPEG lost its
+end marker, so 1600 x 1200 never streamed with the doubler on. On the OV3660 it is experimental: the
 driver's JPEG PLL pre-divider changes from /3 to /1.5 (`0x303D`), and the pixel
 clock divider (`0x3824`) doubles first, so the ESP32 still receives a 10 MHz
 pixel clock; other PLL settings are left alone. The driver resets these

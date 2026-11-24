@@ -30,6 +30,14 @@ TIMING = ('high_light', 'mid_light', 'low_light')
 TIMED = {'ov2640', 'ov3660'}
 # Keys a sensor profile (shared section merged with the sensor file) may hold.
 PROFILE_KEYS = {'timing_profile', 'clock_2x', 'controls'}
+# esp32-camera 2.1.6 framesize_t names by resolution, in the driver's order.
+RESOLUTIONS = {
+    '96x96': '96X96', '160x120': 'QQVGA', '128x128': '128X128', '176x144': 'QCIF',
+    '240x176': 'HQVGA', '240x240': '240X240', '320x240': 'QVGA', '320x320': '320X320',
+    '400x296': 'CIF', '480x320': 'HVGA', '640x480': 'VGA', '800x600': 'SVGA',
+    '1024x768': 'XGA', '1280x720': 'HD', '1280x1024': 'SXGA', '1600x1200': 'UXGA',
+    '1920x1080': 'FHD', '720x1280': 'P_HD', '864x1536': 'P_3MP', '2048x1536': 'QXGA',
+}
 
 
 def integer(value):
@@ -95,12 +103,21 @@ def load_sensor(root, sensor, common):
         raise ValueError(f'{sensor}: unknown keys {set(own) - PROFILE_KEYS - {"name"}}')
     if not isinstance(own.get('controls', {}), dict):
         raise ValueError(f'{sensor}: controls must be a mapping')
-    # The sensor file overrides shared keys, and shared controls one by one.
-    profile = {**common, **own, 'controls': {**common.get('controls', {}), **own.get('controls', {})}}
-    # Double the sensor clock: OV2640 CLKRC doubler, OV3660 PLL pre-divider.
-    clock_2x = profile.get('clock_2x', False)
-    if not isinstance(clock_2x, bool) or (clock_2x and sensor not in TIMED):
-        raise ValueError(f'{sensor}: clock_2x must be true or false, and only OV sensors support it')
+    # The sensor file overrides shared keys; nested settings (controls,
+    # clock_2x) merge one level deep, so it can override single entries.
+    profile = dict(common)
+    for key, value in own.items():
+        profile[key] = {**common[key], **value} if isinstance(common.get(key), dict) and isinstance(value, dict) else value
+    profile.setdefault('controls', {})
+    # Double the sensor clock (OV2640 CLKRC doubler, OV3660 PLL pre-divider)
+    # up to a maximum resolution.
+    clock = profile.get('clock_2x', {'enabled': False})
+    if (not isinstance(clock, dict) or set(clock) - {'enabled', 'max_resolution'} or not isinstance(clock.get('enabled'), bool)
+            or (clock['enabled'] and (sensor not in TIMED or clock.get('max_resolution') not in RESOLUTIONS))):
+        raise ValueError(f'{sensor}: clock_2x must be {{enabled: true|false, max_resolution: WIDTHxHEIGHT}}; only OV sensors '
+                         f'support it, and max_resolution is one of {", ".join(RESOLUTIONS)}')
+    clock_2x = clock['enabled']
+    clock_max = 'FRAMESIZE_' + RESOLUTIONS[clock['max_resolution']] if clock_2x else 'FRAMESIZE_INVALID'
     timing = profile.get('timing_profile')
     if (sensor in TIMED) != (timing is not None) or (timing is not None and timing not in TIMING):
         raise ValueError(f'{sensor}: timing_profile must be one of {TIMING} for OV sensors and absent otherwise')
@@ -111,7 +128,8 @@ def load_sensor(root, sensor, common):
     if unknown:
         raise ValueError(f'{sensor}: unmapped camera controls {sorted(unknown)}')
     specs = [control_spec(sensor, name, controls[name]) for name in MEMBERS if name in controls]
-    return {'sensor': sensor, 'timing': TIMING.index(timing) if timing else -1, 'clock_2x': clock_2x, 'controls': specs}
+    return {'sensor': sensor, 'timing': TIMING.index(timing) if timing else -1, 'clock_2x': clock_2x,
+            'clock_max': clock_max, 'controls': specs}
 
 
 def generate(root):
@@ -135,7 +153,7 @@ def generate(root):
               'struct Option { int value; const char *label; };',
               'enum class Kind { range, list, toggle };',
               'struct ControlSpec { const char *name; Kind kind; int value, low, high; const Option *options; size_t option_count; };',
-              'struct SensorProfile { const char *sensor; int timing_profile; bool clock_2x; const ControlSpec *controls; size_t count; };']
+              'struct SensorProfile { const char *sensor; int timing_profile; bool clock_2x; framesize_t clock_2x_max; const ControlSpec *controls; size_t count; };']
     kinds = {'range': 'Kind::range', 'options': 'Kind::list', 'switch': 'Kind::toggle'}
     for profile in profiles:
         for spec in profile['controls']:
@@ -150,7 +168,7 @@ def generate(root):
     lines.append('static const SensorProfile profiles[] = {')
     for profile in profiles:
         sensor = profile['sensor']
-        lines.append(f'{{"{sensor}", {profile["timing"]}, {str(profile["clock_2x"]).lower()}, controls_{sensor}, sizeof(controls_{sensor}) / sizeof(ControlSpec)}},')
+        lines.append(f'{{"{sensor}", {profile["timing"]}, {str(profile["clock_2x"]).lower()}, {profile["clock_max"]}, controls_{sensor}, sizeof(controls_{sensor}) / sizeof(ControlSpec)}},')
     lines.append('};')
     return '\n'.join(lines) + '\n'
 

@@ -43,9 +43,9 @@ class CameraProfileTests(unittest.TestCase):
     def test_each_sensor_has_its_own_profile(self):
         result, content = self.generate()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('{"ov2640", 1, true, controls_ov2640', content)
-        self.assertIn('{"ov3660", 1, true, controls_ov3660', content)
-        self.assertIn('{"gc0308", -1, false, controls_gc0308', content)
+        self.assertIn('{"ov2640", 1, true, FRAMESIZE_SVGA, controls_ov2640', content)
+        self.assertIn('{"ov3660", 1, true, FRAMESIZE_SVGA, controls_ov3660', content)
+        self.assertIn('{"gc0308", -1, false, FRAMESIZE_INVALID, controls_gc0308', content)
         self.assertIn('s->set_whitebal(s, v)', content)
         ov2640, ov3660, gc0308 = (self.section(content, s) for s in ('ov2640', 'ov3660', 'gc0308'))
         # The OV2640 driver implements neither sharpness nor denoise.
@@ -89,6 +89,7 @@ class CameraProfileTests(unittest.TestCase):
                             'colorbar', 'hmirror', 'vflip', 'whitebal', 'awb_gain', 'wb_mode', 'gain_ctrl', 'agc_gain', 'exposure_ctrl',
                             'aec_value', 'ae_level', 'aec2', 'dcw', 'bpc', 'wpc', 'raw_gma', 'lenc'))
                   + ' int (*set_gainceiling)(sensor_t *, int); };\nusing gainceiling_t = int;\n'
+                  'enum framesize_t { FRAMESIZE_SVGA = 11, FRAMESIZE_UXGA = 15, FRAMESIZE_INVALID = 25 };\n'
                   'struct Control { const char *name; int (*set)(sensor_t *, int); int (*get)(sensor_t *); };\n' + content
                   + 'static_assert(sizeof(profiles) / sizeof(profiles[0]) == 3);\n')
         result = subprocess.run(['c++', '-x', 'c++', '-std=c++17', '-fsyntax-only', '-Wall', '-Werror', '-Wno-unused-variable', '-'],
@@ -111,10 +112,13 @@ class CameraProfileTests(unittest.TestCase):
             'reversed range': ('ov2640', control('aec_value', {'default': 300, 'range': [1200, 0]})),
             'unknown timing': ('ov2640', lambda profile: profile.__setitem__('timing_profile', 'unknown')),
             'GC timing': ('gc0308', lambda profile: profile.__setitem__('timing_profile', 'mid_light')),
-            'GC clock_2x': ('gc0308', lambda profile: profile.__setitem__('clock_2x', True)),
+            'GC clock_2x': ('gc0308', lambda profile: profile.__setitem__('clock_2x', {'enabled': True, 'max_resolution': '800x600'})),
             'wrong name': ('gc0308', lambda profile: profile.__setitem__('name', 'gc')),
             'unknown key': ('gc0308', lambda profile: profile.__setitem__('extra', 1)),
-            'clock_2x not boolean': ('ov2640', lambda profile: profile.__setitem__('clock_2x', 1)),
+            'clock_2x not a mapping': ('ov2640', lambda profile: profile.__setitem__('clock_2x', True)),
+            'clock_2x enabled not boolean': ('ov2640', lambda profile: profile.__setitem__('clock_2x', {'enabled': 1})),
+            'clock_2x unknown resolution': ('ov2640', lambda profile: profile.__setitem__('clock_2x', {'max_resolution': '800x601'})),
+            'clock_2x unknown key': ('ov3660', lambda profile: profile.__setitem__('clock_2x', {'speed': 2})),
             'controls not a mapping': ('ov3660', lambda profile: profile.__setitem__('controls', [])),
         }
         for label, (sensor, change) in cases.items():
@@ -141,20 +145,24 @@ class CameraProfileTests(unittest.TestCase):
             with self.subTest(profile=name):
                 result, content = self.generate('ov2640', lambda profile: profile.__setitem__('timing_profile', name))
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertRegex(content, r'\{"ov2640", ' + str(index) + r', (true|false), controls_ov2640')
+                self.assertRegex(content, r'\{"ov2640", ' + str(index) + r', (true|false), FRAMESIZE_\w+, controls_ov2640')
 
     def test_clock_doubler_flag(self):
-        # Shared by both OV sensors; a sensor file can override it.
+        # Shared by both OV sensors, up to the shared maximum resolution.
         result, content = self.generate()
-        self.assertIn(', true, controls_ov2640', content)
-        self.assertIn(', true, controls_ov3660', content)
-        result, content = self.generate('ov3660', lambda profile: profile.__setitem__('clock_2x', False))
+        self.assertIn(', true, FRAMESIZE_SVGA, controls_ov2640', content)
+        self.assertIn(', true, FRAMESIZE_SVGA, controls_ov3660', content)
+        # A sensor file overrides single entries: only the OV3660 changes.
+        result, content = self.generate('ov3660', lambda profile: profile.__setitem__('clock_2x', {'max_resolution': '1600x1200'}))
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn(', true, controls_ov2640', content)
-        self.assertIn(', false, controls_ov3660', content)
+        self.assertIn(', true, FRAMESIZE_SVGA, controls_ov2640', content)
+        self.assertIn(', true, FRAMESIZE_UXGA, controls_ov3660', content)
+        result, content = self.generate('ov3660', lambda profile: profile.__setitem__('clock_2x', {'enabled': False}))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(', false, FRAMESIZE_INVALID, controls_ov3660', content)
         result, content = self.generate(family_change=lambda listed: listed['common'].pop('clock_2x'))
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn(', false, controls_ov2640', content)
+        self.assertIn(', false, FRAMESIZE_INVALID, controls_ov2640', content)
 
     def test_shared_ov_settings(self):
         result, content = self.generate()
