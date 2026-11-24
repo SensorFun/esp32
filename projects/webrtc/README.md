@@ -442,9 +442,12 @@ Device history remains bounded to 48 events, and reports identify history gaps.
 history; the camera then records that a viewer cleared it. Event ids keep
 increasing, so a clear is never reported as a history gap.
 
-The shared Diagnostics panel provides **Download core dump** after authentication
-in both local and remote viewers. It saves `camera-core-dump.bin` over the
-encrypted data channel with progress and cancellation. The camera sends bounded
-chunks through its existing bulk-traffic pacer, pauses capture/analysis/recording
-during transfer, and retains the saved dump in flash. A missing dump is reported
-in the panel. Use the matching archived ELF to decode the downloaded raw dump.
+The shared Diagnostics panel provides **Download crash summary** after
+authentication in both local and remote viewers. It saves
+`camera-crash-summary.txt`: the crashed firmware's ELF hash (and whether the
+running build matches), the crashed task, exception cause, faulting address,
+program counter and backtrace, plus an `addr2line` command to decode them with
+the matching archived `webrtc.elf`. The raw dump never leaves the camera over the
+network: its task stacks can hold keys, passwords, signaling URLs and IP
+addresses. CPU registers are left out of the summary for the same reason. The
+saved dump stays in flash; a missing dump is reported in the panel.

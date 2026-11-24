@@ -120,10 +120,7 @@ extern const unsigned char logs_end[] asm("_binary_logs_js_end");
 struct Transfer {
     int fd = -1;
     uint32_t id = 0, size = 0, offset = 0, buffered = UINT32_MAX;
-    bool core = false;
-    size_t address = 0;
-    uint32_t request_id = 0;
-    bool active() const { return fd >= 0 || core; }
+    bool active() const { return fd >= 0; }
 } transfer;
 uint32_t transfer_ids = 0;
 bool playback_active = false, media_paused = false;
@@ -170,33 +167,15 @@ int send_text(cJSON *json) {
     return 0;
 }
 void stop_transfer() {
-    if (transfer.core && transfer.offset < transfer.size) {
-        cJSON *reply = cJSON_CreateObject();
-        cJSON_AddStringToObject(reply, "type", "core_dump");
-        cJSON_AddNumberToObject(reply, "id", transfer.id);
-        cJSON_AddNumberToObject(reply, "request_id", transfer.request_id);
-        cJSON_AddStringToObject(reply, "error", "Core dump download interrupted; please retry");
-        send_text(reply);
-    }
     if (transfer.active()) {
         diagnostic_eventf("info", "Download %s: %u/%u bytes", transfer.offset == transfer.size ? "completed" : "stopped", unsigned(transfer.offset), unsigned(transfer.size));
         if (transfer.fd >= 0) close(transfer.fd);
     }
     transfer.fd = -1;
-    transfer.core = false;
     transfer.buffered = UINT32_MAX;
     pause_media(playback_active);
 }
 void start_transfer(const cJSON *request) {
-    if (transfer.core) {
-        cJSON *reply = cJSON_CreateObject();
-        cJSON_AddStringToObject(reply, "type", "download");
-        const cJSON *name = cJSON_GetObjectItemCaseSensitive(request, "name");
-        if (cJSON_IsString(name)) cJSON_AddStringToObject(reply, "name", name->valuestring);
-        cJSON_AddStringToObject(reply, "error", "Wait for the core dump download to finish");
-        send_text(reply);
-        return;
-    }
     stop_transfer();
     pause_media(true);
     const cJSON *name = cJSON_GetObjectItemCaseSensitive(request, "name");
@@ -215,25 +194,96 @@ void start_transfer(const cJSON *request) {
     }
     send_text(reply);
 }
-void start_core_download(const cJSON *request) {
+#if CONFIG_IDF_TARGET_ARCH_XTENSA
+const char *exception_name(uint32_t cause) {
+    switch (cause) {
+    case 0: return "IllegalInstruction";
+    case 1: return "Syscall";
+    case 2: return "InstructionFetchError";
+    case 3: return "LoadStoreError";
+    case 4: return "Level1Interrupt";
+    case 5: return "Alloca";
+    case 6: return "IntegerDivideByZero";
+    case 8: return "Privileged";
+    case 9: return "LoadStoreAlignment";
+    case 12: return "InstrPIFDataError";
+    case 13: return "LoadStorePIFDataError";
+    case 14: return "InstrPIFAddrError";
+    case 15: return "LoadStorePIFAddrError";
+    case 16: return "InstTLBMiss";
+    case 17: return "InstTLBMultiHit";
+    case 18: return "InstFetchPrivilege";
+    case 20: return "InstFetchProhibited";
+    case 24: return "LoadStoreTLBMiss";
+    case 25: return "LoadStoreTLBMultiHit";
+    case 26: return "LoadStorePrivilege";
+    case 28: return "LoadProhibited";
+    case 29: return "StoreProhibited";
+    default: return "unknown";
+    }
+}
+#endif
+
+// The saved core dump holds raw task stacks, which can contain keys,
+// passwords, signaling URLs and IP addresses, so it never leaves the board.
+// Viewers get this text summary instead: the crashed task's name, exception
+// cause, faulting address and code addresses only. CPU registers are left out
+// because they can hold data values.
+void send_crash_summary(const cJSON *request) {
     cJSON *reply = cJSON_CreateObject();
-    cJSON_AddStringToObject(reply, "type", "core_dump");
+    cJSON_AddStringToObject(reply, "type", "crash_summary");
     const cJSON *token = cJSON_GetObjectItemCaseSensitive(request, "request_id");
     const double value = cJSON_IsNumber(token) ? token->valuedouble : 0;
-    const uint32_t request_id = value >= 1 && value <= UINT32_MAX ? uint32_t(value) : 0;
-    cJSON_AddNumberToObject(reply, "request_id", request_id);
-    size_t address = 0, size = 0;
-    const esp_err_t result = esp_core_dump_image_get(&address, &size);
-    if (transfer.active()) cJSON_AddStringToObject(reply, "error", "Another download is in progress");
-    else if (result != ESP_OK || !size || size > 256 * 1024) {
-        cJSON_AddStringToObject(reply, "error", "No readable saved core dump is available");
-    } else {
-        pause_media(true);
-        transfer = {-1, ++transfer_ids, uint32_t(size), 0, UINT32_MAX, true, address, request_id};
-        cJSON_AddNumberToObject(reply, "id", transfer.id);
-        cJSON_AddNumberToObject(reply, "size", size);
-        diagnostic_eventf("info", "Core dump download started: %u bytes", unsigned(size));
+    cJSON_AddNumberToObject(reply, "request_id", value >= 1 && value <= UINT32_MAX ? uint32_t(value) : 0);
+    auto *summary = static_cast<esp_core_dump_summary_t *>(calloc(1, sizeof(esp_core_dump_summary_t)));
+    const esp_err_t result = summary ? esp_core_dump_get_summary(summary) : ESP_ERR_NO_MEM;
+    if (result != ESP_OK) {
+        cJSON_AddStringToObject(reply, "error", result == ESP_ERR_NO_MEM ? "Not enough memory for the crash summary"
+                                                                          : "No saved crash on this camera");
+        free(summary);
+        send_text(reply);
+        return;
     }
+    char running[65] = {};
+    esp_app_get_elf_sha256(running, sizeof(running));
+    char task[sizeof(summary->exc_task) + 1] = {}, elf[sizeof(summary->app_elf_sha256) + 1] = {};
+    memcpy(task, summary->exc_task, sizeof(summary->exc_task));
+    memcpy(elf, summary->app_elf_sha256, sizeof(summary->app_elf_sha256));
+    std::string text = "Camera crash summary\n";
+    char line[160];
+    const auto add = [&](const char *format, auto... values) { snprintf(line, sizeof(line), format, values...); text += line; };
+    add("Crashed firmware ELF SHA-256 (prefix): %s\n", elf);
+    add("Running firmware: %s, ELF SHA-256 %s (%s)\n", esp_app_get_description()->version, running,
+        elf[0] && !strncmp(running, elf, strlen(elf)) ? "same build" : "different build");
+    add("Core dump format: 0x%08x\n", unsigned(summary->core_dump_version));
+    add("Task: %s\n", task[0] ? task : "(unknown)");
+    add("PC: 0x%08x\n", unsigned(summary->exc_pc));
+#if CONFIG_IDF_TARGET_ARCH_XTENSA
+    add("Exception cause: %u (%s)\n", unsigned(summary->ex_info.exc_cause), exception_name(summary->ex_info.exc_cause));
+    add("Faulting address: 0x%08x\n", unsigned(summary->ex_info.exc_vaddr));
+    for (int level = 0; level < EPCx_REGISTER_COUNT; ++level) {
+        if (summary->ex_info.epcx_reg_bits & (1 << level)) add("EPC%d: 0x%08x\n", level + 1, unsigned(summary->ex_info.epcx[level]));
+    }
+#endif
+    const uint32_t depth = std::min<uint32_t>(summary->exc_bt_info.depth, std::size(summary->exc_bt_info.bt));
+    add("Backtrace (%u entries%s):", unsigned(depth), summary->exc_bt_info.corrupted ? ", corrupted" : "");
+    std::string addresses;
+    for (uint32_t i = 0; i < depth; ++i) { add(" 0x%08x", unsigned(summary->exc_bt_info.bt[i])); addresses += line; }
+    text += "\n\nDecode with the matching build's webrtc.elf:\n";
+#if CONFIG_IDF_TARGET_ARCH_XTENSA
+    text += "xtensa-" CONFIG_IDF_TARGET "-elf-addr2line -pfiaC -e webrtc.elf";
+#else
+    text += "riscv32-esp-elf-addr2line -pfiaC -e webrtc.elf";
+#endif
+    // The backtrace normally starts at the PC; list it separately only if not.
+    if (!depth || summary->exc_bt_info.bt[0] != summary->exc_pc) {
+        snprintf(line, sizeof(line), " 0x%08x", unsigned(summary->exc_pc));
+        text += line;
+    }
+    text += addresses + "\n";
+    free(summary);
+    cJSON_AddStringToObject(reply, "text", text.c_str());
+    diagnostic_event("info", "Crash summary sent to viewer");
     send_text(reply);
 }
 // Viewers send their clock; it names clips until SNTP synchronizes.
@@ -764,9 +814,8 @@ void worker(common::Application &app) {
                     }
                     else if (cJSON_IsString(op) && !strcmp(op->valuestring, "time")) set_clock(request);
                     else if (cJSON_IsString(op) && !strcmp(op->valuestring, "recording_download")) start_transfer(request);
-                    else if (cJSON_IsString(op) && !strcmp(op->valuestring, "recording_cancel")) { if (!transfer.core) stop_transfer(); }
-                    else if (cJSON_IsString(op) && !strcmp(op->valuestring, "core_dump_download")) start_core_download(request);
-                    else if (cJSON_IsString(op) && !strcmp(op->valuestring, "core_dump_cancel")) { if (transfer.core) stop_transfer(); }
+                    else if (cJSON_IsString(op) && !strcmp(op->valuestring, "recording_cancel")) stop_transfer();
+                    else if (cJSON_IsString(op) && !strcmp(op->valuestring, "crash_summary")) send_crash_summary(request);
                     else if (cJSON_IsString(op) && !strcmp(op->valuestring, "recording_playback")) {
                         playback_active = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(request, "active"));
                         pause_media(playback_active || transfer.active());
@@ -883,22 +932,19 @@ void worker(common::Application &app) {
                     const uint32_t size = std::min<uint32_t>(CHUNK, transfer.size - transfer.offset);
                     bool read_failed = false;
                     if (transfer.buffered != transfer.offset) {
-                        read_failed = transfer.core
-                            ? esp_flash_read(nullptr, packet + 16, transfer.address + transfer.offset, size) != ESP_OK
-                            : lseek(transfer.fd, transfer.offset, SEEK_SET) < 0 || read(transfer.fd, packet + 16, size) != ssize_t(size);
+                        read_failed = lseek(transfer.fd, transfer.offset, SEEK_SET) < 0 || read(transfer.fd, packet + 16, size) != ssize_t(size);
                     }
                     if (read_failed) {
                         cJSON *error = cJSON_CreateObject();
-                        cJSON_AddStringToObject(error, "type", transfer.core ? "core_dump" : "download");
+                        cJSON_AddStringToObject(error, "type", "download");
                         cJSON_AddNumberToObject(error, "id", transfer.id);
-                        if (transfer.core) cJSON_AddNumberToObject(error, "request_id", transfer.request_id);
-                        cJSON_AddStringToObject(error, "error", transfer.core ? "Core dump flash read failed" : "SD card read failed");
+                        cJSON_AddStringToObject(error, "error", "SD card read failed");
                         send_text(error); stop_transfer();
                         break;
                     }
                     transfer.buffered = transfer.offset;
                     // Four LE uint32: magic "FILE", transfer id, total bytes, byte offset.
-                    const uint32_t header[] = {transfer.core ? 0x45524f43u : 0x454c4946u, transfer.id, transfer.size, transfer.offset};
+                    const uint32_t header[] = {0x454c4946u, transfer.id, transfer.size, transfer.offset};
                     memcpy(packet, header, sizeof(header));
                     esp_peer_data_frame_t chunk{};
                     chunk.type = ESP_PEER_DATA_CHANNEL_DATA; chunk.stream_id = stream_id;
