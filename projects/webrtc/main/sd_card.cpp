@@ -1,4 +1,5 @@
 #include "sd_card.h"
+#include "driver/gpio.h"
 #include "diagnostics.h"
 #include "esp_log.h"
 #include <atomic>
@@ -23,7 +24,24 @@ std::atomic<State> current{State::unsupported};
 
 #if defined(SD_MMC_D0_GPIO_NUM)
 namespace {
+// On the AI Thinker board the flash LED's transistor hangs off GPIO4, which is
+// also the card's D1 line. 1-bit mode leaves D1 unused, so the pin would float:
+// an inserted card's D1 pull-up then half-opens the transistor and the LED
+// glows. Holding it low keeps the LED off; memory cards ignore D1 in 1-bit mode.
+void hold_flash_led_off() {
+#if defined(LED_GPIO_NUM)
+    static bool done = false;
+    if (done) return;
+    const auto pin = static_cast<gpio_num_t>(LED_GPIO_NUM);
+    gpio_reset_pin(pin);
+    gpio_set_direction(pin, GPIO_MODE_OUTPUT);
+    gpio_set_level(pin, 0);
+    done = true;
+#endif
+}
+
 esp_err_t mount_card(bool format_if_needed) {
+    hold_flash_led_off();
     if (card) return ESP_OK;
     sdmmc_host_t host = SDMMC_HOST_DEFAULT();
     host.slot = SD_MMC_SLOT;
