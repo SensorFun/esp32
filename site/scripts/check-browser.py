@@ -517,8 +517,8 @@ with sync_playwright() as p:
         path = route.request.url.split('camera.test', 1)[1]
         if path == '/':
             route.fulfill(body=(workspace / 'projects/webrtc/main/viewer.html').read_text(), content_type='text/html; charset=utf-8', headers={'Content-Security-Policy': viewer_csp})
-        elif path in ('/camera-settings.js', '/camera-motion.js'):
-            route.fulfill(body=(camera_ui / ('settings.js' if 'settings' in path else 'motion.js')).read_text(), content_type='application/javascript')
+        elif path in ('/camera-settings.js', '/camera-motion.js', '/camera-logs.js'):
+            route.fulfill(body=(camera_ui / (path.removeprefix('/camera-'))).read_text(), content_type='application/javascript')
         else:
             route.fulfill(status=404, body='{}')
 
@@ -529,8 +529,24 @@ with sync_playwright() as p:
         expect(page.get_by_role('tab', name='Motion detection', exact=True)).to_have_attribute('aria-selected', 'true')
         panel = page.locator('sensorfan-motion-settings[group=detection]')
         expect(panel.get_by_role('heading', name='Motion detection', exact=True)).to_be_visible()
-        flow = panel.get_by_label('Minimum speed', exact=True)
+        # Like camera settings: few values are a list, many a 10-step slider
+        # beside the exact number.
+        flow = panel.get_by_role('spinbutton', name='Minimum speed', exact=True)
         expect(flow).to_have_value('2.5')
+        speed_slider = panel.get_by_role('slider', name='Minimum speed', exact=True)
+        expect(speed_slider).to_have_value('1')
+        speed_slider.fill('4')
+        expect(flow).to_have_value('16')
+        assert page.evaluate("motionHarness.state.commands.filter(c=>c.op==='motion_set').at(-1).settings.min_speed") == 16
+        flow.fill('2.5')
+        expect(speed_slider).to_have_value('1')
+        smoothing = panel.get_by_role('combobox', name='Smoothing', exact=True)
+        expect(smoothing.locator('option')).to_have_text(['0 px', '1 px', '2 px'])
+        expect(smoothing).to_have_value('1')
+        expect(panel.get_by_role('slider')).to_have_count(2)  # Minimum speed, Motion duration
+        if width <= 600:
+            assert speed_slider.bounding_box()['height'] >= 44
+        assert panel.evaluate('(element)=>element.shadowRoot.querySelector("section").scrollWidth <= element.shadowRoot.querySelector("section").clientWidth')
         expect(panel.get_by_label('Detect motion', exact=True)).to_be_checked()
         columns = panel.locator('.fields').evaluate(
             "grid => getComputedStyle(grid).gridTemplateColumns.split(' ').length"
@@ -572,24 +588,20 @@ with sync_playwright() as p:
         page.get_by_role('tab', name='SD card recording', exact=True).click()
         recording = page.locator('sensorfan-motion-settings[group=recording]')
         expect(recording.get_by_role('heading', name='Recording settings', exact=True)).to_be_visible()
-        expect(recording.get_by_label('Minimum speed', exact=True)).to_have_count(0)
+        expect(recording.get_by_role('spinbutton', name='Minimum speed', exact=True)).to_have_count(0)
         record = recording.get_by_label('Record to SD card', exact=True)
         expect(record).to_be_checked()
         expect(recording.get_by_text('Recording 0:12', exact=True)).to_be_visible()
         for button in recording.get_by_role('button').all():
             assert button.bounding_box()['height'] >= 44
-        pre = recording.get_by_label('Pre-record', exact=True)
+        expect(recording.get_by_label('Pre-record', exact=True)).to_have_count(0)
+        post = recording.get_by_role('spinbutton', name='Keep recording', exact=True)
         if width <= 600:
-            assert pre.evaluate('(input)=>parseFloat(getComputedStyle(input).fontSize)>=16')
-        expect(pre).to_have_attribute('max', '4')
-        expect(recording.get_by_text(re.compile(r'^Up to 4 s now, limited by free PSRAM'))).to_be_visible()
-        pre.fill('6')
-        assert not pre.evaluate('(input)=>input.checkValidity()')
-        pre.fill('2')
+            assert post.evaluate('(input)=>parseFloat(getComputedStyle(input).fontSize)>=16')
         recording.get_by_role('button', name='Save', exact=True).click()
         expect(recording.get_by_text('Recording settings saved on camera.', exact=True)).to_be_visible()
         applied = page.evaluate("motionHarness.state.commands.filter(c=>c.op==='motion_apply').at(-1).settings")
-        assert applied == {'record': True, 'pre_seconds': 2, 'post_seconds': 10}, applied
+        assert applied == {'record': True, 'post_seconds': 10}, applied
         warning = recording.get_by_text("No SD card inserted. The camera can't record clips right now.", exact=True)
         expect(warning).to_be_hidden()
         page.evaluate("motionHarness.status({sd: {state: 'absent'}, enabled: false, recording: false})")
@@ -604,16 +616,11 @@ with sync_playwright() as p:
         page.evaluate('motionHarness.status()')
         expect(warning).to_be_hidden()
         # Reset restores only this panel's fields; detection keeps its saved values.
-        recording.get_by_label('Keep recording', exact=True).fill('30')
+        recording.get_by_role('spinbutton', name='Keep recording', exact=True).fill('30')
         recording.get_by_role('button', name='Reset to Default', exact=True).click()
-        expect(recording.get_by_label('Keep recording', exact=True)).to_have_value('10')
+        expect(recording.get_by_role('spinbutton', name='Keep recording', exact=True)).to_have_value('10')
         assert page.evaluate("motionHarness.state.values.min_speed") == 3.75
         assert page.evaluate("motionHarness.state.commands.filter(c=>c.op==='motion_reset').length") == 0
-        # A resolution change lowers the camera's limit; the field follows it.
-        page.evaluate('motionHarness.status({limits: {pre_seconds: 1}})')
-        expect(pre).to_have_attribute('max', '1')
-        expect(pre).to_have_value('1')
-        expect(recording.get_by_text(re.compile(r'^Up to 1 s now'))).to_be_visible()
         overlay = page.locator('sensorfan-motion-overlay')
         expect(overlay.get_by_text('MOTION', exact=True)).to_be_visible()
         preview = page.locator('[data-testid=remote-image], #preview').first.bounding_box()

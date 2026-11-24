@@ -14,13 +14,13 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
 MAIN = ROOT / "projects/webrtc/main"
-COMPONENT = "managed_components/espressif__esp_jpeg/tjpgd"
 # Motion settings returned by motion_get. Recording/UI fields do not affect the detector.
 RANGES = {
-    "analysis_fps": (1, 15, 1), "blur": (0, 2, 1), "min_speed": (0.25, 40, 0.25),
+    "blur": (0, 2, 1), "min_speed": (0.25, 40, 0.25),
     "min_texture": (0, 50, 0.5), "min_area": (0.5, 100, 0.5), "trigger_seconds": (0, 30, 0.5),
 }
-IGNORED = {"overlay", "record", "record_fps", "pre_seconds", "post_seconds",
+# Settings from older firmware (analysis_fps, pre_seconds) are accepted and ignored.
+IGNORED = {"overlay", "record", "record_fps", "analysis_fps", "pre_seconds", "post_seconds",
            "max_clip_seconds", "overwrite_oldest"}
 
 
@@ -77,22 +77,11 @@ def read_clip(path):
     return frame_us, frames
 
 
-def decoder_dir(override):
-    candidates = [override] if override else [
-        ROOT / "projects/webrtc" / COMPONENT,
-        *sorted((ROOT / "build/firmware-cache/webrtc").glob(f"*/{COMPONENT}")),
-    ]
-    for candidate in candidates:
-        if (candidate / "tjpgd.c").is_file():
-            return candidate.resolve()
-    raise ValueError("Pinned esp_jpeg source missing. Build the WebRTC firmware first or pass --decoder-dir.")
-
-
-def build_runner(output, decoder):
+def build_runner(output):
     # The shared decoder header supplies its own configuration on both targets.
     (output / "sdkconfig.h").write_text("#pragma once\n")
     obj = output / "motion_jpeg.o"
-    includes = [f"-I{folder}" for folder in (output, MAIN, decoder)]
+    includes = [f"-I{folder}" for folder in (output, MAIN)]
     subprocess.run(["cc", "-std=c11", "-O2", *includes, "-c", MAIN / "motion_jpeg.c", "-o", obj], check=True)
     executable = output / "replay_motion"
     subprocess.run(["c++", "-std=c++17", "-O2", *includes,
@@ -141,7 +130,6 @@ def main():
     parser.add_argument("--matrix", type=Path, help="JSON profiles and scenarios to cross with the clips")
     parser.add_argument("--jobs", type=int, default=os.cpu_count() or 1)
     parser.add_argument("--report", type=Path, default=ROOT / "build/motion-replay/report.json")
-    parser.add_argument("--decoder-dir", type=Path, help="Directory containing the pinned esp_jpeg tjpgd sources")
     parser.add_argument("--video-output", type=Path, help="Write annotated MP4 videos into this directory")
     args = parser.parse_args()
     if args.jobs < 1:
@@ -172,11 +160,10 @@ def main():
         if args.video_output:
             from motion_video import video_dependencies
             video_deps = video_dependencies()
-        decoder = decoder_dir(args.decoder_dir)
         clips = [(file, read_clip(file)) for file in files]
         cases = [(clip, profile, scenario) for clip in clips for profile in profiles for scenario in scenarios]
         with tempfile.TemporaryDirectory() as tmp:
-            executable = build_runner(Path(tmp), decoder)
+            executable = build_runner(Path(tmp))
             with ThreadPoolExecutor(max_workers=min(args.jobs, len(cases))) as workers:
                 run = partial(run_case, executable=executable, video_output=args.video_output, video_deps=video_deps)
                 results = list(workers.map(run, enumerate(cases, 1)))

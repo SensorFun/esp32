@@ -7,12 +7,12 @@
     { name: 'method', label: 'Method', group: 'detection', type: 'select', help: 'Detection algorithm.', options: [{ value: 'optical_flow', label: 'Optical flow' }] },
     { name: 'min_speed', label: 'Minimum speed', group: 'detection', type: 'number', unit: 'px/s', min: 0.25, max: 40, step: 0.25, help: 'Speed that marks a cell as moving.' },
     { name: 'cell', label: 'Cell size', group: 'detection', type: 'select', unit: 'px', help: 'Analysis grid.', options: [5, 8, 10, 20].map(value => ({ value, label: `${value} px` })) },
+    { name: 'blur', label: 'Smoothing', group: 'detection', type: 'number', unit: 'px', min: 0, max: 2, step: 1, help: 'Blur radius.' },
     { name: 'trigger_seconds', label: 'Motion duration', group: 'detection', type: 'number', unit: 's', min: 0, max: 30, step: 0.5, help: 'Motion must last this long.' },
     { name: 'record', label: 'Record to SD card', group: 'recording', type: 'boolean', help: 'Store clips.' },
-    { name: 'pre_seconds', label: 'Pre-record', group: 'recording', type: 'number', unit: 's', min: 0, max: 4, step: 1, help: 'Keep the seconds before motion.', max_reason: 'free PSRAM, the camera resolution, and the recording rate' },
     { name: 'post_seconds', label: 'Keep recording', group: 'recording', type: 'number', unit: 's', min: 1, max: 300, step: 1, help: 'After motion stops.' },
   ];
-  const defaults = { enabled: false, method: 'optical_flow', min_speed: 2.5, cell: 8, trigger_seconds: 1, record: true, pre_seconds: 2, post_seconds: 10 };
+  const defaults = { enabled: false, method: 'optical_flow', min_speed: 2.5, cell: 8, blur: 1, trigger_seconds: 1, record: true, post_seconds: 10 };
   const state = { values: { ...defaults, enabled: true }, commands: [], clip: null, files: [], chunkDelay: 120 };
   const sd = { state: 'mounted', total_mb: 30436, free_mb: 29001 };
   const views = () => [...document.querySelectorAll('sensorfan-motion-settings, sensorfan-recordings, sensorfan-motion-overlay')];
@@ -96,7 +96,7 @@
       for (let row = 6; row < 9; row++) for (let col = 8; col < 12; col++) bits[row * 20 + col] = 1;
       let grid = '';
       for (let i = 0; i < 300; i += 4) grid += ((bits[i] << 3) | (bits[i + 1] << 2) | (bits[i + 2] << 1) | bits[i + 3]).toString(16);
-      deliver({ type: 'motion_status', enabled: true, method: 'optical_flow', motion: true, area: 4, speed: 6, fps: 5, cols: 20, rows: 15, grid, recording: true, clip: '20261115/142301.AVI', clip_seconds: 12, clip_frames: 120, sd, clock: true, limits: { pre_seconds: 4 }, ...extra });
+      deliver({ type: 'motion_status', enabled: true, method: 'optical_flow', motion: true, area: 4, speed: 6, fps: 5, cols: 20, rows: 15, grid, recording: true, clip: '20261115/142301.AVI', clip_seconds: 12, clip_frames: 120, sd, clock: true, ...extra });
     },
   };
 })();

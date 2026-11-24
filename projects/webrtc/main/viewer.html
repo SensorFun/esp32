@@ -7,7 +7,7 @@
 <form id="login"><label for="camera-password">Camera password <input id="camera-password" type="password" autocomplete="current-password"></label>
 <button id="connect" disabled>Connect</button><button id="disconnect" type="button" disabled>Disconnect</button></form>
 <p id="status" role="status">Enter the camera password chosen during setup.</p>
-<p><output id="fps" title="Displayed frames per second, averaged over the last sampling interval">0.0 FPS</output> <small>(1-second average)</small></p>
+<p><output id="fps" title="Frames the camera grabs per second for live video, motion detection or recording">0.0 FPS</output> <small>(camera, 1-second average)</small></p>
 <p id="stream-off" hidden role="status">Camera image streaming is off.</p>
 <div id="frame"><img id="preview" alt="Live camera frames"><sensorfan-motion-overlay id="overlay"></sensorfan-motion-overlay></div><sensorfan-camera-tabs style="margin-top:1rem">
 <div data-label="Camera settings"><sensorfan-camera-settings id="settings-panel" hidden></sensorfan-camera-settings></div>
@@ -55,13 +55,8 @@ async function createProof(challenge,offer,answer){
  return {proof,expected:server};
 }
 function verified(signature){if(expected?.length!==32)return false;try{const actual=unhex(signature,32);let diff=0;actual.forEach((byte,index)=>{diff|=byte^expected[index];});return diff===0;}catch{return false;}}
-let fpsTimer,displayedFrames=0;
-function resetFps(){clearInterval(fpsTimer);displayedFrames=0;$('fps').textContent='0.0 FPS';}
-function startFps(){
- resetFps();let sampledAt=performance.now();
- fpsTimer=setInterval(()=>{const now=performance.now();$('fps').textContent=(displayedFrames*1000/(now-sampledAt)).toFixed(1)+' FPS';displayedFrames=0;sampledAt=now;},1000);
-}
-$('preview').onload=()=>{if(channel?.readyState==='open'&&objectURL&&$('preview').getAttribute('src')===objectURL)displayedFrames++;};
+function showFps(value){$('fps').textContent=(Number.isFinite(value)?value:0).toFixed(1)+' FPS';}
+function resetFps(){showFps(0);}
 function status(text){$('status').textContent=text;$('logs-panel').recordBrowser?.(text);}
 const motionViews=()=>[$('motion-panel'),$('recording-panel'),$('recordings'),$('overlay'),$('logs-panel')];
 Promise.all(['sensorfan-camera-settings','sensorfan-motion-settings','sensorfan-recordings','sensorfan-motion-overlay','sensorfan-camera-logs'].map(name=>customElements.whenDefined(name))).then(()=>{$('connect').disabled=false;});
@@ -81,12 +76,12 @@ function settings(data){
  const disabled=data.stream_images===0;
  if(disabled!==imagesDisabled){
   imagesDisabled=disabled;$('stream-off').hidden=!disabled;$('frame').hidden=disabled;
-  if(disabled){clearPreview();displayedFrames=0;$('fps').textContent='0.0 FPS';}
+  if(disabled)clearPreview();
  }
  $('settings-panel').hidden=false;$('settings-panel').settings=data;
 }
 function authenticated(current){
- if(current!==run)return;authed=true;expected=null;$('logs-panel').connected=true;startFps();status('Connected: DTLS encrypted camera data and controls');
+ if(current!==run)return;authed=true;expected=null;$('logs-panel').connected=true;resetFps();status('Connected: DTLS encrypted camera data and controls');
  command({op:'time',now:Date.now()});command({op:'get'});command({op:'motion_get'});command({op:'recordings'});ping=setInterval(()=>command({op:'ping'}),5000);
 }
 async function authenticate(data,current){
@@ -101,7 +96,7 @@ async function authenticate(data,current){
  }catch(error){if(current===run){await stop();status(error.message);}}
 }
 function message(event){
- if(typeof event.data==='string'){let data;try{data=JSON.parse(event.data);}catch{status('Invalid camera response');return;}if(!authed){authenticate(data,run);return;}settings(data);for(const view of motionViews())view.handle(data);return;}
+ if(typeof event.data==='string'){let data;try{data=JSON.parse(event.data);}catch{status('Invalid camera response');return;}if(!authed){authenticate(data,run);return;}if(data.type==='motion_status')showFps(data.capture_fps);settings(data);for(const view of motionViews())view.handle(data);return;}
  if(!authed)return;
  if(!(event.data instanceof ArrayBuffer)||event.data.byteLength<16||$('logs-panel').binary(event.data)||$('recordings').binary(event.data))return;
  const view=new DataView(event.data);if(imagesDisabled||view.getUint32(0,true)!==0x4745504a)return;
@@ -138,5 +133,5 @@ $('login').onsubmit=async event=>{
   throw Error('Device answer timed out');
  }catch(error){if(current===run){await stop(false);status(error.message);}}
 };
-window.addEventListener('pagehide',()=>{clearInterval(fpsTimer);clearInterval(ping);pc?.close();});
+window.addEventListener('pagehide',()=>{clearInterval(ping);pc?.close();});
 </script></html>

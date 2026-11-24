@@ -14,7 +14,6 @@ int main(int argc, char **argv) {
         const std::string key = argv[i];
         const float value = std::stof(argv[i + 1]);
         if (key == "enabled") settings.enabled = value != 0;
-        else if (key == "analysis_fps") settings.analysis_fps = int(value);
         else if (key == "cell") settings.cell = int(value);
         else if (key == "blur") settings.blur = int(value);
         else if (key == "min_speed") settings.min_speed = value;
@@ -27,7 +26,6 @@ int main(int argc, char **argv) {
     std::array<uint8_t, motion::kMaxPixels> previous{}, current{};
     motion::JpegScratch scratch;
     motion::Detector detector(previous.data(), current.data(), scratch);
-    motion::FrameSchedule schedule;
     motion::Activity activity;
     std::vector<uint8_t> jpeg;
     int64_t captured, busy_until = 0, prior = -1;
@@ -39,12 +37,12 @@ int main(int argc, char **argv) {
         prior = captured;
         jpeg.resize(size);
         if (!std::cin.read(reinterpret_cast<char *>(jpeg.data()), size)) return 2;
-        if (!settings.enabled || !schedule.due(captured, captured < busy_until)) continue;
-        schedule.admit(captured, settings);
+        // Like the firmware: no rate cap, each finished analysis takes the next frame.
+        if (!settings.enabled || captured < busy_until) continue;
         busy_until = captured + work_us;
         const auto result = detector.analyze(jpeg.data(), jpeg.size(), captured, settings);
         const bool analyzed = result == motion::FrameResult::analyzed;
-        if (analyzed) activity.update(detector.flow.motion, busy_until, settings);
+        if (analyzed) activity.update(detector.flow.motion, busy_until);
         std::cout << "{\"capture_us\":" << captured << ",\"complete_us\":" << busy_until
                   << ",\"result\":\"" << (analyzed ? "analyzed" : result == motion::FrameResult::priming ? "priming" : "invalid")
                   << "\",\"width\":" << detector.analysis_width << ",\"height\":" << detector.analysis_height
@@ -56,7 +54,8 @@ int main(int argc, char **argv) {
                   << ",\"cols\":" << (analyzed ? detector.flow.cols : 0)
                   << ",\"rows\":" << (analyzed ? detector.flow.rows : 0)
                   << ",\"grid\":\"";
-        if (analyzed) for (uint8_t moving : detector.flow.moving) std::cout << (moving ? '1' : '0');
+        if (analyzed) for (int i = 0; i < detector.flow.cols * detector.flow.rows; ++i)
+            std::cout << (detector.flow.moving[i] ? '1' : '0');
         std::cout << "\"}\n";
     }
     return std::cin.eof() ? 0 : 2;

@@ -105,14 +105,12 @@ Track track(const Image &prev, const Image &cur, int x0, int y0, int x1, int y1,
 }  // namespace
 
 void analysis_size(int width, int height, int &out_width, int &out_height) {
-    out_width = std::max(1, width >> kJpegScale);
-    out_height = std::max(1, height >> kJpegScale);
-    if (out_width * out_height <= kMaxPixels && out_width <= GrayScaler::kMaxSource) return;
-    // Largest width (keeping the aspect ratio) that fits the frame buffer.
-    int fitted = std::min(out_width, GrayScaler::kMaxSource);
-    while (fitted > 1 && fitted * std::max(1, fitted * out_height / out_width) > kMaxPixels) --fitted;
-    out_height = std::max(1, fitted * out_height / out_width);
-    out_width = fitted;
+    width = std::max(1, width); height = std::max(1, height);
+    // Fit inside 160 x 120 keeping the aspect ratio, so speeds and cells mean
+    // the same horizontally and vertically. Every 4:3 size gives 160 x 120.
+    if (width <= 160 && height <= 120) { out_width = width; out_height = height; }
+    else if (width * 120 >= height * 160) { out_width = 160; out_height = std::max(1, height * 160 / width); }
+    else { out_height = 120; out_width = std::max(1, width * 120 / height); }
 }
 
 void rgb888_to_gray(const uint8_t *rgb, int width, int height, uint8_t *gray, int out_width, int out_height,
@@ -185,7 +183,8 @@ void GrayScaler::close_rows(int last_source_row) {
     }
 }
 
-bool valid_cell(int cell) { return cell >= 4 && cell <= 64; }
+// FlowResult::moving holds kMaxPixels / 25 cells, enough for cells of 5 px or more.
+bool valid_cell(int cell) { return cell >= 5 && cell <= 64; }
 
 OpticalFlow::OpticalFlow() : own_(size_t(kMaxPixels) * 2), prev_(own_.data()), cur_(own_.data() + kMaxPixels) {}
 
@@ -199,14 +198,14 @@ bool OpticalFlow::process(int width, int height, const FlowParams &params, FlowR
     result.motion = false; result.area = 0; result.mean_flow = 0;
     if (width <= 0 || height <= 0 || width > GrayScaler::kMaxSource || height > GrayScaler::kMaxSource ||
         width * height > kMaxPixels) {
-        result.cols = result.rows = 0; result.moving.clear(); primed_ = false;
+        result.cols = result.rows = 0; result.moving.fill(0); primed_ = false;
         return false;
     }
     const int cell = valid_cell(params.cell) ? params.cell : 8;
     box_blur(cur_, width, height, std::clamp(params.blur, 0, 2), cooperate);
     // Cells of about `cell` pixels tile the whole frame, whatever its size.
     result.cols = std::max(1, width / cell); result.rows = std::max(1, height / cell);
-    result.moving.assign(size_t(result.cols) * result.rows, 0);
+    result.moving.fill(0);
     if (!primed_ || width != width_ || height != height_) {
         width_ = width; height_ = height;
         std::swap(prev_, cur_);

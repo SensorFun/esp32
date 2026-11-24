@@ -17,6 +17,3 @@ idf_component_get_property(peer_dir esp_peer COMPONENT_DIR)
 idf_component_get_property(camera_dir espressif__esp32-camera COMPONENT_DIR)
 target_include_directories(${COMPONENT_LIB} PRIVATE "${peer_dir}/src/transport" "${camera_dir}/driver/private_include")
 target_link_options(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=udp_socket_recvfrom_nowait" "-Wl,--wrap=udp_socket_sendto" "-Wl,-u,__wrap_udp_socket_sendto" "-Wl,--wrap=cam_take" "-Wl,-u,__wrap_cam_take")
-
-idf_component_get_property(jpeg_dir espressif__esp_jpeg COMPONENT_DIR)
-target_include_directories(${COMPONENT_LIB} PRIVATE "${jpeg_dir}/tjpgd")

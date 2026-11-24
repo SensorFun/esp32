@@ -54,7 +54,7 @@ with console, sync_playwright() as p:
         check('n=>frames>n', before)
 
     try:
-        motion({'enabled': True, 'analysis_fps': 15, 'blur': 2, 'cell': 5})
+        motion({'enabled': True, 'blur': 2, 'cell': 5})
         page.get_by_role('tab', name='Camera settings', exact=True).click()
         for iteration in range(args.rounds):
             for size in metadata['resolutions']:
@@ -81,7 +81,7 @@ with console, sync_playwright() as p:
             progress()
             page.get_by_role('tab', name='Motion detection', exact=True).click()
             panel = page.locator('sensorfan-motion-settings[group=detection]')
-            panel.get_by_label('Minimum speed', exact=True).fill(str(2.5 + iteration * 0.25))
+            panel.get_by_role('spinbutton', name='Minimum speed', exact=True).fill(str(2.5 + iteration * 0.25))
             page.evaluate('responses.motion=null')
             panel.get_by_role('button', name='Save', exact=True).click()
             check('responses.motion?.saved===true')

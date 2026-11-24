@@ -42,7 +42,6 @@ constexpr Option kCells[] = {{nullptr, 5, "5 px"}, {nullptr, 8, "8 px"}, {nullpt
 const Field kFields[] = {
     {"enabled", "Detect motion", "detection", "", "Analyse the camera continuously, even with no viewer connected.", Kind::boolean, 0, 1, 1, nullptr, 0, FIELD_BOOL(enabled)},
     {"method", "Method", "detection", "", "Detection algorithm.", Kind::select, 0, 0, 1, kMethods, std::size(kMethods), FIELD_INT(method)},
-    {"analysis_fps", "Analysis rate", "detection", "fps", "Frames analysed per second. Each is the camera image at 1/8 size, shown in the motion status.", Kind::number, 1, 15, 1, nullptr, 0, FIELD_INT(analysis_fps)},
     // Stored as min_speed: an older min_flow value (pixels per frame) is not reinterpreted.
     {"min_speed", "Minimum speed", "detection", "px/s", "Speed in analysis-image pixels that marks a cell as moving. Independent of the analysis rate.", Kind::number, 0.25, 40, 0.25, nullptr, 0, FIELD_FLOAT(min_speed)},
     {"min_area", "Moving area", "detection", "%", "Share of cells that must move to report motion.", Kind::number, 0.5, 100, 0.5, nullptr, 0, FIELD_FLOAT(min_area)},
@@ -53,7 +52,6 @@ const Field kFields[] = {
     {"overlay", "Show motion in preview", "detection", "", "Highlight moving cells over the live picture.", Kind::boolean, 0, 1, 1, nullptr, 0, FIELD_BOOL(overlay)},
     {"record", "Record to SD card", "recording", "", "Store a clip while motion lasts, at the selected camera resolution.", Kind::boolean, 0, 1, 1, nullptr, 0, FIELD_BOOL(record)},
     {"record_fps", "Recording rate", "recording", "fps", "Most frames stored per second. Large resolutions may record fewer.", Kind::number, 1, 25, 1, nullptr, 0, FIELD_INT(record_fps)},
-    {"pre_seconds", "Pre-record", "recording", "s", "Also keep the seconds before motion was confirmed.", Kind::number, 0, 10, 1, nullptr, 0, FIELD_INT(pre_seconds)},
     {"post_seconds", "Keep recording", "recording", "s", "Continue this long after motion stops.", Kind::number, 1, 300, 1, nullptr, 0, FIELD_INT(post_seconds)},
     {"max_clip_seconds", "Maximum clip length", "recording", "s", "Longer motion continues in a new clip.", Kind::number, 10, 900, 1, nullptr, 0, FIELD_INT(max_clip_seconds)},
     {"overwrite_oldest", "Replace oldest clips when full", "recording", "", "Otherwise recording stops when the card is full.", Kind::boolean, 0, 1, 1, nullptr, 0, FIELD_BOOL(overwrite_oldest)},
@@ -70,14 +68,13 @@ std::atomic<bool> busy{false}, media_paused{false};
 uint8_t *job = nullptr;
 size_t job_capacity = 0, job_length = 0;
 int64_t job_time = 0;  // Capture time of the frame in job.
-motion::FrameSchedule schedule;
 // Average JPEG size at the current stream resolution, measured by the worker.
-std::atomic<uint32_t> frame_bytes{0}, frame_dimensions{0};  // dimensions: width << 16 | height
+std::atomic<uint32_t> frame_dimensions{0};  // dimensions: width << 16 | height
 // Results, guarded by lock.
 motion::Activity activity;
 float area = 0, speed = 0, rate = 0;  // speed: mean of moving cells, px/s
 int cols = 0, rows = 0;
-std::vector<uint8_t> grid;
+std::array<uint8_t, motion::kMaxPixels / 25> grid{};
 
 struct Lock {
     Lock() { xSemaphoreTake(lock, portMAX_DELAY); }
@@ -169,22 +166,6 @@ void load() {
     nvs_close(handle);
 }
 
-int pre_seconds_limit(const MotionSettings &s, int &width, int &height) {
-    width = 320; height = 240;
-    if (sensor_t *sensor = esp_camera_sensor_get()) {
-        const int size = sensor->status.framesize;
-        if (size >= 0 && size < FRAMESIZE_INVALID) { width = resolution[size].width; height = resolution[size].height; }
-    }
-    uint32_t bytes = frame_dimensions == (uint32_t(width) << 16 | uint32_t(height)) ? frame_bytes.load() : 0;
-    // Until a frame is measured, assume about 1 byte per 8 pixels (quality 12).
-    if (!bytes) bytes = uint32_t(width) * height / 8;
-    bytes += bytes / 4;  // Busier scenes produce larger JPEGs.
-    // The trigger window and a 0.5 s margin share the buffer with pre-roll;
-    // keep a fifth of it for frames waiting to be written.
-    const double seconds = 0.8 * double(recorder_budget()) / (double(bytes) * s.record_fps) - s.trigger_seconds - 0.5;
-    return std::clamp(int(std::floor(seconds)), 0, 10);
-}
-
 cJSON *describe(const char *error = nullptr, bool saved = false) {
     cJSON *reply = cJSON_CreateObject();
     cJSON_AddStringToObject(reply, "type", "motion");
@@ -199,11 +180,7 @@ cJSON *describe(const char *error = nullptr, bool saved = false) {
         cJSON_AddStringToObject(item, "help", field.help);
         if (field.kind == Kind::number) {
             cJSON_AddNumberToObject(item, "min", field.min);
-            if (!strcmp(field.name, "pre_seconds")) {
-                MotionSettings s = motion_settings();
-                cJSON_AddNumberToObject(item, "max", motion_pre_seconds_limit(s));
-                cJSON_AddStringToObject(item, "max_reason", "free PSRAM, the camera resolution, and the recording rate");
-            } else cJSON_AddNumberToObject(item, "max", field.max);
+            cJSON_AddNumberToObject(item, "max", field.max);
             cJSON_AddNumberToObject(item, "step", field.step);
         }
         if (field.kind == Kind::select) {
@@ -220,8 +197,6 @@ cJSON *describe(const char *error = nullptr, bool saved = false) {
     }
     MotionSettings current, defaults;
     { Lock guard; current = settings; }
-    current.pre_seconds = std::min(current.pre_seconds, motion_pre_seconds_limit(current));
-    defaults.pre_seconds = std::min(defaults.pre_seconds, motion_pre_seconds_limit(defaults));
     cJSON_AddItemToObject(reply, "values", values_json(current));
     cJSON_AddItemToObject(reply, "defaults", values_json(defaults));
     if (saved) cJSON_AddBoolToObject(reply, "saved", true);
@@ -233,7 +208,7 @@ void use(const MotionSettings &next) {
     Lock guard;
     settings = next;
     ++generation;
-    if (!next.enabled) { activity = {}; area = speed = rate = 0; grid.clear(); }
+    if (!next.enabled) { activity = {}; area = speed = rate = 0; grid.fill(0); }
 }
 
 cJSON *save(const MotionSettings &next) {
@@ -244,51 +219,56 @@ cJSON *save(const MotionSettings &next) {
     return describe(nullptr, true);
 }
 
-// Yield to the idle task inside long analysis, even when a high analysis rate
-// or a stream of GUI changes keeps work continuously ready.
-void cooperate() { vTaskDelay(1); }
+// Yield between bounded blocks of work so other priority-1 tasks on CPU0 are
+// never kept waiting for a whole frame. The idle task (and the watchdog it
+// feeds) runs while the task waits for each frame.
+void cooperate() { taskYIELD(); }
 
-// The detector's two luma frames and decoder state live in internal
-// RAM (static .bss). Camera JPEGs for streaming and recording, including the
-// copy analysed here, stay in PSRAM. On the original ESP32, Wi-Fi needs the
-// rest of internal RAM, so the decoder's row sums and workspace go to PSRAM;
-// that costs about 5% of analysis time.
-#if CONFIG_IDF_TARGET_ESP32
-#define MOTION_SCRATCH EXT_RAM_BSS_ATTR
-#else
-#define MOTION_SCRATCH
-#endif
+// QQVGA decodes directly to luma and never touches the scaler. The luma
+// frames stay in internal RAM. On the original ESP32, Wi-Fi and TLS need the
+// rest of internal RAM, so the decoder's 10 KiB workspace and the scaler's
+// row sums go to PSRAM.
 uint8_t flow_frames[2][motion::kMaxPixels];
-MOTION_SCRATCH motion::JpegScratch jpeg_scratch;
+#if CONFIG_IDF_TARGET_ESP32
+EXT_RAM_BSS_ATTR
+#endif
+motion::JpegWorkspace jpeg_workspace;
+#if CONFIG_IDF_TARGET_ESP32
+EXT_RAM_BSS_ATTR
+#endif
+motion::GrayScaler jpeg_scaler;
+motion::Detector detector(flow_frames[0], flow_frames[1], jpeg_scaler, jpeg_workspace);
+uint32_t seen_generation = UINT32_MAX;
+int64_t previous = 0;
+
+void analyze(const uint8_t *jpeg, size_t size, int64_t captured) {
+    if (media_paused || recorder_manual_state() != ManualRecording::idle) return;
+    MotionSettings s;
+    uint32_t current_generation;
+    { Lock guard; s = settings; current_generation = generation; }
+    if (current_generation != seen_generation) {
+        detector.reset();
+        seen_generation = current_generation;
+        previous = 0;
+    }
+    if (detector.analyze(jpeg, size, captured, s, cooperate) != motion::FrameResult::analyzed)
+        return;
+    const int64_t now = esp_timer_get_time();
+    Lock guard;
+    if (generation != current_generation) return;
+    activity.update(detector.flow.motion, now);
+    area = detector.flow.area; speed = detector.speed;
+    cols = detector.flow.cols; rows = detector.flow.rows; grid = detector.flow.moving;
+    if (previous) rate = 0.8f * rate + 0.2f * (1e6f / float(now - previous));
+    previous = now;
+}
 
 void detect(void *) {
-    motion::Detector detector(flow_frames[0], flow_frames[1], jpeg_scratch);
-    uint32_t seen_generation = UINT32_MAX;
-    int64_t previous = 0;
     for (;;) {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-        struct FinishJob {
-            ~FinishJob() { cooperate(); busy = false; }
-        } finish_job;
-        if (media_paused || recorder_manual_state() != ManualRecording::idle) continue;
-        MotionSettings s;
-        uint32_t current_generation;
-        { Lock guard; s = settings; current_generation = generation; }
-        if (current_generation != seen_generation) {
-            detector.reset();
-            seen_generation = current_generation;
-            previous = 0;
-        }
-        if (detector.analyze(job, job_length, job_time, s, cooperate) != motion::FrameResult::analyzed)
-            continue;
-        const int64_t now = esp_timer_get_time();
-        Lock guard;
-        if (generation != current_generation) continue;
-        activity.update(detector.flow.motion, now, s);
-        area = detector.flow.area; speed = detector.speed;
-        cols = detector.flow.cols; rows = detector.flow.rows; grid = detector.flow.moving;
-        if (previous) rate = 0.8f * rate + 0.2f * (1e6f / float(now - previous));
-        previous = now;
+        analyze(job, job_length, job_time);
+        cooperate();
+        busy = false;
     }
 }
 }  // namespace
@@ -300,37 +280,37 @@ void motion_start() {
     recorder_start();
     // The stack lives in PSRAM so internal RAM can hold the detection buffers;
     // this task never writes flash, which a PSRAM stack would not survive.
-    // Either core: streaming keeps CPU1 busy, and at this priority analysis
-    // only uses time Wi-Fi leaves idle on CPU0.
-    if (xTaskCreatePinnedToCoreWithCaps(detect, "motion", 6144, nullptr, 3, &task, tskNO_AFFINITY, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS)
+    // Analysis has no rate cap: each finished frame admits the next one. It
+    // runs on CPU0 at priority 1: the peer worker, camera task and camera
+    // interrupt own CPU1, and Wi-Fi and lwIP on CPU0 preempt it. Measured on the
+    // ESP32-CAM streaming 1600 x 1200: sharing CPU1 with the worker cut the
+    // stream from 1.25 to 0.2 frames per second, and idle priority left
+    // analysis only 0.3 frames per second.
+    if (xTaskCreatePinnedToCoreWithCaps(detect, "motion", 6144, nullptr, 1, &task, 0, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS)
         ESP_ERROR_CHECK(ESP_ERR_NO_MEM);
 }
 
 MotionSettings motion_settings() { Lock guard; return settings; }
-
-int motion_pre_seconds_limit(const MotionSettings &s) {
-    int width, height;
-    return pre_seconds_limit(s, width, height);
-}
 
 bool motion_frame_due() {
     if (media_paused) return false;
     const int64_t now = esp_timer_get_time();
     MotionSettings s = motion_settings();
     if (!s.enabled) return false;
-    return schedule.due(now, busy) || recorder_frame_due(s, now);
+    return !busy || recorder_frame_due(s, now);
 }
 
 void motion_feed(const camera_fb_t *frame) {
     if (media_paused) return;
     if (!frame || frame->format != PIXFORMAT_JPEG) return;
     const uint32_t dimensions = uint32_t(frame->width) << 16 | uint32_t(frame->height);
-    if (frame_dimensions != dimensions) { frame_dimensions = dimensions; frame_bytes = uint32_t(frame->len); }
-    else frame_bytes = (frame_bytes * 7 + uint32_t(frame->len)) / 8;
+    frame_dimensions = dimensions;
     MotionSettings s = motion_settings();
     if (!s.enabled) return;
     const int64_t now = esp_timer_get_time();
-    if (schedule.due(now, busy)) {
+    // Every frame goes to the motion task, including small motion-idle ones
+    // (a few KB to copy), so the worker can grab the next frame meanwhile.
+    if (!busy) {
         if (frame->len > job_capacity) {
             heap_caps_free(job);
             job = static_cast<uint8_t *>(heap_caps_malloc(frame->len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
@@ -340,17 +320,17 @@ void motion_feed(const camera_fb_t *frame) {
             memcpy(job, frame->buf, frame->len);
             job_length = frame->len;
             job_time = now;
-            schedule.admit(now, s);
             busy = true;
             xTaskNotifyGive(task);
         }
     }
+    // Takes frames only while a confirmed event is recorded (never motion-idle ones).
     recorder_feed(frame, s);
 }
 
-void motion_activity(bool &active, int64_t &since, int64_t &last) {
+motion::Activity motion_activity() {
     Lock guard;
-    active = activity.moving; since = activity.since; last = activity.last;
+    return activity;
 }
 
 bool motion_overlay_active() {
@@ -377,19 +357,17 @@ cJSON *motion_status(bool include_overlay) {
             cJSON_AddNumberToObject(status, "analysis_width", width);
             cJSON_AddNumberToObject(status, "analysis_height", height);
         }
-        if (include_overlay && settings.enabled && settings.overlay && cols && grid.size() == size_t(cols) * rows) {
+        if (include_overlay && settings.enabled && settings.overlay && cols && rows) {
             // Row-major moving-cell bits, packed into hex nibbles, MSB first.
-            std::string hex((grid.size() + 3) / 4, '0');
-            for (size_t i = 0; i < grid.size(); ++i) if (grid[i]) hex[i / 4] |= 1 << (3 - i % 4);
+            const size_t cells = size_t(cols) * rows;
+            std::string hex((cells + 3) / 4, '0');
+            for (size_t i = 0; i < cells; ++i) if (grid[i]) hex[i / 4] |= 1 << (3 - i % 4);
             for (char &c : hex) c = "0123456789abcdef"[c - '0'];
             cJSON_AddNumberToObject(status, "cols", cols);
             cJSON_AddNumberToObject(status, "rows", rows);
             cJSON_AddStringToObject(status, "grid", hex.c_str());
         }
     }
-    const MotionSettings s = motion_settings();
-    cJSON *limits = cJSON_AddObjectToObject(status, "limits");
-    cJSON_AddNumberToObject(limits, "pre_seconds", motion_pre_seconds_limit(s));
     recorder_status(status);
     return status;
 }
@@ -409,10 +387,9 @@ cJSON *motion_command(const cJSON *request) {
                 activity = {};
                 area = speed = rate = 0;
                 cols = rows = 0;
-                grid.clear();
+                grid.fill(0);
             }
             while (busy.load()) vTaskDelay(1);
-            schedule.reset();
         }
         cJSON *reply = cJSON_CreateObject();
         cJSON_AddStringToObject(reply, "type", "manual_recording");
@@ -423,7 +400,6 @@ cJSON *motion_command(const cJSON *request) {
     if (!strcmp(op->valuestring, "motion_get")) return describe();
     if (!strcmp(op->valuestring, "motion_reset")) {
         MotionSettings defaults;
-        defaults.pre_seconds = std::min(defaults.pre_seconds, motion_pre_seconds_limit(defaults));
         return save(defaults);
     }
     // motion_set applies live until reboot, like camera "set"; motion_apply also saves.
@@ -436,18 +412,6 @@ cJSON *motion_command(const cJSON *request) {
         if (!parse(values, next, error)) {
             std::string message = std::string("Invalid value: ") + error;
             reply = describe(message.c_str());
-        }
-        // The recorder already clamps stored pre-roll to the current budget.
-        // Only validate the dynamic limit when the request supplies pre-roll.
-        if (!reply && cJSON_GetObjectItemCaseSensitive(values, "pre_seconds")) {
-            int width, height;
-            const int limit = pre_seconds_limit(next, width, height);
-            if (next.pre_seconds > limit) {
-                char message[160];
-                snprintf(message, sizeof(message), "Pre-record can be at most %d s at %d x %d and %d fps; free PSRAM limits the buffer. Lower the recording rate or resolution for more.",
-                         limit, width, height, next.record_fps);
-                reply = describe(message);
-            }
         }
         if (!reply && live) { use(next); reply = describe(); }
         if (!reply) return save(next);

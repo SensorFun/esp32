@@ -2,16 +2,16 @@
 // Pure C++ motion analysis, free of ESP-IDF so host tests can compile it.
 // The working set is small enough for the ESP32's internal RAM: two 8-bit
 // frames of at most kMaxPixels plus a few KB of row sums.
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <vector>
 
 namespace motion {
 
-// Detection runs on the camera image at 1/8 size: the JPEG decoder then keeps
-// only each 8x8 block's average (DC) and skips the inverse transform. Larger
-// results are averaged down to fit kMaxPixels.
-constexpr int kJpegScale = 3;          // Decoder downscale shift: 1/8.
+// Detection uses up to 160 × 120 luma pixels, regardless of capture size,
+// keeping the camera's aspect ratio (160 × 90 at 16:9).
+constexpr int kMaxJpegScale = 3;       // Decoder supports up to 1/8 scale.
 constexpr int kMaxPixels = 160 * 120;  // Frame buffer capacity.
 
 // Analysis size for a camera image of width x height.
@@ -63,7 +63,7 @@ struct FlowResult {
     float area = 0;           // Percentage of all cells moving.
     float mean_flow = 0;      // Mean flow magnitude of moving cells, pixels per frame.
     int cols = 0, rows = 0;
-    std::vector<uint8_t> moving;  // cols * rows, 1 for moving cells.
+    std::array<uint8_t, kMaxPixels / 25> moving{};  // First cols * rows entries are valid.
 };
 
 bool valid_cell(int cell);

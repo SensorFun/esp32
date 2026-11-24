@@ -15,7 +15,6 @@
 #include <cctype>
 #include <cstring>
 #include <ctime>
-#include <deque>
 #include <dirent.h>
 #include <fcntl.h>
 #include <string>
@@ -53,6 +52,7 @@ int64_t last_accept = 0;
 std::string active_clip, last_error, format_result;
 // Set by viewers, handled by the recorder task, which owns mounting.
 std::atomic<bool> format_requested{false};
+std::atomic<bool> motion_capture{false};
 std::atomic<bool> media_paused{false}, pause_acknowledged{false};
 std::atomic<ManualRecording> manual_state{ManualRecording::idle};
 std::atomic<uint32_t> manual_id{0};
@@ -71,10 +71,7 @@ void release(Frame &frame) {
     frame.data = nullptr;
 }
 
-void release_pending(std::deque<Frame> &pending) {
-    for (auto &frame : pending) release(frame);
-    pending.clear();
-}
+
 
 void set_error(const char *message) {
     Guard guard(state_lock);
@@ -238,12 +235,10 @@ private:
 
 void record(void *) {
     Clip clip;
-    std::deque<Frame> pending;  // Pre-roll while idle; frames to write while recording.
     int64_t next_mount = 0, next_check = 0, retry_open = 0;
     uint32_t session = 0;
     const auto finish_manual = [&] {
         clip.close();
-        release_pending(pending);
         session = 0;
         manual_state = ManualRecording::idle;
     };
@@ -253,7 +248,6 @@ void record(void *) {
         if (media_paused) {
             if (received) release(frame);
             clip.close();
-            release_pending(pending);
             Frame queued;
             while (xQueueReceive(queue, &queued, 0) == pdTRUE) release(queued);
             pause_acknowledged = true;
@@ -264,20 +258,15 @@ void record(void *) {
         const uint32_t current_session = mode == ManualRecording::idle ? 0 : manual_id.load();
         if (current_session != session) {
             clip.close();
-            release_pending(pending);
             session = current_session;
             retry_open = 0;
-        }
-        if (received) {
-            if (frame.manual_id == session) pending.push_back(frame);
-            else release(frame);
         }
         const int64_t now = esp_timer_get_time();
         const MotionSettings s = motion_settings();
         if (format_requested) {
+            if (received) release(frame);
             // Close files first; frames captured meanwhile are dropped.
             clip.close();
-            release_pending(pending);
             esp_err_t err;
             {
                 Guard sd(sd_lock);
@@ -309,74 +298,41 @@ void record(void *) {
         }
         const bool wanted = (session || (s.enabled && s.record)) && sd_card::state() == sd_card::State::mounted;
         if (!wanted) {
+            if (received) release(frame);
             if (session) {
                 set_error("SD card unavailable; manual recording stopped");
                 finish_manual();
             } else {
                 clip.close();
-                release_pending(pending);
             }
             continue;
         }
-        bool moving = false;
-        int64_t since = 0, last = 0;
-        if (!session) motion_activity(moving, since, last);
-        if (!clip.is_open() && !session) {
-            // Keep the pre-roll window plus the confirmation time, so a clip
-            // starts before the motion that triggered it.
-            // The pre-record length never exceeds what PSRAM holds at the
-            // current resolution, even if it changed since it was saved.
-            const int pre = std::min(s.pre_seconds, motion_pre_seconds_limit(s));
-            const int64_t keep = int64_t((pre + s.trigger_seconds + 0.5f) * kSecond);
-            size_t held = 0;
-            for (const auto &item : pending) held += item.length;
-            while (!pending.empty() && (now - pending.front().time > keep || held > budget * 4 / 5)) {
-                held -= pending.front().length;
-                release(pending.front()); pending.pop_front();
-            }
-            if (!motion::Activity{moving, since, last}.confirmed(now, s.trigger_seconds) || pending.empty() || now < retry_open) continue;
-            if (!clip.open(pending.front(), s.overwrite_oldest)) {
-                retry_open = now + 10 * kSecond;  // A full card is checked again later, not per frame.
-                continue;
-            }
-        }
-        while (!pending.empty()) {
-            Frame &item = pending.front();
-            if (!clip.is_open() || !clip.matches(item)) {
-                // A resolution change continues in a new clip at the new size.
-                clip.close();
-                if (!clip.open(item, s.overwrite_oldest)) {
+        if (received) {
+            // Only frames captured after a confirmed trigger (or during a
+            // manual session) enter this queue. There is no pre-roll.
+            if (frame.manual_id == session && (session || now >= retry_open)) {
+                if (clip.is_open() && !clip.matches(frame)) clip.close();
+                if (!clip.is_open() && !clip.open(frame, s.overwrite_oldest)) {
                     if (session) finish_manual();
-                    break;
+                    else retry_open = now + 10 * kSecond;
+                } else if (!clip.write(frame, s.overwrite_oldest)) {
+                    ESP_LOGE(TAG, "SD write failed; unmounting card");
+                    clip.abort();
+                    set_error("SD card write failed");
+                    { Guard sd(sd_lock); sd_card::unmount(sd_card::State::error); }
+                    if (session) finish_manual();
+                } else if (!clip.is_open() && session) {
+                    finish_manual();
                 }
             }
-            if (!clip.write(item, s.overwrite_oldest)) {
-                ESP_LOGE(TAG, "SD write failed; unmounting card");
-                clip.abort();
-                set_error("SD card write failed");
-                { Guard sd(sd_lock); sd_card::unmount(sd_card::State::error); }
-                if (session) finish_manual();
-                break;
-            }
-            release(item);
-            pending.pop_front();
-            if (!clip.is_open()) {  // Closed for lack of space.
-                if (session) finish_manual();
-                break;
-            }
+            release(frame);
         }
         if (session && mode == ManualRecording::stopping && !uxQueueMessagesWaiting(queue)) {
             finish_manual();
         }
-        if (clip.is_open() && ((!session && !moving && now - last > int64_t(s.post_seconds) * kSecond) ||
+        if (clip.is_open() && ((!session && !motion_capture && !uxQueueMessagesWaiting(queue)) ||
                                now - clip.started() > int64_t(s.max_clip_seconds) * kSecond)) {
-            clip.close();  // Continuing motion opens the next clip immediately.
-        }
-        if (!clip.is_open()) {
-            // Frames left after a failed open or write are dropped.
-            if (sd_card::state() != sd_card::State::mounted) {
-                release_pending(pending);
-            }
+            clip.close();
         }
     }
 }
@@ -415,10 +371,13 @@ void recorder_start() {
         ESP_ERROR_CHECK(ESP_ERR_NO_MEM);
 }
 
-size_t recorder_budget() { return budget; }
+
+bool recorder_available() { return sd_card::state() == sd_card::State::mounted && !format_requested; }
+
+void recorder_set_motion_capture(bool active) { motion_capture = active; }
 
 bool recorder_frame_due(const MotionSettings &s, int64_t now) {
-    return s.record && sd_card::state() == sd_card::State::mounted && buffered < budget &&
+    return motion_capture && s.record && recorder_available() && buffered < budget &&
            now - last_accept >= kSecond / s.record_fps;
 }
 

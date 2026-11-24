@@ -253,7 +253,7 @@ with console, sync_playwright() as p:
             wait_reply(page, 'motion save', 'e2e.messages.motion?.saved===true')
             stream_check(page, seconds=8)
         step_name[0] = 'minimum speed 3.75'
-        panel.get_by_label('Minimum speed', exact=True).fill('3.75')
+        panel.get_by_role('spinbutton', name='Minimum speed', exact=True).fill('3.75')
         page.evaluate('e2e.messages.motion=null')
         panel.get_by_role('button', name='Save', exact=True).click()
         wait_reply(page, 'motion save', 'e2e.messages.motion?.saved===true')

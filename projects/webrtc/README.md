@@ -139,7 +139,10 @@ The profile names match the server. The OV5647/P4's absolute HTS/VTS values are
 sensor-specific. The shared OV profile defaults to **Mid light** (`mid_light`).
 
 The stream is hardware JPEG, initially 320x240 unless saved settings select
-another resolution. Streaming has no fixed FPS cap. Frames are split into
+another resolution. Streaming has no fixed FPS cap. The viewers' FPS is the
+camera's: frames grabbed per second for live video, motion detection or
+recording, sent in each `motion_status` as `capture_fps`. It stays meaningful
+with streaming off, and reads 0 only when nothing uses the camera. Frames are split into
 2048-byte chunks with a 16-byte little-endian
 header (`JPEG` magic, frame sequence, total size, byte offset). The viewer
 bounds-checks and reassembles frames. Backpressure retries are bounded and
@@ -185,15 +188,14 @@ stream and filling its TX queue. Video admission pauses below 12 KiB of free int
 2 KiB largest free block, leaving the peer loop active to drain acknowledgements.
 The PSRAM allocation threshold is 512 bytes to keep packet payloads out of scarce
 internal RAM. Wi-Fi and lwIP buffers stay in internal RAM: copying them from
-PSRAM slowed the ESP32's transmit queue enough to drop viewers. Camera JPEGs for streaming and recording stay in PSRAM. Motion
-analysis keeps its two 8-bit frames (at most 160x120 each) in internal RAM; the ROM JPEG
-decoder feeds blocks straight into the average, so no full decoded image is held.
-On the ESP32 the decoder's 19 KiB of row sums and workspace go to PSRAM, and the
-motion and recorder task stacks are in PSRAM (neither task writes flash). The peer
-worker runs in the main task, sharing one stack. The worker, the camera task and
-the camera interrupt run on CPU1, leaving CPU0 to Wi-Fi. Motion analysis may run
-on either CPU at low priority, so it uses time Wi-Fi leaves idle while streaming
-keeps CPU1 busy; it then analyses fewer frames than its configured rate.
+PSRAM slowed the ESP32's transmit queue enough to drop viewers. Camera JPEGs for live streaming and recording stay in PSRAM.
+Native JPEG sensors capture 160 × 120 by default, into two PSRAM camera
+buffers, whether or not motion detection is on. The selected resolution is used
+only while live video streams or the SD card records (manually, or once motion
+is confirmed); selecting 160 × 120 never restarts the camera. Each switch
+restarts the driver, retrying once with sensor power cut. High-resolution JPEGs
+are downscaled for motion analysis. The motion and recorder worker
+stacks remain in PSRAM. Camera capture and the peer worker run on CPU1.
 
 On the ESP32-CAM the camera clock and the sensor's pixel bus run beside the PCB
 antenna. At the default drive strengths they cut Wi-Fi throughput by more than ten
@@ -202,10 +204,12 @@ pin and the OV2640 outputs to their weakest drive, which restores full Wi-Fi spe
 The OV3660 driver sets 4x pad drive; the firmware lowers it to 1x as well, which
 stopped Wi-Fi TX queue overflows on the Goouuu ESP32-S3 board.
 
-Optical-flow and grayscale loops cooperate with FreeRTOS between bounded work
-blocks so the CPU 1 idle task can run; increasing the analysis rate cannot create
-an uninterrupted analysis backlog that trips its watchdog. A requested analysis
-rate is an upper limit, not a guarantee when the CPU is saturated.
+Motion analysis has no rate setting: each finished frame admits the next, so it
+runs as fast as the camera and the CPU allow (the motion status shows the
+achieved rate). The motion task runs on CPU0 at priority 1: the peer worker,
+camera task and camera interrupt own CPU1, and Wi-Fi and lwIP on CPU0 preempt
+analysis. Optical-flow and grayscale loops yield between bounded work blocks;
+the idle task, which feeds the watchdog, runs while the task waits for each frame.
 
 Hardware regression (restores starting camera/motion settings):
 
@@ -238,18 +242,19 @@ Changes apply on the camera right away, like camera settings; select Save to sto
 them in NVS so they survive a reboot.
 
 - **Detection** runs on the board even with no viewer connected, and while Wi-Fi
-  is down. Every analysed frame is decoded at 1/8 scale, the decoder's fastest mode:
-  it keeps only each 8x8 block's average and skips the inverse transform. The grayscale
-  analysis image is therefore 1/8 of the camera resolution (40 x 30 at 320 x 240,
-  80 x 60 at 640 x 480, 160 x 90 at 1280 x 720); larger results are averaged to fit
-  160 x 120 (1600 x 1200 gives 160 x 120). The motion status shows the current size.
+  is down. Native JPEG cameras capture at 160 × 120 by default; the **Detect
+  motion** checkbox only runs the algorithm. The selected resolution is used for
+  live streaming and for recording once motion is confirmed and the SD card is
+  ready. Motion analysis uses up to 160 × 120 luma pixels in both
+  modes, keeping the camera's aspect ratio (160 × 90 at 16:9). Live frames are
+  downscaled only for analysis.
   Single-level optical flow then runs over a grid of cells of about
   **Cell size** pixels that tiles the whole image (`main/optical_flow.cpp`), with global
   brightness changes removed. Speeds, cell size and smoothing are in analysis-image
   pixels, so a resolution change also changes how much of the scene they cover.
   A cell moves when its speed reaches **Minimum speed** (analysis pixels per second;
   the detector converts it using the measured time between analysed frames, so
-  changing **Analysis rate** does not change sensitivity). Motion is reported when
+  the achieved analysis rate does not change sensitivity). Motion is reported when
   **Moving area** percent of cells move. Flat cells below **Minimum texture** are
   ignored. **Method** lists the available detectors; optical flow is the first.
 - **Show motion in preview** draws the moving cells, MOTION, and REC over the live picture.
@@ -257,7 +262,7 @@ them in NVS so they survive a reboot.
   their Save and Reset to Default affect only those fields, as the Motion detection
   tab's do for detection. Recording needs motion detection on.
   Recording starts after motion lasts **Motion duration** seconds. It includes
-  **Pre-record** seconds from before that, continues **Keep recording** seconds after
+  no frames from before the trigger, continues **Keep recording** seconds after
   motion stops, and splits at **Maximum clip length**. Clips use the selected camera
   resolution, at up to **Recording rate** frames per second. A resolution change starts
   a new clip. With **Replace oldest clips when full**, the oldest clips are deleted

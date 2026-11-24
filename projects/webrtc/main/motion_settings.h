@@ -5,8 +5,7 @@
 struct MotionSettings {
     bool enabled = false;
     int method = 0;              // Index into the detection method list.
-    int analysis_fps = 5;
-    float min_speed = 2.5f;      // Analysis-image pixels per second, independent of analysis_fps.
+    float min_speed = 2.5f;      // Analysis-image pixels per second, independent of the analysis rate.
     float min_area = 2.0f;       // Percent of cells.
     int cell = 8;
     float min_texture = 4.0f;
@@ -15,7 +14,6 @@ struct MotionSettings {
     bool overlay = true;
     bool record = true;
     int record_fps = 10;
-    int pre_seconds = 2;
     int post_seconds = 10;
     int max_clip_seconds = 120;
     bool overwrite_oldest = true;

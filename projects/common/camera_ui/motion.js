@@ -113,6 +113,24 @@ const STYLE = `
   @media(max-width:600px){section{padding:18px}input,select{font-size:16px}.actions button{flex:1}}
 `;
 
+// Number fields follow the camera settings rule: up to 11 values are a list;
+// more get a 10-step slider (11 evenly spaced stops on the field's step grid)
+// beside an exact number field.
+function decimals(step) { const text = String(step); return text.includes('.') ? text.length - text.indexOf('.') - 1 : 0; }
+function onGrid(value, min, step) { return Number((min + Math.round((value - min) / step) * step).toFixed(decimals(step))); }
+function numberChoices(field) {
+  const count = Math.round((field.max - field.min) / field.step) + 1;
+  if (field.max_reason || count > 11) return null;  // A camera-computed maximum keeps the number field.
+  return Array.from({ length: count }, (_, i) => onGrid(field.min + i * field.step, field.min, field.step));
+}
+// A small positive minimum (0.25 of 40) is the first stop; the rest are spaced
+// from zero, so they land on round values (4, 8, … rather than 4.25, 8.25, …).
+function sliderStops(min, max, step) {
+  const base = min > 0 && min <= max / 10 ? 0 : min;
+  return Array.from({ length: 11 }, (_, i) => i ? Math.min(max, Math.max(min, onGrid(base + i * (max - base) / 10, min, step))) : min);
+}
+function nearest(stops, value) { return stops.reduce((best, stop, i) => Math.abs(stop - value) < Math.abs(stops[best] - value) ? i : best, 0); }
+
 function command(element, detail) {
   element.dispatchEvent(new CustomEvent('camera-command', { detail, bubbles: true, composed: true }));
 }
@@ -171,6 +189,7 @@ function defineElements() {
       if (note) note.textContent = max > 0 ? `Up to ${max} ${unit} now, limited by ${note.dataset.reason}.` : `Not available now: ${note.dataset.reason} leave no room. Lower the recording rate or resolution.`;
       // Keep an untouched field valid when the limit drops, e.g. after a resolution change.
       if (!this.dirty && Number(control.value) > max) control.value = max;
+      control.dispatchEvent(new Event('sync'));
     }
     renderRecordingWarning() {
       const warning = this.shadowRoot.querySelector('#recording-warning');
@@ -223,7 +242,9 @@ function defineElements() {
         label.field-row{display:grid;grid-template-columns:minmax(0,1fr) auto;column-gap:12px;row-gap:4px;align-items:center;align-content:start}
         label.field-row>small{grid-column:1/-1}label.field-row .title{overflow-wrap:anywhere}
         label.select-row{grid-template-columns:auto minmax(0,1fr)}
-        label.counter input{width:88px;flex:none;text-align:right;font-variant-numeric:tabular-nums}label.counter .with-unit span{min-width:4.5ch}
+        label.slider-row{grid-template-columns:minmax(0,1fr)}label.slider-row .slider{display:flex;align-items:center;gap:12px;min-width:0}
+        label.slider-row input[type=number]{width:88px;flex:none;text-align:right;font-variant-numeric:tabular-nums}label.slider-row .unit{color:#9fb293;white-space:nowrap;min-width:4.5ch}
+        input[type=range]{flex:1;width:auto;min-width:0;padding:0;border:none;background:transparent;accent-color:#00d4cb;cursor:pointer}
         label.toggle{display:flex;flex-wrap:wrap;align-items:center;gap:10px;min-height:44px}label.toggle input{width:24px;height:24px;min-height:0;margin:0;accent-color:#00d4cb;flex:none}
         label.toggle small{flex-basis:100%;padding-left:34px}.live{margin-bottom:6px}.card{margin:0 0 18px}
         :host([group=recording]){margin-bottom:18px}.save-status{margin:12px 0 18px}
@@ -259,13 +280,33 @@ function defineElements() {
             control = document.createElement('select');
             field.options.forEach((option, index) => { const item = document.createElement('option'); item.value = String(index); item.textContent = field.name === 'method' && option.value === 'optical_flow' ? 'Optical flow' : option.label; control.append(item); });
             control.value = String(Math.max(0, field.options.findIndex(option => option.value === value)));
+          } else if (numberChoices(field)) {
+            // Few values: a list of them, as camera settings do.
+            label.className = 'field-row select-row';
+            control = document.createElement('select');
+            for (const choice of numberChoices(field)) { const item = document.createElement('option'); item.value = String(choice); item.textContent = field.unit ? `${choice} ${field.unit}` : String(choice); control.append(item); }
+            control.value = String(value);
           } else {
-            // Values are one to four characters: keep them on the label's line.
-            label.className = 'field-row counter';
+            // Many values: a 10-step slider beside the exact number, as camera settings do.
+            label.className = 'field-row slider-row';
             control = document.createElement('input'); control.type = 'number'; control.inputMode = 'decimal';
             control.min = field.min; control.max = field.max; control.step = field.step; control.value = value; control.required = true;
           }
-          if (control.type === 'number' && field.unit) { const row = document.createElement('span'); row.className = 'with-unit'; const unit = document.createElement('span'); unit.textContent = field.unit; row.append(control, unit); label.append(row); } else label.append(control);
+          if (control.type === 'number') {
+            const row = document.createElement('span'); row.className = 'slider';
+            const slider = document.createElement('input'); slider.type = 'range'; slider.min = 0; slider.max = 10; slider.step = 1;
+            slider.setAttribute('aria-label', field.label);
+            // Stops follow the current maximum, which the camera may lower.
+            const stops = () => sliderStops(Number(control.min), Number(control.max), field.step);
+            const show = () => slider.setAttribute('aria-valuetext', field.unit ? `${control.value} ${field.unit}` : control.value);
+            const follow = () => { if (control.value !== '') slider.value = nearest(stops(), Number(control.value)); show(); };
+            slider.addEventListener('input', () => { control.value = String(stops()[slider.value]); show(); control.dispatchEvent(new Event('input')); });
+            control.addEventListener('input', follow); control.addEventListener('sync', follow);
+            follow();
+            row.append(slider, control);
+            if (field.unit) { const unit = document.createElement('span'); unit.className = 'unit'; unit.textContent = field.unit; row.append(unit); }
+            label.append(row);
+          } else label.append(control);
         }
         control.name = field.name;
         control.setAttribute('aria-label', field.label);

@@ -63,18 +63,18 @@ class MotionNativeTests(unittest.TestCase):
         self.assertEqual(scaler['mismatched'], 0)
         self.assertFalse(scaler['oversized'])
 
-    def test_analysis_size_is_one_eighth_fitted_to_the_buffer(self):
+    def test_analysis_size_fits_160x120_keeping_aspect(self):
         sizes = {(w, h): (aw, ah) for w, h, aw, ah in self.checks['analysis_size']['sizes']}
-        self.assertEqual(sizes[(160, 120)], (20, 15))
-        self.assertEqual(sizes[(320, 240)], (40, 30))
-        self.assertEqual(sizes[(640, 480)], (80, 60))
-        self.assertEqual(sizes[(800, 600)], (100, 75))
+        # Every 4:3 size, including the motion-idle QQVGA capture, gives 160 x 120.
+        for camera in [(160, 120), (320, 240), (640, 480), (800, 600), (1600, 1200), (2048, 1536)]:
+            self.assertEqual(sizes[camera], (160, 120))
         self.assertEqual(sizes[(1280, 720)], (160, 90))
-        self.assertEqual(sizes[(1600, 1200)], (160, 120))  # 200x150 averaged to fit the buffer
+        self.assertEqual(sizes[(1280, 1024)], (150, 120))
         for (w, h), (aw, ah) in sizes.items():
             with self.subTest(camera=(w, h)):
-                self.assertLessEqual(aw * ah, 160 * 120)
-                self.assertAlmostEqual(aw / ah, w / h, delta=0.05 * w / h)
+                self.assertLessEqual(aw, 160)
+                self.assertLessEqual(ah, 120)
+                self.assertAlmostEqual(aw / ah, w / h, delta=0.02 * w / h)
 
     def test_small_frames_detect_motion_and_cells_tile_any_size(self):
         self.assertTrue(self.checks['small_shift_1px']['motion'])

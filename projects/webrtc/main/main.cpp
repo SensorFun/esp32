@@ -10,6 +10,8 @@
 #include "tls_identity.h"
 #include "camera_controls.h"
 #include "motion.h"
+#include "motion_capture_profile.h"
+#include "jpeg_dimensions.h"
 #include "recorder.h"
 #include "remote_signaling.h"
 #include "esp_peer_signaling.h"
@@ -583,6 +585,57 @@ void worker(common::Application &app) {
     uint32_t queue_full_seen = camera_transport_queue_full();
     int64_t next_pacing_report = 0;
     uint8_t packet[CHUNK + 16];
+    motion::CaptureProfile motion_capture;
+    const auto select_capture = [&](bool live, bool paused, ManualRecording manual) {
+        const motion::Activity event = motion_activity();
+        const MotionSettings motion = motion_settings();
+        const bool triggered = motion_capture.update(esp_timer_get_time(), motion, event,
+                                                       !paused && !capture_fault && recorder_available() &&
+                                                       manual == ManualRecording::idle);
+        if (!camera_ready || paused || capture_fault) {
+            recorder_set_motion_capture(false);
+            return false;
+        }
+        // The camera captures 160x120 by default, whether or not detection is
+        // on (its checkbox only runs the algorithm). Only live video and SD
+        // recording use the selected resolution.
+        const bool idle = !live && !triggered && manual == ManualRecording::idle;
+        if (camera_capture_change_needed(idle) && fb) {
+            camera_frame_return(fb);
+            fb = nullptr;
+        }
+        const esp_err_t switched = camera_select_motion_idle(idle);
+        recorder_set_motion_capture(switched == ESP_OK && triggered);
+        if (switched != ESP_OK) {
+            camera_failed(switched, "Camera capture mode change");
+            return false;
+        }
+        return true;
+    };
+    // Frames captured before a size change are dropped. A size whose JPEG
+    // never matches the driver's table would drop every frame and end in
+    // stall recovery, so each mismatched size is reported once.
+    uint32_t reported_mismatch = 0;
+    // Frames grabbed from the camera per second for any use: live video,
+    // motion analysis or recording. Viewers show it as the camera's FPS.
+    uint32_t grabbed = 0;
+    int64_t grab_window = esp_timer_get_time();
+    float grab_fps = 0;
+    const auto get_frame = [&](bool prefetch = false) {
+        auto *frame = camera_frame_get(prefetch);
+        if (frame && frame->format == PIXFORMAT_JPEG &&
+            !jpeg_matches_capture_size(frame->buf, frame->len, frame->width, frame->height)) {
+            const uint32_t size = uint32_t(frame->width) << 16 | frame->height;
+            if (size != reported_mismatch) {
+                reported_mismatch = size;
+                diagnostic_eventf("warning", "Dropped a JPEG whose size is not %ux%u", unsigned(frame->width), unsigned(frame->height));
+            }
+            camera_frame_return(frame);
+            return static_cast<camera_fb_t *>(nullptr);
+        }
+        if (frame) ++grabbed;
+        return frame;
+    };
     int64_t next_app = 0;
     for (;;) {
         if (camera_ready && capture_fault && esp_timer_get_time() >= next_recovery) {
@@ -606,9 +659,9 @@ void worker(common::Application &app) {
             const auto manual = recorder_manual_state();
             const bool recording = manual == ManualRecording::active;
             const bool motion_enabled = camera_ready && manual == ManualRecording::idle && motion_settings().enabled;
-            if (camera_ready && !capture_fault && camera_capture_idle(!camera_stream_images() && !motion_enabled && !recording) &&
+            if (select_capture(false, false, manual) && camera_capture_idle(!motion_enabled && !recording) &&
                 (recorder_manual_frame_due() || (motion_enabled && motion_frame_due()))) {
-                if (camera_fb_t *frame = camera_frame_get()) {
+                if (camera_fb_t *frame = get_frame()) {
                     frame_ok();
                     if (recording) recorder_manual_feed(frame); else motion_feed(frame);
                     camera_frame_return(frame);
@@ -748,7 +801,9 @@ void worker(common::Application &app) {
             const auto manual = recorder_manual_state();
             if (viewer && now >= next_status) {
                 const bool overlay = manual == ManualRecording::idle && camera_stream_images() && motion_overlay_active();
-                send_text(motion_status(overlay));
+                cJSON *status = motion_status(overlay);
+                cJSON_AddNumberToObject(status, "capture_fps", std::round(double(grab_fps) * 10) / 10);
+                send_text(status);
                 next_status = now + (overlay ? 500000 : 1000000);
             }
             bool reply_waiting = false;
@@ -772,7 +827,9 @@ void worker(common::Application &app) {
             const bool motion_enabled = manual == ManualRecording::idle && motion_settings().enabled;
             const bool recording = manual == ManualRecording::active;
             if (fb && (!viewer || !images_enabled)) { camera_frame_return(fb); fb = nullptr; }
-            const bool capture_ready = !capture_fault && camera_capture_idle(media_paused || (!images_enabled && !motion_enabled && !recording)) && !media_paused;
+            const bool live = viewer && images_enabled;
+            const bool capture_ready = select_capture(live, media_paused, manual) &&
+                                       camera_capture_idle(!live && !motion_enabled && !recording);
             if (!images_enabled && !motion_enabled && !recording) capture_stalled_since = 0;
             const bool bulk_traffic = viewer && (images_enabled || downloading);
             // Backpressure slows bulk traffic: blocked control replies, a full
@@ -863,17 +920,39 @@ void worker(common::Application &app) {
             // A slow viewer may still hold its frame. Manual recording can
             // use the other capture buffer without waiting for that send.
             if (fb && manual_due) {
-                if (camera_fb_t *record_frame = camera_frame_get(streaming)) {
+                if (camera_fb_t *record_frame = get_frame(streaming)) {
                     recorder_manual_feed(record_frame);
                     camera_frame_return(record_frame);
                 }
             }
+            // Likewise for motion analysis and triggered recording: a large
+            // frame can take a slow link several hundred ms to send, which would
+            // otherwise cap both at the stream's frame rate.
+            if (fb && capture_ready && motion_enabled && motion_frame_due()) {
+                if (camera_fb_t *motion_frame = get_frame(streaming)) {
+                    motion_feed(motion_frame);
+                    camera_frame_return(motion_frame);
+                }
+            }
             const bool capture_requested = capture_ready && (streaming || manual_due || (motion_enabled && motion_frame_due()));
+            // With no stream, detection or recording, the driver still captures
+            // and overwrites its buffers. Take and return each ready frame,
+            // never waiting, so the viewer's FPS still shows the sensor's rate.
+            // Raw sensors are skipped: their frames belong to the JPEG encoder.
+            if (viewer && capture_ready && !fb && !images_enabled && !motion_enabled && !recording &&
+                esp_camera_available_frames()) {
+                if (const sensor_t *sensor = esp_camera_sensor_get(); sensor && sensor->pixformat == PIXFORMAT_JPEG) {
+                    if (camera_fb_t *frame = esp_camera_fb_get()) {
+                        ++grabbed;
+                        esp_camera_fb_return(frame);
+                    }
+                }
+            }
             // Intentional pauses and held frames are not evidence of a stalled
             // sensor. In particular, file transfers temporarily suspend video.
             if (!capture_requested || fb) capture_stalled_since = 0;
             if (!fb && capture_requested) {
-                fb = camera_frame_get(streaming);
+                fb = get_frame(streaming);
                 if (streaming) { offset = 0; ++sequence; last_progress = esp_timer_get_time(); }
                 if (fb) {
                     capture_stalled_since = 0;
@@ -931,6 +1010,11 @@ void worker(common::Application &app) {
                 }
             }
             if (!viewer && !motion_enabled && !recording) capture_stalled_since = 0;
+        }
+        if (const int64_t now = esp_timer_get_time(); now - grab_window >= 1000000) {
+            grab_fps = float(grabbed) * 1e6f / float(now - grab_window);
+            grabbed = 0;
+            grab_window = now;
         }
         if (esp_timer_get_time() >= next_app) { app.main(); next_app = esp_timer_get_time() + 20000; }
         vTaskDelay(pdMS_TO_TICKS(2));

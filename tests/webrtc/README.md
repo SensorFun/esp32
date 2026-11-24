@@ -86,10 +86,8 @@ python tests/webrtc/replay_motion.py --matrix tests/webrtc/config/motion-replay.
 
 The default inputs are the camera's MJPEG AVI files in `tests/data/motion/`.
 Pass clip paths to select other fixtures. The runner compiles the firmware's
-C++ detector and the same pinned ESP-JPEG decoder with the host C and C++
-compilers. A firmware build provides the decoder sources. For a different
-build layout, pass the pinned component's `tjpgd` directory with
-`--decoder-dir`.
+C++ detector and its JPEG decoder (`projects/webrtc/main/tjpgd/`) with the
+host C and C++ compilers; no firmware build is needed.
 
 The default profiles use firmware motion thresholds with detection enabled.
 For a board-specific profile, use its `motion_get` JSON response or the

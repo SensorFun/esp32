@@ -60,20 +60,6 @@ export function RemoteCamera({ onSessionState }) {
     element.addEventListener('camera-command', send);
     return () => element.removeEventListener('camera-command', send);
   }, []);
-  useEffect(() => {
-    if (state !== 'connected') return;
-    const session = connection.current;
-    let sampledAt = performance.now();
-    let previousFrames = session.displayedFrames;
-    const timer = setInterval(() => {
-      if (connection.current !== session) return;
-      const now = performance.now();
-      setFps(session.imagesDisabled ? 0 : (session.displayedFrames - previousFrames) * 1000 / (now - sampledAt));
-      previousFrames = session.displayedFrames;
-      sampledAt = now;
-    }, 1000);
-    return () => clearInterval(timer);
-  }, [state]);
   useEffect(() => { onSessionState(state); }, [state, onSessionState]);
   const generation = useRef(0);
   function stop(message = 'Disconnected') {
@@ -111,7 +97,7 @@ export function RemoteCamera({ onSessionState }) {
     try {
       socket = new Signaling(access.room, 'wss://signalserver.sensorfun.net/viewer');
     } catch (error) { if (alive()) stop(error.message); return; }
-    const session = { socket, peer: null, channel: null, frame: null, frameId: -1, received: 0, url: null, candidates: [], displayedFrames: 0 };
+    const session = { socket, peer: null, channel: null, frame: null, frameId: -1, received: 0, url: null, candidates: [] };
     connection.current = session;
     session.timeout = setTimeout(() => { if (alive()) { savedAccess.current = null; stop('Camera not found. Check the MAC/password and camera internet connection.'); } }, 15000);
     async function data(event) {
@@ -139,13 +125,16 @@ export function RemoteCamera({ onSessionState }) {
               image.current?.removeAttribute('src');
               if (session.url) URL.revokeObjectURL(session.url);
               session.url = null;
-              setFps(0);
             }
             session.imagesDisabled = disabled;
             setSettings(message);
           }
           else if (session.authenticated && message.type === 'error') { setStatus(message.error); if (settingsPanel.current) settingsPanel.current.error = message.error; }
-          else if (session.authenticated) for (const view of motionViews()) view.handle(message);
+          else if (session.authenticated) {
+            // The camera's grab rate, whether or not images are streamed.
+            if (message.type === 'motion_status') setFps(Number.isFinite(message.capture_fps) ? message.capture_fps : 0);
+            for (const view of motionViews()) view.handle(message);
+          }
         } catch (error) { if (alive()) stop(error.message); }
         return;
       }
@@ -246,7 +235,7 @@ export function RemoteCamera({ onSessionState }) {
         <label htmlFor="camera-mac">Camera MAC address</label><input id="camera-mac" value={camera} placeholder="AA:BB:CC:DD:EE:FF" autoComplete="off" disabled={state !== 'idle'} onChange={e => { savedAccess.current = null; setCamera(e.target.value); }} /><label htmlFor="camera-access-password">Camera password</label><input id="camera-access-password" type="password" autoComplete="current-password" value={password} disabled={state !== 'idle'} onChange={e => setPassword(e.target.value)} /><div className="remote-actions"><button type="submit" className="button rtc-primary" disabled={(!password && !savedAccess.current) || !camera || state !== 'idle'}>Connect camera</button><button type="button" className="button rtc-secondary" disabled={state === 'idle'} onClick={() => stop()}>Disconnect</button></div></form>
       <p className="muted">Direct WebRTC</p><p role="status" data-testid="remote-status">{status}</p>
     </div>
-    <div className="monitor"><div className="monitor-top"><span>CAMERA PREVIEW</span><span data-testid="remote-fps" title="Displayed frames per second · 1-second average">{fps.toFixed(1)} FPS</span><span>{transport}</span></div><div className="remote-preview"><div className="preview-frame" hidden={settings?.stream_images === 0}><img ref={image} alt="Remote camera stream" data-testid="remote-image" onLoad={() => { const session = connection.current; if (session?.authenticated && image.current?.getAttribute('src') === session.url) session.displayedFrames++; }} /><sensorfan-motion-overlay ref={overlay} /></div>{state !== 'connected' && <span>Awaiting encrypted camera stream</span>}{settings?.stream_images === 0 && <span role="status">Camera image streaming is off.</span>}</div></div>
+    <div className="monitor"><div className="monitor-top"><span>CAMERA PREVIEW</span><span data-testid="remote-fps" title="Frames the camera grabs per second for live video, motion detection or recording · 1-second average">{fps.toFixed(1)} FPS</span><span>{transport}</span></div><div className="remote-preview"><div className="preview-frame" hidden={settings?.stream_images === 0}><img ref={image} alt="Remote camera stream" data-testid="remote-image" /><sensorfan-motion-overlay ref={overlay} /></div>{state !== 'connected' && <span>Awaiting encrypted camera stream</span>}{settings?.stream_images === 0 && <span role="status">Camera image streaming is off.</span>}</div></div>
     <sensorfan-camera-tabs>
       <div data-label="Camera settings">{settings ? <sensorfan-camera-settings className="remote-settings" ref={settingsPanel} /> : <p className="muted">Connect a camera to adjust its settings.</p>}</div>
       <div data-label="Motion detection" hidden><sensorfan-motion-settings ref={motionPanel} group="detection" hidden data-testid="motion-settings" /></div>

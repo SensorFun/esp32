@@ -11,6 +11,7 @@ struct Decode {
     GrayScaler &scaler;
     size_t offset = 0;
     int width = 0, height = 0;
+    uint8_t *direct = nullptr;
 };
 
 size_t input(JDEC *decoder, uint8_t *buffer, size_t bytes) {
@@ -26,19 +27,17 @@ int output(JDEC *decoder, void *pixels, JRECT *rect) {
     const int right = std::min<int>(rect->right, source.width - 1);
     const int bottom = std::min<int>(rect->bottom, source.height - 1);
     if (rect->left > right || rect->top > bottom) return 1;
-    return source.scaler.add(static_cast<const uint8_t *>(pixels),
-        rect->left, rect->top, right, bottom, rect->right - rect->left + 1);
+    const auto *rgb = static_cast<const uint8_t *>(pixels);
+    const int stride = rect->right - rect->left + 1;
+    if (!source.direct) return source.scaler.add(rgb, rect->left, rect->top, right, bottom, stride);
+    for (int y = rect->top; y <= bottom; ++y) {
+        const auto *pixel = rgb + (y - rect->top) * stride * 3;
+        for (int x = rect->left; x <= right; ++x, pixel += 3)
+            source.direct[y * source.width + x] = (77u * pixel[0] + 150u * pixel[1] + 29u * pixel[2]) >> 8;
+    }
+    return 1;
 }
 }  // namespace
-
-void Activity::update(bool detected, int64_t now, const MotionSettings &s) {
-    const int64_t gap = std::max<int64_t>(1000000, 2500000 / s.analysis_fps);
-    if (detected) {
-        if (!moving || now - last > gap) since = now;
-        moving = true;
-        last = now;
-    } else if (now - last > gap) moving = false;
-}
 
 void Detector::reset() {
     flow_.reset();
@@ -47,23 +46,32 @@ void Detector::reset() {
 
 FrameResult Detector::analyze(const uint8_t *jpeg, size_t size, int64_t captured,
                               const MotionSettings &s, Cooperate cooperate) {
-    if (!s.enabled || s.method != 0 || s.analysis_fps < 1) return FrameResult::invalid;
-    Decode source{jpeg, size, scratch_.scaler};
+    if (!s.enabled || s.method != 0) return FrameResult::invalid;
+    Decode source{jpeg, size, scaler_};
     JDEC decoder{};
-    if (jd_prepare(&decoder, input, scratch_.workspace, sizeof(scratch_.workspace), &source) != JDR_OK)
+    if (jd_prepare(&decoder, input, workspace_.bytes, sizeof(workspace_.bytes), &source) != JDR_OK)
         return FrameResult::invalid;
-    source.width = std::max(1, decoder.width >> kJpegScale);
-    source.height = std::max(1, decoder.height >> kJpegScale);
     analysis_size(decoder.width, decoder.height, analysis_width, analysis_height);
-    if (!source.scaler.begin(source.width, source.height, analysis_width, analysis_height, flow_.frame()) ||
-        jd_decomp(&decoder, output, kJpegScale) != JDR_OK || !source.scaler.finish())
+    int scale = 0;
+    while (scale < kMaxJpegScale &&
+           ((decoder.width >> (scale + 1)) >= analysis_width && (decoder.height >> (scale + 1)) >= analysis_height))
+        ++scale;
+    while (scale < kMaxJpegScale &&
+           std::max(decoder.width >> scale, decoder.height >> scale) > GrayScaler::kMaxSource)
+        ++scale;
+    source.width = std::max(1, decoder.width >> scale);
+    source.height = std::max(1, decoder.height >> scale);
+    if (source.width == analysis_width && source.height == analysis_height) source.direct = flow_.frame();
+    else if (!scaler_.begin(source.width, source.height, analysis_width, analysis_height, flow_.frame()))
+        return FrameResult::invalid;
+    if (jd_decomp(&decoder, output, scale) != JDR_OK || (!source.direct && !scaler_.finish()))
         return FrameResult::invalid;
     if (decoder.width != width_ || decoder.height != height_) {
         reset();
         width_ = decoder.width;
         height_ = decoder.height;
     }
-    interval = have_previous_ ? std::clamp(float(captured - previous_time_) / 1e6f, 0.02f, 5.0f) : 1.0f / s.analysis_fps;
+    interval = have_previous_ ? std::clamp(float(captured - previous_time_) / 1e6f, 0.02f, 5.0f) : 0.2f;
     previous_time_ = captured;
     have_previous_ = true;
     FlowParams params;

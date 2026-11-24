@@ -11,3 +11,10 @@ bool camera_stream_images();
 bool camera_capture_idle(bool idle);
 cJSON *camera_settings();
 cJSON *camera_command(const cJSON *request);
+
+// idle: nothing needs the selected resolution, so capture the 160x120
+// default. Call without an outstanding framebuffer when
+// camera_capture_change_needed(idle). Keeps the user's selected size.
+esp_err_t camera_select_motion_idle(bool idle);
+bool camera_capture_change_needed(bool idle);
+bool camera_is_motion_idle();

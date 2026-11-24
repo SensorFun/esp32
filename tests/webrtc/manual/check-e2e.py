@@ -79,7 +79,7 @@ window.RTCPeerConnection=class extends NativePeer{
         page.set_viewport_size({'width': 320, 'height': 844})
         assert page.evaluate('document.documentElement.scrollWidth<=innerWidth'), 'Connected settings overflow phone viewport'
         page.wait_for_function("parseFloat(document.querySelector('[data-testid=remote-fps]').textContent) > 0", timeout=5000)
-        print('Remote displayed frame rate:', page.get_by_test_id('remote-fps').inner_text())
+        print('Remote camera frame rate:', page.get_by_test_id('remote-fps').inner_text())
         sizes = page.get_by_role('combobox', name='Resolution', exact=True).locator('option').evaluate_all("options=>options.map(option=>({value:option.value,label:option.textContent}))")
         original_resolution = page.get_by_role('combobox', name='Resolution', exact=True).input_value()
         for size in (sizes[0], sizes[-1]):

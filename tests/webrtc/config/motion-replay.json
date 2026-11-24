@@ -1,8 +1,7 @@
 {
   "profiles": {
     "firmware-defaults-enabled": {},
-    "low-rate-small-cells": {
-      "analysis_fps": 3,
+    "small-cells": {
       "cell": 5
     }
   },

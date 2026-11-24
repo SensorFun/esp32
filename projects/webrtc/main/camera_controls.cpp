@@ -21,7 +21,9 @@ static CameraTiming timing;
 static constexpr const char *timing_names[] = {"high_light", "mid_light", "low_light"};
 #include "camera_profiles.h"
 static sensor_t *sensor;
-static camera_config_t active_config{};
+static camera_config_t active_config{}, full_config{};
+static framesize_t configured_resolution = FRAMESIZE_QVGA;
+static bool motion_idle = false;
 static const char *sensor_name;
 // The detected sensor's controls, allowed values and defaults
 // (config/frame_grabber/sensors/<sensor>.yaml).
@@ -124,7 +126,9 @@ esp_err_t camera_start(bool restore_saved) {
         err = esp_camera_init(&cfg);
     }
     if (err != ESP_OK) return err;
-    active_config = cfg;
+    active_config = full_config = cfg;
+    motion_idle = false;
+    configured_resolution = FRAMESIZE_QVGA;
     sensor = esp_camera_sensor_get();
     capture_idle = false;
     if (sensor->id.PID == OV2640_PID) {
@@ -221,7 +225,7 @@ static bool set_resolution(framesize_t size) {
 }
 static cJSON *settings_values(bool streaming) {
     cJSON *value = cJSON_CreateObject();
-    cJSON_AddNumberToObject(value, "resolution", sensor->status.framesize);
+    cJSON_AddNumberToObject(value, "resolution", configured_resolution);
     cJSON_AddNumberToObject(value, stream_setting, streaming);
     if (!is_gc()) cJSON_AddStringToObject(value, "timing_profile", timing_names[timing.selected()]);
     for (const auto &c : controls) if (supported(c)) cJSON_AddNumberToObject(value, c.name, c.get(sensor));
@@ -251,7 +255,7 @@ static bool validate_values(const cJSON *values) {
 // baseline stays valid: it is re-read after every driver reset of CLKRC.
 static bool apply_values(const cJSON *values, bool force = false) {
     const int size = cJSON_GetObjectItemCaseSensitive(values, "resolution")->valueint;
-    if ((sensor->status.framesize != size || (force && !is_gc())) &&
+    if (!motion_idle && (sensor->status.framesize != size || (force && !is_gc())) &&
         !set_resolution(static_cast<framesize_t>(size))) return false;
     for (const auto &c : controls) {
         if (!supported(c)) continue;
@@ -266,6 +270,7 @@ static bool apply_values(const cJSON *values, bool force = false) {
             break;
         }
     }
+    configured_resolution = static_cast<framesize_t>(size);
     if (const cJSON *stream = cJSON_GetObjectItemCaseSensitive(values, stream_setting)) {
         set_stream_images(stream->valueint != 0);
     }
@@ -338,7 +343,8 @@ cJSON *camera_settings() {
     cJSON *reply = cJSON_CreateObject();
     cJSON_AddStringToObject(reply, "type", "settings");
     cJSON_AddStringToObject(reply, "sensor", sensor_name);
-    cJSON_AddNumberToObject(reply, "resolution", sensor->status.framesize);
+    cJSON_AddNumberToObject(reply, "resolution", configured_resolution);
+    cJSON_AddNumberToObject(reply, "capture_resolution", sensor->status.framesize);
     cJSON_AddNumberToObject(reply, stream_setting, stream_images);
     cJSON *sizes = cJSON_AddArrayToObject(reply, "resolutions");
     for (int i = FRAMESIZE_96X96; i <= max_resolution(); ++i) {
@@ -408,10 +414,10 @@ static struct {
     bool enabled[control_count]{};
 } restore_point;
 
-esp_err_t camera_recover(bool power_cycle) {
+static void snapshot_controls() {
     if (sensor_ready) {
         restore_point.valid = true;
-        restore_point.size = static_cast<framesize_t>(sensor->status.framesize);
+        restore_point.size = configured_resolution;
         restore_point.profile = timing.selected();
         restore_point.sensor_id = sensor->id.PID;
         for (size_t i = 0; i < control_count; ++i) {
@@ -419,6 +425,95 @@ esp_err_t camera_recover(bool power_cycle) {
             if (restore_point.enabled[i]) restore_point.values[i] = controls[i].get(sensor);
         }
     }
+}
+
+static esp_err_t restore_controls(framesize_t size) {
+    if (!sensor || sensor->id.PID != restore_point.sensor_id) return ESP_ERR_INVALID_STATE;
+    if (!set_resolution(size)) return ESP_FAIL;
+    for (size_t i = 0; i < control_count; ++i) {
+        if (restore_point.enabled[i] && controls[i].set(sensor, restore_point.values[i]) != 0) return ESP_FAIL;
+    }
+    if (!is_gc() && timing.selected() != restore_point.profile && timing.apply(restore_point.profile)) return ESP_FAIL;
+    return ESP_OK;
+}
+
+bool camera_is_motion_idle() { return motion_idle; }
+
+// The 160x120 default capture also serves a stream or recording that asks
+// for 160x120, so selecting that resolution never restarts the camera.
+static bool default_capture(bool idle) { return idle || configured_resolution == FRAMESIZE_QQVGA; }
+
+bool camera_capture_change_needed(bool idle) {
+    return sensor_ready && !is_gc() && default_capture(idle) != motion_idle;
+}
+
+esp_err_t camera_select_motion_idle(bool idle) {
+    if (!sensor_ready) return ESP_ERR_INVALID_STATE;
+    // Raw sensors use a different encoder pipeline. This mode targets native JPEG.
+    idle = default_capture(idle);
+    if (is_gc() || motion_idle == idle) return ESP_OK;
+    snapshot_controls();
+    camera_config_t next = full_config;
+    if (idle) {
+        // Two JPEG slots sized for VGA (about 60 KiB each, from width x
+        // height / 5); the sensor is moved to QQVGA before frames are used.
+        // The headroom covers QQVGA at the user's JPEG quality, which is
+        // restored with the other controls (2 makes far larger frames than the
+        // default 12). Two slots keep the sensor capturing while one frame is
+        // copied or streamed, as at full resolution. They are in PSRAM: on the
+        // ESP32, internal RAM must stay free for the TLS handshake of the next
+        // viewer, which arrives in this mode.
+        next.frame_size = FRAMESIZE_VGA;
+        next.fb_count = 2;
+        next.fb_location = CAMERA_FB_IN_PSRAM;
+        next.grab_mode = CAMERA_GRAB_LATEST;
+    }
+    sensor_ready = false;
+    camera_frames_pause();
+    const auto attempt = [&](bool power_cycle) {
+        if (power_cycle) {
+            esp_camera_deinit();  // Harmless when the failed attempt already freed the driver.
+            power_cycle_sensor();
+        }
+        esp_err_t result = esp_camera_reconfigure(&next);
+        if (result != ESP_OK) return result;
+        active_config = next;
+        capture_idle = false;
+        sensor = esp_camera_sensor_get();
+        if (!sensor || sensor->id.PID != restore_point.sensor_id) return ESP_ERR_INVALID_STATE;
+        gpio_set_drive_capability(gpio_num_t(XCLK_GPIO_NUM), GPIO_DRIVE_CAP_0);
+        const int drive = sensor->id.PID == OV2640_PID
+            ? sensor->set_reg(sensor, 0x109, 0x03, 0)
+            : sensor->set_reg(sensor, 0x302c, 0xc0, 0);
+        // Reinitialize the timing helper before reading its selected profile.
+        if (drive || !restore_timing(0)) return ESP_FAIL;
+        return restore_controls(idle ? FRAMESIZE_QQVGA : configured_resolution);
+    };
+    // Each switch re-probes the sensor. On the ESP32-CAM about half of the
+    // plain restarts fail: an SCCB write times out ("Failed to set frame
+    // size") or the probe finds no sensor. One retry with sensor power cut has
+    // cleared every case seen, so it is logged here but is not a camera fault;
+    // a second failure goes to the caller's recovery and Diagnostics.
+    esp_err_t result = attempt(false);
+    if (result != ESP_OK) {
+        ESP_LOGW("camera", "Capture mode change failed (%s); retrying with sensor power cycle", esp_err_to_name(result));
+        result = attempt(true);
+    }
+    camera_frames_resume();
+    if (result != ESP_OK) return result;
+    motion_idle = idle;
+    sensor_ready = true;
+    settle();
+    const auto &size = resolution[sensor->status.framesize];
+    ESP_LOGI("camera", "Capture mode: %ux%u JPEG, %s", unsigned(size.width), unsigned(size.height),
+             idle ? "default capture" : "selected resolution");
+    diagnostic_eventf("info", "Capture mode: %ux%u JPEG, %s", unsigned(size.width), unsigned(size.height),
+                      idle ? "default capture" : "selected resolution");
+    return ESP_OK;
+}
+
+esp_err_t camera_recover(bool power_cycle) {
+    snapshot_controls();
     sensor_ready = false;
     camera_frames_pause();
     esp_camera_deinit();  // Harmless when a failed start already freed the driver.
@@ -428,14 +523,12 @@ esp_err_t camera_recover(bool power_cycle) {
     esp_err_t err = camera_start(!restore_point.valid);
     camera_frames_resume();
     if (err != ESP_OK || !restore_point.valid) return err;
-    if (sensor->id.PID != restore_point.sensor_id) return ESP_ERR_INVALID_STATE;
-    if (!set_resolution(restore_point.size)) return ESP_FAIL;
-    for (size_t i = 0; i < control_count; ++i) {
-        if (restore_point.enabled[i] && controls[i].set(sensor, restore_point.values[i]) != 0) return ESP_FAIL;
+    err = restore_controls(restore_point.size);
+    if (err != ESP_OK) {
+        sensor_ready = false;
+        return err;
     }
-    // set_resolution re-read the native baseline after its driver reset;
-    // re-reading it now would capture the default profile's scaled value.
-    if (!is_gc() && timing.selected() != restore_point.profile && timing.apply(restore_point.profile)) return ESP_FAIL;
+    configured_resolution = restore_point.size;
     settle();
     return ESP_OK;
 }
@@ -490,7 +583,8 @@ cJSON *camera_command(const cJSON *request) {
             value->valuedouble != std::floor(value->valuedouble) ||
             !valid_resolution(value->valueint)) {
             error = "Unsupported camera resolution";
-        } else if (set_resolution(static_cast<framesize_t>(value->valueint))) {
+        } else if (motion_idle || set_resolution(static_cast<framesize_t>(value->valueint))) {
+            configured_resolution = static_cast<framesize_t>(value->valueint);
             return camera_settings();
         } else error = "Sensor rejected resolution";
     }

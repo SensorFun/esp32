@@ -1,2 +1,2 @@
 #include "motion_jpeg.h"
-#include "tjpgd.c"
+#include "tjpgd/tjpgd.c"

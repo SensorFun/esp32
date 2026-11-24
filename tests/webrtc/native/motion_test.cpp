@@ -1,6 +1,8 @@
 // Host checks for the firmware's optical flow and AVI writer. Prints one JSON
 // line per check; tests/webrtc/test_motion_native.py compiles and runs this file.
 #include "optical_flow.h"
+#include "motion_capture_profile.h"
+#include "jpeg_dimensions.h"
 #include "avi_writer.h"
 #include <cassert>
 #include <cmath>
@@ -115,7 +117,37 @@ int main(int argc, char **argv) {
     printf("{\"check\":\"scaler\",\"compared\":%d,\"mismatched\":%d,\"oversized\":%s}\n", compared, mismatched,
            oversized.begin(GrayScaler::kMaxSource + 1, 240, 160, 120, gray.data()) || oversized.begin(320, 240, 200, 150, gray.data()) ? "true" : "false");
 
-    // Analysis size for each camera resolution: 1/8, fitted to the frame buffer.
+    // Keep low resolution until confirmation, then retain full resolution
+    // through the post-trigger interval, even after moving goes false.
+    CaptureProfile capture;
+    MotionSettings settings;
+    settings.enabled = true;
+    settings.post_seconds = 2;
+    assert(!capture.update(2000000, settings, {true, 1500000, 2000000}, true));
+    assert(capture.update(3000000, settings, {true, 1500000, 3000000}, true));
+    assert(capture.update(4500000, settings, {false, 1500000, 3000000}, true));
+    assert(!capture.update(5000001, settings, {false, 1500000, 3000000}, true));
+    assert(!capture.update(6000000, settings, {true, 4000000, 6000000}, false));
+    // Without a rate setting, the continuity gap follows the measured interval:
+    // 2 s between analyses still forms one event; a 59 s pause starts a new one.
+    Activity slow;
+    slow.update(true, 1000000);
+    slow.update(true, 3000000);
+    assert(slow.gap == 5000000 && slow.confirmed(3000000, 1.0f));
+    Activity paused;
+    paused.update(true, 1000000);
+    paused.update(true, 60000000);
+    assert(paused.gap == 5000000 && !paused.confirmed(60000000, 1.0f));
+    Activity fast;
+    fast.update(true, 1000000);
+    fast.update(true, 1200000);
+    assert(fast.gap == 1000000);
+    const uint8_t qqvga[] = {0xff, 0xd8, 0xff, 0xc0, 0, 8, 8, 0, 120, 0, 160, 3};
+    assert(jpeg_matches_capture_size(qqvga, sizeof(qqvga), 160, 120));
+    assert(!jpeg_matches_capture_size(qqvga, sizeof(qqvga), 1600, 1200));
+    assert(!jpeg_matches_capture_size(qqvga, sizeof(qqvga) - 1, 160, 120));
+
+    // Analysis size for each camera resolution: fixed motion grid.
     const int cameras[][2] = {{160, 120}, {320, 240}, {640, 480}, {800, 600}, {1280, 720}, {1280, 1024}, {1600, 1200}, {2048, 1536}};
     printf("{\"check\":\"analysis_size\",\"sizes\":[");
     for (size_t i = 0; i < sizeof(cameras) / sizeof(cameras[0]); ++i) {
@@ -125,7 +157,7 @@ int main(int argc, char **argv) {
     }
     printf("]}\n");
 
-    // Small analysis frames (320x240 camera: 40x30) still detect a 1 px shift,
+    // Small synthetic analysis frames still detect a 1 px shift,
     // and cells tile sizes that the cell side does not divide.
     kWidth = 40; kHeight = 30;
     report("small_shift_1px", run(frame(0, 0), frame(1, 0)));
