@@ -47,7 +47,6 @@ SemaphoreHandle_t sd_lock;   // Serializes mount changes with list/delete/open.
 SemaphoreHandle_t state_lock;
 std::atomic<size_t> buffered{0};
 size_t budget = 0;
-int64_t last_accept = 0;
 // Shared state, guarded by state_lock.
 std::string active_clip, last_error, format_result;
 // Set by viewers, handled by the recorder task, which owns mounting.
@@ -376,9 +375,11 @@ bool recorder_available() { return sd_card::state() == sd_card::State::mounted &
 
 void recorder_set_motion_capture(bool active) { motion_capture = active; }
 
-bool recorder_frame_due(const MotionSettings &s, int64_t now) {
-    return motion_capture && s.record && recorder_available() && buffered < budget &&
-           now - last_accept >= kSecond / s.record_fps;
+// No rate cap: recording takes every frame the camera delivers while the PSRAM
+// write queue has room. When the card writes slower than the camera captures,
+// frames are skipped until the queue drains.
+bool recorder_frame_due(const MotionSettings &s, int64_t) {
+    return motion_capture && s.record && recorder_available() && buffered < budget;
 }
 
 static void queue_frame(const camera_fb_t *frame, int64_t now, uint32_t session) {
@@ -388,7 +389,6 @@ static void queue_frame(const camera_fb_t *frame, int64_t now, uint32_t session)
     if (!copy.data) return;
     memcpy(copy.data, frame->buf, frame->len);
     buffered += copy.length;
-    last_accept = now;
     if (xQueueSend(queue, &copy, 0) != pdTRUE) release(copy);
 }
 
@@ -416,21 +416,19 @@ const char *recorder_set_manual(bool start) {
     }
     set_error(nullptr);
     if (++manual_id == 0) ++manual_id;
-    last_accept = 0;
     manual_state = ManualRecording::active;
     return nullptr;
 }
 
-static bool manual_frame_due(int64_t now) {
+static bool manual_frame_due() {
     return manual_state == ManualRecording::active && sd_card::state() == sd_card::State::mounted &&
-           buffered < budget && now - last_accept >= kSecond / motion_settings().record_fps;
+           buffered < budget;
 }
 
-bool recorder_manual_frame_due() { return manual_frame_due(esp_timer_get_time()); }
+bool recorder_manual_frame_due() { return manual_frame_due(); }
 
 void recorder_manual_feed(const camera_fb_t *frame) {
-    const int64_t now = esp_timer_get_time();
-    if (manual_frame_due(now)) queue_frame(frame, now, manual_id.load());
+    if (manual_frame_due()) queue_frame(frame, esp_timer_get_time(), manual_id.load());
 }
 
 void recorder_status(cJSON *status) {

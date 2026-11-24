@@ -13,7 +13,6 @@ struct MotionSettings {
     float trigger_seconds = 1.0f;
     bool overlay = true;
     bool record = true;
-    int record_fps = 10;
     int post_seconds = 10;
     int max_clip_seconds = 120;
     bool overwrite_oldest = true;

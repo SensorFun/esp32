@@ -183,6 +183,14 @@ camera_fb_t *camera_frame_get(bool prefetch) {
     return nullptr;
 }
 
+bool camera_frame_ready() {
+    init_locks();
+    if (!raw_sensor()) return esp_camera_available_frames();
+    Lock guard;
+    for (const auto &slot : slots) if (slot.state == Slot::kReady) return true;
+    return false;
+}
+
 void camera_stop_stream_prefetch() {
     if (!slot_lock) return;
     Lock guard;

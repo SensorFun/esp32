@@ -51,7 +51,6 @@ const Field kFields[] = {
     {"trigger_seconds", "Motion duration", "detection", "s", "Motion must last this long before recording starts.", Kind::number, 0, 30, 0.5, nullptr, 0, FIELD_FLOAT(trigger_seconds)},
     {"overlay", "Show motion in preview", "detection", "", "Highlight moving cells over the live picture.", Kind::boolean, 0, 1, 1, nullptr, 0, FIELD_BOOL(overlay)},
     {"record", "Record to SD card", "recording", "", "Store a clip while motion lasts, at the selected camera resolution.", Kind::boolean, 0, 1, 1, nullptr, 0, FIELD_BOOL(record)},
-    {"record_fps", "Recording rate", "recording", "fps", "Most frames stored per second. Large resolutions may record fewer.", Kind::number, 1, 25, 1, nullptr, 0, FIELD_INT(record_fps)},
     {"post_seconds", "Keep recording", "recording", "s", "Continue this long after motion stops.", Kind::number, 1, 300, 1, nullptr, 0, FIELD_INT(post_seconds)},
     {"max_clip_seconds", "Maximum clip length", "recording", "s", "Longer motion continues in a new clip.", Kind::number, 10, 900, 1, nullptr, 0, FIELD_INT(max_clip_seconds)},
     {"overwrite_oldest", "Replace oldest clips when full", "recording", "", "Otherwise recording stops when the card is full.", Kind::boolean, 0, 1, 1, nullptr, 0, FIELD_BOOL(overwrite_oldest)},

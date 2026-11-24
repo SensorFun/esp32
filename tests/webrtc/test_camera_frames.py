@@ -20,6 +20,7 @@ struct camera_fb_t { uint8_t *buf; size_t len, width, height; pixformat_t format
 struct sensor_t { pixformat_t pixformat; };
 camera_fb_t *esp_camera_fb_get();
 void esp_camera_fb_return(camera_fb_t *);
+bool esp_camera_available_frames();
 sensor_t *esp_camera_sensor_get();
 ''',
     'img_converters.h': '''#pragma once
@@ -131,6 +132,7 @@ camera_fb_t *esp_camera_fb_get() {
     return fb;
 }
 void esp_camera_fb_return(camera_fb_t *fb) { assert(fb == &frames[0] || fb == &frames[1]); --outstanding; }
+bool esp_camera_available_frames() { return !absent; }
 
 jpeg_error_t jpeg_enc_open(jpeg_enc_config_t *config, jpeg_enc_handle_t *out) {
     assert(config->width == 2 && config->height == 2 && config->quality == 60 && config->src_type == JPEG_PIXEL_FORMAT_YCbYCr);

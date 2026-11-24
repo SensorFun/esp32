@@ -919,7 +919,9 @@ void worker(common::Application &app) {
             const bool manual_due = capture_ready && recording && recorder_manual_frame_due();
             // A slow viewer may still hold its frame. Manual recording can
             // use the other capture buffer without waiting for that send.
-            if (fb && manual_due) {
+            // Only a frame that is already waiting: recording has no rate cap,
+            // and waiting here for each new frame would stall the stream.
+            if (fb && manual_due && camera_frame_ready()) {
                 if (camera_fb_t *record_frame = get_frame(streaming)) {
                     recorder_manual_feed(record_frame);
                     camera_frame_return(record_frame);
@@ -928,7 +930,7 @@ void worker(common::Application &app) {
             // Likewise for motion analysis and triggered recording: a large
             // frame can take a slow link several hundred ms to send, which would
             // otherwise cap both at the stream's frame rate.
-            if (fb && capture_ready && motion_enabled && motion_frame_due()) {
+            if (fb && capture_ready && motion_enabled && motion_frame_due() && camera_frame_ready()) {
                 if (camera_fb_t *motion_frame = get_frame(streaming)) {
                     motion_feed(motion_frame);
                     camera_frame_return(motion_frame);

@@ -186,7 +186,7 @@ function defineElements() {
       control.max = max;
       const note = control.closest('label')?.querySelector('.limit');
       const unit = this.description?.fields.find(field => field.name === control.name)?.unit || '';
-      if (note) note.textContent = max > 0 ? `Up to ${max} ${unit} now, limited by ${note.dataset.reason}.` : `Not available now: ${note.dataset.reason} leave no room. Lower the recording rate or resolution.`;
+      if (note) note.textContent = max > 0 ? `Up to ${max} ${unit} now, limited by ${note.dataset.reason}.` : `Not available now: ${note.dataset.reason} leave no room. Lower the resolution.`;
       // Keep an untouched field valid when the limit drops, e.g. after a resolution change.
       if (!this.dirty && Number(control.value) > max) control.value = max;
       control.dispatchEvent(new Event('sync'));

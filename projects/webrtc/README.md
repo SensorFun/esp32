@@ -264,7 +264,8 @@ them in NVS so they survive a reboot.
   Recording starts after motion lasts **Motion duration** seconds. It includes
   no frames from before the trigger, continues **Keep recording** seconds after
   motion stops, and splits at **Maximum clip length**. Clips use the selected camera
-  resolution, at up to **Recording rate** frames per second. A resolution change starts
+  resolution, at every frame the camera delivers (no rate setting); if the card
+  writes slower, frames are skipped until its PSRAM write queue drains. A resolution change starts
   a new clip. With **Replace oldest clips when full**, the oldest clips are deleted
   to keep 2% of the card (at least 64 MB) free; otherwise recording pauses.
 - **Recordings** lists clips newest first with local start time, length, resolution,
