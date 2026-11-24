@@ -58,7 +58,7 @@ def identity(port):
                         raise
                     if any(term in line.lower() for term in ('task_wdt', 'guru meditation', 'abort() was called', 'assert failed', 'stack canary', 'corrupt heap', 'rst:')):
                         console.runtime_faults.append(line)
-                    if any(term in line.lower() for term in ('peer state', 'dtls', 'e (', 'abort()', 'assert failed', 'sctp', 'ice agent', 'guru meditation', 'backtrace:', 'stack canary', 'corrupt heap', 'rst:', 'camera_transport', 'stalled camera', 'task_wdt', 'closing camera peer', 'control send failed', 'video paused', 'send pacing')):
+                    if any(term in line.lower() for term in ('peer state', 'dtls', 'e (', 'abort()', 'assert failed', 'sctp', 'ice agent', 'guru meditation', 'backtrace:', 'stack canary', 'corrupt heap', 'rst:', 'camera_transport', 'stalled camera', 'task_wdt', 'closing camera peer', 'control send failed', 'video paused', 'transport:')):
                         print('USB:', line)
             console.diagnostic_thread = threading.Thread(target=drain, daemon=True)
             console.diagnostic_thread.start()

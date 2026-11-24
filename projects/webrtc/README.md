@@ -172,17 +172,15 @@ send-buffer exhaustion (`WOULD_BLOCK` or `NO_MEM`) retains the pending reply for
 retry instead of disconnecting the viewer. Telemetry yields to queued replies.
 Video and file sends use 2 KiB chunks and a 64 KiB SCTP send cache (in PSRAM;
 16 KiB limited video to one window per acknowledgement, about 190 KiB/s).
-Bulk payloads (video and recording downloads) are paced adaptively
-(`main/send_pacer.h`): the rate starts at 256 KiB/s, rises by 32 KiB/s every
-100 ms while the stream uses most of it, and drops to 70% (at most every
-200 ms) on backpressure: a full SCTP send cache, a full Wi-Fi TX queue, waiting
-control replies, or internal RAM below 20 KiB. It stays between 128 KiB/s and
-1 MiB/s (ESP32) or 1.5 MiB/s (ESP32-S3). A worker pass may bank 50 ms of credit
-and send up to 12 chunks. Every 5 seconds a viewer is connected, the log prints
-the rate, slowdowns by cause and the Wi-Fi RSSI. Settings and heartbeat
-processing bypass the pacer. On the ESP32-S3 the WebRTC library's send path
-(DTLS and SCTP) itself tops out near 260 KiB/s, so the largest JPEGs are limited
-by it rather than by the pacer. The camera
+Bulk payloads (video and recording downloads) have no rate limit. Each worker
+pass sends up to 12 chunks; a burst ends early when the SCTP send cache is full
+(`WOULD_BLOCK`/`NO_MEM`) or the Wi-Fi TX queue fills, so the peer loop can
+process acknowledgements before sending more. Video and downloads wait while a
+control reply is pending, so settings and heartbeats are never starved. Every
+5 seconds a viewer is connected, the log prints a `Transport:` line counting
+full send caches, full TX queues, passes with a waiting reply, and the Wi-Fi
+RSSI. On the ESP32-S3 the WebRTC library's send path (DTLS and SCTP) itself tops
+out near 260 KiB/s, so the largest JPEGs are limited by it. The camera
 disables Wi-Fi modem sleep to prevent a sleeping radio from delaying the live
 stream and filling its TX queue. Video admission pauses below 12 KiB of free internal RAM or a
 2 KiB largest free block, leaving the peer loop active to drain acknowledgements.

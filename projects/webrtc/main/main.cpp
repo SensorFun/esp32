@@ -18,7 +18,6 @@
 #include "remote_auth.h"
 #include "peer_receive.h"
 #include "peer_send.h"
-#include "send_pacer.h"
 #include "local_candidates.h"
 #include "lwip/sockets.h"
 #include "esp_camera.h"
@@ -52,26 +51,22 @@ constexpr size_t CHUNK = 2048;
 // minutes without any message and only then disconnects it. Recording
 // transfers count as activity too. Closed tabs disconnect at once.
 constexpr int64_t PEER_IDLE_US = 5 * 60 * 1000000LL;
-// Bulk traffic (video, recording downloads) follows the link's capacity; see
-// send_pacer.h. Control replies and pings bypass the pacer so a full video
-// queue cannot starve them. The ceiling allows for each chip's CPU and RAM.
-constexpr SendPacer::Config PACING = {
-    .floor = 128 * 1024, .start = 256 * 1024,
-#if CONFIG_IDF_TARGET_ESP32S3
-    .ceiling = 1536 * 1024,
-#else
-    .ceiling = 1024 * 1024,
-#endif
-    .step = 32 * 1024, .increase_us = 100000, .cooldown_us = 200000, .chunk = CHUNK,
-};
-// Chunks one worker pass may send; the pacer's credit is the real limit.
+// Bulk traffic (video, recording downloads) is not rate limited. Each worker
+// pass sends up to this many chunks, and a burst ends early when the SCTP send
+// cache or the Wi-Fi TX queue is full, so the loop can service acknowledgements
+// and control replies before sending more.
 constexpr int BULK_CHUNKS_PER_PASS = 12;
-// Internal RAM below this slows bulk traffic before video must pause (12 KiB).
-constexpr size_t PACING_LOW_MEMORY = 20480;
-SendPacer pacer(PACING);
-// Why the pacer slowed down, for the periodic log: a full SCTP send cache,
-// a full Wi-Fi TX queue, waiting control replies, low internal RAM.
-uint32_t slow_cache, slow_queue, slow_reply, slow_memory;
+// Backpressure seen on bulk sends, for the periodic transport log: a full SCTP
+// send cache, a full Wi-Fi TX queue, and passes where a control reply waited.
+uint32_t full_cache, full_queue, reply_blocked;
+// Where the worker's time goes while streaming, reset with each transport log:
+// video frames and bytes sent, and microseconds spent in the peer loop
+// (receive and acknowledgements), waiting for camera frames, and sending chunks.
+struct StreamTiming {
+    uint32_t frames = 0, passes = 0;
+    uint64_t bytes = 0;
+    int64_t loop_us = 0, capture_us = 0, send_us = 0, since = 0;
+} timing;
 esp_peer_default_cfg_t peer_defaults(uint8_t candidates) {
     esp_peer_default_cfg_t cfg{};
     cfg.agent_recv_timeout = CAMERA_ICE_RECEIVE_MS;
@@ -358,7 +353,6 @@ void close_peer() {
     playback_active = false;
     stop_transfer();
     answer.clear(); replies.clear(); commands.clear(); peer_offer.clear(); peer_auth.clear(); failed = false; remote_peer = false;
-    pacer.reset(esp_timer_get_time());
 }
 esp_err_t respond(httpd_req_t *r, const char *status, const char *body) {
     httpd_resp_set_status(r, status);
@@ -633,7 +627,7 @@ void worker(common::Application &app) {
     int64_t last_progress = 0, next_status = 0;
     bool sntp_started = false;
     uint32_t queue_full_seen = camera_transport_queue_full();
-    int64_t next_pacing_report = 0;
+    int64_t next_transport_report = 0;
     uint8_t packet[CHUNK + 16];
     motion::CaptureProfile motion_capture;
     const auto select_capture = [&](bool live, bool paused, ManualRecording manual) {
@@ -776,7 +770,12 @@ void worker(common::Application &app) {
                 ESP_LOGW(TAG, "Closing camera peer: failed=%d idle_ms=%lld", failed, (now - activity) / 1000);
                 close_peer();
             }
-            if (peer) esp_peer_main_loop(peer);
+            if (peer) {
+                const int64_t started = esp_timer_get_time();
+                esp_peer_main_loop(peer);
+                timing.loop_us += esp_timer_get_time() - started;
+                ++timing.passes;
+            }
             if (!commands.empty()) {
                 if (fb) { camera_frame_return(fb); fb = nullptr; }
                 cJSON *request = cJSON_Parse(commands.front().c_str());
@@ -883,30 +882,37 @@ void worker(common::Application &app) {
                                        camera_capture_idle(!live && !motion_enabled && !recording);
             if (!images_enabled && !motion_enabled && !recording) capture_stalled_since = 0;
             const bool bulk_traffic = viewer && (images_enabled || downloading);
-            // Backpressure slows bulk traffic: blocked control replies, a full
-            // Wi-Fi TX queue, or internal RAM running low.
-            const uint32_t queue_full = camera_transport_queue_full();
-            const bool low_memory = bulk_traffic && heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) < PACING_LOW_MEMORY;
-            if (bulk_traffic && (reply_waiting || queue_full != queue_full_seen || low_memory)) {
-                slow_reply += reply_waiting; slow_queue += queue_full != queue_full_seen; slow_memory += low_memory;
-                pacer.congested(now);
-            }
-            queue_full_seen = queue_full;
-            // True when the Wi-Fi TX queue filled since the last check; slows the pacer.
+            if (bulk_traffic && reply_waiting) ++reply_blocked;
+            if (!bulk_traffic) timing = StreamTiming{};  // Each stream's first window starts when it does.
+            // True when the Wi-Fi TX queue filled since the last check; ends the burst.
             auto queue_filled = [&] {
                 const uint32_t count = camera_transport_queue_full();
                 if (count == queue_full_seen) return false;
-                queue_full_seen = count; ++slow_queue;
-                pacer.congested(esp_timer_get_time());
+                full_queue += count - queue_full_seen;
+                queue_full_seen = count;
                 return true;
             };
-            if (bulk_traffic && now >= next_pacing_report) {
-                next_pacing_report = now + 5000000;
+            queue_filled();
+            if (bulk_traffic && now >= next_transport_report) {
+                next_transport_report = now + 5000000;
                 wifi_ap_record_t ap{};
                 esp_wifi_sta_get_ap_info(&ap);
-                ESP_LOGI(TAG, "Send pacing: %u KiB/s, %u slowdowns (send cache %u, TX queue %u, replies %u, memory %u), RSSI %d dBm",
-                         unsigned(pacer.rate() / 1024), unsigned(pacer.cuts()), unsigned(slow_cache), unsigned(slow_queue),
-                         unsigned(slow_reply), unsigned(slow_memory), int(ap.rssi));
+                const int64_t window = std::max<int64_t>(1, now - timing.since);
+                const auto share = [&](int64_t us) { return unsigned(us * 100 / window); };
+                ESP_LOGI(TAG, "Transport: send cache full %u, TX queue full %u, reply waits %u, RSSI %d dBm",
+                         unsigned(full_cache), unsigned(full_queue), unsigned(reply_blocked), int(ap.rssi));
+                if (timing.since) ESP_LOGI(TAG, "Stream timing: %u.%u fps, %u KiB/s, avg frame %u B, %u passes; time in peer loop %u%%, camera wait %u%%, chunk send %u%% (%u us/chunk)",
+                         unsigned(timing.frames * 10000000LL / window / 10), unsigned(timing.frames * 10000000LL / window % 10), unsigned(timing.bytes * 1000000 / window / 1024),
+                         unsigned(timing.frames ? timing.bytes / timing.frames : 0), unsigned(timing.passes),
+                         share(timing.loop_us), share(timing.capture_us), share(timing.send_us),
+                         unsigned(timing.bytes ? timing.send_us * CHUNK / int64_t(timing.bytes) : 0));
+                camera_udp_stats_t udp{};
+                camera_transport_udp_stats(&udp);
+                if (timing.since) ESP_LOGI(TAG, "UDP send: %u datagrams (%u B avg), in sendto %u%% (%u us avg, max %u us), %u calls >= 15 ms, shim retries %u%%",
+                         unsigned(udp.calls), unsigned(udp.calls ? udp.bytes / udp.calls : 0), share(udp.us),
+                         unsigned(udp.calls ? udp.us / udp.calls : 0), unsigned(udp.max_us), unsigned(udp.slow), share(udp.retry_us));
+                timing = StreamTiming{};
+                timing.since = now;
             }
             // Wi-Fi needs contiguous internal RAM even though images live in PSRAM.
             // Stop admitting video and recording transfers under pressure; let
@@ -925,10 +931,10 @@ void worker(common::Application &app) {
                 }
             }
             const bool streaming = viewer && images_enabled && capture_ready && !reply_waiting && !downloading && video_memory;
-            if (downloading && !reply_waiting && video_memory && pacer.due(now)) {
+            if (downloading && !reply_waiting && video_memory) {
                 // Abandon a partly sent frame; the viewer discards incomplete frames.
                 if (fb) { camera_frame_return(fb); fb = nullptr; }
-                for (int chunks = 0; transfer.active() && chunks < BULK_CHUNKS_PER_PASS && pacer.due(esp_timer_get_time()); ++chunks) {
+                for (int chunks = 0; transfer.active() && chunks < BULK_CHUNKS_PER_PASS; ++chunks) {
                     const uint32_t size = std::min<uint32_t>(CHUNK, transfer.size - transfer.offset);
                     bool read_failed = false;
                     if (transfer.buffered != transfer.offset) {
@@ -951,12 +957,11 @@ void worker(common::Application &app) {
                     chunk.data = packet; chunk.size = size + 16;
                     int ret = esp_peer_send_data(peer, &chunk);
                     if (ret != 0) {
-                        if (ret == ESP_PEER_ERR_WOULD_BLOCK || ret == ESP_PEER_ERR_NO_MEM) { ++slow_cache; pacer.congested(esp_timer_get_time()); }
+                        if (ret == ESP_PEER_ERR_WOULD_BLOCK || ret == ESP_PEER_ERR_NO_MEM) ++full_cache;
                         else failed = true;
                         break;
                     }
                     activity = esp_timer_get_time();
-                    pacer.sent(size + 16, activity);
                     transfer.offset += size;
                     if (transfer.offset == transfer.size) stop_transfer();
                     // A full Wi-Fi TX queue ends the burst so the worker services
@@ -1002,7 +1007,9 @@ void worker(common::Application &app) {
             // sensor. In particular, file transfers temporarily suspend video.
             if (!capture_requested || fb) capture_stalled_since = 0;
             if (!fb && capture_requested) {
+                const int64_t capture_started = esp_timer_get_time();
                 fb = get_frame(streaming);
+                if (streaming) timing.capture_us += esp_timer_get_time() - capture_started;
                 if (streaming) { offset = 0; ++sequence; last_progress = esp_timer_get_time(); }
                 if (fb) {
                     capture_stalled_since = 0;
@@ -1034,8 +1041,8 @@ void worker(common::Application &app) {
                 }
                 if (fb && !streaming) { camera_frame_return(fb); fb = nullptr; }
             }
-            if (streaming && pacer.due(now)) {
-                // Pace bulk packets; continuous capture must not saturate Wi-Fi
+            if (streaming) {
+                // Bounded bursts: continuous capture must not saturate Wi-Fi
                 // and leave DTLS unable to send acknowledgements or controls.
                 for (int chunks = 0; fb && chunks < BULK_CHUNKS_PER_PASS; ++chunks) {
                     size_t size = std::min(CHUNK, fb->len - offset);
@@ -1045,18 +1052,21 @@ void worker(common::Application &app) {
                     esp_peer_data_frame_t frame{};
                     frame.type = ESP_PEER_DATA_CHANNEL_DATA; frame.stream_id = stream_id;
                     frame.data = packet; frame.size = size + 16;
+                    const int64_t send_started = esp_timer_get_time();
                     int ret = esp_peer_send_data(peer, &frame);
+                    timing.send_us += esp_timer_get_time() - send_started;
+                    if (ret == 0) timing.bytes += size;
+                    if (ret == 0 && offset + size == fb->len) ++timing.frames;
                     if (ret == 0) {
                         offset += size; last_progress = esp_timer_get_time();
-                        pacer.sent(size + 16, last_progress);
                     } else if (ret == ESP_PEER_ERR_WOULD_BLOCK || ret == ESP_PEER_ERR_NO_MEM) {
-                        ++slow_cache; pacer.congested(esp_timer_get_time());
+                        ++full_cache;
                     }
                     if (offset == fb->len || esp_timer_get_time() - last_progress > 2000000 || (ret != 0 && ret != ESP_PEER_ERR_WOULD_BLOCK && ret != ESP_PEER_ERR_NO_MEM)) {
                         camera_frame_return(fb); fb = nullptr;
                     }
                     // A full Wi-Fi TX queue ends the burst, as for downloads above.
-                    if (ret != 0 || queue_filled() || !pacer.due(esp_timer_get_time())) break;
+                    if (ret != 0 || queue_filled()) break;
                 }
             }
             if (!viewer && !motion_enabled && !recording) capture_stalled_since = 0;
