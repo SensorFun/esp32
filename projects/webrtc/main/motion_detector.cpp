@@ -76,7 +76,10 @@ FrameResult Detector::analyze(const uint8_t *jpeg, size_t size, int64_t captured
     have_previous_ = true;
     FlowParams params;
     params.cell = s.cell;
-    params.min_flow = s.min_speed * interval;
+    // Minimum speed is per second, but sensor noise is per frame: at 10
+    // analysed frames per second, 4 px/s would be 0.4 px per frame, and on a
+    // still 160x120 ESP32-CAM picture that marked 3% of cells as moving.
+    params.min_flow = std::max(s.min_speed * interval, kNoiseFlow);
     params.min_texture = s.min_texture;
     params.blur = s.blur;
     params.min_area = s.min_area;

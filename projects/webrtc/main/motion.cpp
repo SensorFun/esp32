@@ -52,7 +52,7 @@ const Field kFields[] = {
     {"enabled", "Detect motion", "detection", "", "Analyse the camera continuously, even with no viewer connected.", Kind::boolean, 0, 1, 1, nullptr, 0, FIELD_BOOL(enabled)},
     {"method", "Method", "detection", "", "Detection algorithm.", Kind::select, 0, 0, 1, kMethods, std::size(kMethods), FIELD_INT(method)},
     // Stored as min_speed: an older min_flow value (pixels per frame) is not reinterpreted.
-    {"min_speed", "Minimum speed", "detection", "px/s", "Speed in analysis-image pixels that marks a cell as moving. Independent of the analysis rate.", Kind::number, RANGE(min_speed), nullptr, 0, FIELD_FLOAT(min_speed)},
+    {"min_speed", "Minimum speed", "detection", "px/s", "Speed in analysis-image pixels that marks a cell as moving. A cell must also shift 0.6 px between analysed frames, so at high analysis rates slower motion is ignored as sensor noise.", Kind::number, RANGE(min_speed), nullptr, 0, FIELD_FLOAT(min_speed)},
     {"min_area", "Moving area", "detection", "%", "Share of cells that must move to report motion. 30% of the picture is always enough.", Kind::number, RANGE(min_area), nullptr, 0, FIELD_FLOAT(min_area)},
     {"cell", "Cell size", "detection", "px", "Analysis grid in analysis-image pixels. Smaller cells notice smaller objects.", Kind::select, 0, 0, 1, kCells.data(), kCells.size(), FIELD_INT(cell)},
     {"min_texture", "Minimum texture", "detection", "", "Skips flat cells where flow is unreliable. Higher values ignore more of the scene.", Kind::number, RANGE(min_texture), nullptr, 0, FIELD_FLOAT(min_texture)},

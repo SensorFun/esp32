@@ -39,6 +39,11 @@ struct JpegScratch {
     JpegWorkspace workspace;
 };
 
+// A cell must shift at least this many analysis pixels between frames to move,
+// whatever the minimum speed. Measured on a still scene with the ESP32-CAM:
+// 0.6 px per frame left 0-0.3% of cells moving, 0.4 px left 3%.
+constexpr float kNoiseFlow = 0.6f;
+
 enum class FrameResult { invalid, priming, analyzed };
 
 class Detector {

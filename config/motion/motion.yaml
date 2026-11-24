@@ -1,7 +1,7 @@
 # Motion detection and SD card recording: defaults and allowed values.
 #
-# The webrtc firmware embeds this file when it is built (and flash builds
-# first), and the Motion tab offers exactly these values:
+# The webrtc firmware embeds this file when it is built (tools/build.py; flashing
+# does not build), and the Motion tab offers exactly these values:
 #   switch: true             -> an On/Off switch; default true or false
 #   options: [...]           -> a list of numbers
 #   range: [min, max, step]  -> a number on that grid; default on the grid

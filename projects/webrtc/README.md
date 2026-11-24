@@ -244,7 +244,8 @@ them in NVS so they survive a reboot.
 Defaults and allowed values for both tabs are in `config/motion/motion.yaml`, in
 the same `switch`/`options`/`range` format as the sensor profiles (a `range` is
 `[min, max, step]`). The build generates `motion_config.h` from it
-(`main/generate_motion.py`), and flashing builds first. A missing or unknown
+(`main/generate_motion.py`); after editing it, build and then flash (`tools/flash.py`
+flashes the last build without rebuilding). A missing or unknown
 setting, or a default outside its allowed values, fails the build. Settings saved
 on the camera take precedence: select Reset to Default, or flash with
 `clear_nvs=true`, to use new defaults. A sensor restart (a capture size switch or
@@ -264,7 +265,10 @@ brightness is not reported as motion.
   pixels, so a resolution change also changes how much of the scene they cover.
   A cell moves when its speed reaches **Minimum speed** (analysis pixels per second;
   the detector converts it using the measured time between analysed frames, so
-  the achieved analysis rate does not change sensitivity). Motion is reported when
+  the achieved analysis rate does not change sensitivity). A cell must also shift at
+least 0.6 analysis pixels between analysed frames, because sensor noise is per frame:
+with the stream off the ESP32-CAM analyses about 10 frames per second, so motion
+slower than about 6 px/s is then ignored. Motion is reported when
   **Moving area** percent of cells move (1-30%). Flat cells below **Minimum texture** are
   ignored. **Method** lists the available detectors; optical flow is the first.
 - **Show motion in preview** draws the moving cells, MOTION, and REC over the live picture.
