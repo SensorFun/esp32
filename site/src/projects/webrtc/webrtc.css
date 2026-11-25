@@ -19,3 +19,16 @@
 .camera-workspace .remote-preview{min-height:280px}
 .camera-workspace .remote-preview img,.camera-workspace .blank-frame{max-height:min(520px,calc(100vh - 140px))}
 }
+/* Compact connection bar (one or two rows); see RemoteCamera. */
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
+.rtc-panel.remote-connection{padding:12px 16px}
+.remote-bar{display:flex;flex-wrap:wrap;align-items:center;gap:10px}
+.remote-bar>svg{color:#a6c28f;flex:none}
+.remote-bar input{flex:1 1 180px;min-width:0;min-height:44px;background:#0d180e;color:#d8e8cb;border:1px solid #415335;padding:10px 12px;border-radius:5px;font:inherit;font-size:13px}
+.remote-bar input:disabled{opacity:.6}
+.remote-bar .button{min-height:44px;flex:none}
+.remote-connected{display:flex;align-items:center;gap:8px;flex:1 1 auto;min-width:0;color:#c5ed9f;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.remote-connected i{width:8px;height:8px;border-radius:50%;background:#7fd97a;flex:none}
+.remote-status{margin:8px 0 0;font-size:11px;line-height:1.5;color:#8d9e83}
+.remote-status:empty{display:none}
+@media(max-width:600px){.remote-bar>svg{display:none}.remote-bar input{font-size:16px}#camera-mac{flex-basis:100%}#camera-access-password{flex-basis:120px}}

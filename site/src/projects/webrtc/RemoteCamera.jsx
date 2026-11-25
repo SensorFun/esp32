@@ -235,10 +235,19 @@ export function RemoteCamera({ onSessionState }) {
   // takes the selected resolution's size, so it matches the stream it replaces.
   const blankSize = settings?.resolutions?.find(size => size.value === settings.resolution) || { width: 640, height: 480 };
   return <section className="remote-camera" data-state={state} ref={root}>
-    <div className="rtc-panel remote-connection"><div className="panel-title"><Icon name="signal" /><h2>Remote camera</h2></div>
-      <form className="remote-credentials" onSubmit={event => { event.preventDefault(); if (camera && (password || savedAccess.current) && state === 'idle') connect(); }}>
-        <label htmlFor="camera-mac">Camera MAC address</label><input id="camera-mac" value={camera} placeholder="AA:BB:CC:DD:EE:FF" autoComplete="off" disabled={state !== 'idle'} onChange={e => { savedAccess.current = null; setCamera(e.target.value); }} /><label htmlFor="camera-access-password">Camera password</label><input id="camera-access-password" type="password" autoComplete="current-password" value={password} disabled={state !== 'idle'} onChange={e => setPassword(e.target.value)} /><div className="remote-actions"><button type="submit" className="button rtc-primary" disabled={(!password && !savedAccess.current) || !camera || state !== 'idle'}>Connect camera</button><button type="button" className="button rtc-secondary" disabled={state === 'idle'} onClick={() => stop()}>Disconnect</button></div></form>
-      <p className="muted">Direct WebRTC</p><p role="status" data-testid="remote-status">{status}</p>
+    {/* One compact bar: the credentials while disconnected, a slim "Connected" line afterwards. */}
+    <div className="rtc-panel remote-connection" data-state={state}><h2 className="sr-only">Remote camera</h2>
+      <form className="remote-bar" onSubmit={event => { event.preventDefault(); if (camera && (password || savedAccess.current) && state === 'idle') connect(); }}>
+        <Icon name="signal" />
+        {state === 'connected'
+          ? <span className="remote-connected"><i aria-hidden="true" />Connected · {camera}</span>
+          : <><label className="sr-only" htmlFor="camera-mac">Camera MAC address</label><input id="camera-mac" value={camera} placeholder="Camera MAC address" autoComplete="off" spellCheck="false" disabled={state !== 'idle'} onChange={e => { savedAccess.current = null; setCamera(e.target.value); }} />
+            <label className="sr-only" htmlFor="camera-access-password">Camera password</label><input id="camera-access-password" type="password" placeholder="Camera password" autoComplete="current-password" value={password} disabled={state !== 'idle'} onChange={e => setPassword(e.target.value)} /></>}
+        {state === 'idle'
+          ? <button type="submit" className="button rtc-primary" aria-label="Connect camera" disabled={(!password && !savedAccess.current) || !camera}>Connect</button>
+          : <button type="button" className="button rtc-secondary" onClick={() => stop()}>Disconnect</button>}
+      </form>
+      <p role="status" className="remote-status" data-testid="remote-status">{status}</p>
     </div>
     <div className="camera-workspace">
     <div className="monitor"><div className="monitor-top"><span>CAMERA PREVIEW</span><span data-testid="remote-fps" title="Frames the camera grabs per second for live video, motion detection or recording · 1-second average">{fps.toFixed(1)} FPS</span><span>{transport}</span></div><div className="remote-preview"><div className={settings?.stream_images === 0 ? 'preview-frame blank' : 'preview-frame'}><img ref={image} alt="Remote camera stream" data-testid="remote-image" hidden={settings?.stream_images === 0} />{settings?.stream_images === 0 && <canvas className="blank-frame" width={blankSize.width} height={blankSize.height} data-testid="remote-blank" aria-label="Camera image streaming is off; motion is still shown" />}<sensorfan-motion-overlay ref={overlay} /></div>{state !== 'connected' && <span>Awaiting encrypted camera stream</span>}{settings?.stream_images === 0 && <span role="status">Camera image streaming is off.</span>}</div></div>
