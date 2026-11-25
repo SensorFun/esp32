@@ -43,8 +43,9 @@ class CameraProfileTests(unittest.TestCase):
     def test_each_sensor_has_its_own_profile(self):
         result, content = self.generate()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('{"ov2640", 1, true, FRAMESIZE_SVGA, controls_ov2640', content)
-        self.assertIn('{"ov3660", 1, true, FRAMESIZE_SVGA, controls_ov3660', content)
+        # The shipped clock_2x may be on or off; test_clock_doubler_flag covers both.
+        self.assertRegex(content, r'\{"ov2640", 1, (true, FRAMESIZE_SVGA|false, FRAMESIZE_INVALID), controls_ov2640')
+        self.assertRegex(content, r'\{"ov3660", 1, (true, FRAMESIZE_SVGA|false, FRAMESIZE_INVALID), controls_ov3660')
         self.assertIn('{"gc0308", -1, false, FRAMESIZE_INVALID, controls_gc0308', content)
         self.assertIn('s->set_whitebal(s, v)', content)
         ov2640, ov3660, gc0308 = (self.section(content, s) for s in ('ov2640', 'ov3660', 'gc0308'))
@@ -148,16 +149,23 @@ class CameraProfileTests(unittest.TestCase):
                 self.assertRegex(content, r'\{"ov2640", ' + str(index) + r', (true|false), FRAMESIZE_\w+, controls_ov2640')
 
     def test_clock_doubler_flag(self):
+        on = lambda listed: listed['common'].__setitem__('clock_2x', {'enabled': True, 'max_resolution': '800x600'})
         # Shared by both OV sensors, up to the shared maximum resolution.
-        result, content = self.generate()
+        result, content = self.generate(family_change=on)
+        self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(', true, FRAMESIZE_SVGA, controls_ov2640', content)
         self.assertIn(', true, FRAMESIZE_SVGA, controls_ov3660', content)
+        result, content = self.generate(family_change=lambda listed: listed['common'].__setitem__('clock_2x', {'enabled': False, 'max_resolution': '800x600'}))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(', false, FRAMESIZE_INVALID, controls_ov2640', content)
+        result, _ = self.generate(family_change=lambda listed: listed['common'].__setitem__('clock_2x', {'enabled': True}))
+        self.assertNotEqual(result.returncode, 0)  # enabled needs a maximum resolution
         # A sensor file overrides single entries: only the OV3660 changes.
-        result, content = self.generate('ov3660', lambda profile: profile.__setitem__('clock_2x', {'max_resolution': '1600x1200'}))
+        result, content = self.generate('ov3660', lambda profile: profile.__setitem__('clock_2x', {'max_resolution': '1600x1200'}), family_change=on)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(', true, FRAMESIZE_SVGA, controls_ov2640', content)
         self.assertIn(', true, FRAMESIZE_UXGA, controls_ov3660', content)
-        result, content = self.generate('ov3660', lambda profile: profile.__setitem__('clock_2x', {'enabled': False}))
+        result, content = self.generate('ov3660', lambda profile: profile.__setitem__('clock_2x', {'enabled': False}), family_change=on)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(', false, FRAMESIZE_INVALID, controls_ov3660', content)
         result, content = self.generate(family_change=lambda listed: listed['common'].pop('clock_2x'))

@@ -113,7 +113,8 @@ def load_sensor(root, sensor, common):
     # up to a maximum resolution.
     clock = profile.get('clock_2x', {'enabled': False})
     if (not isinstance(clock, dict) or set(clock) - {'enabled', 'max_resolution'} or not isinstance(clock.get('enabled'), bool)
-            or (clock['enabled'] and (sensor not in TIMED or clock.get('max_resolution') not in RESOLUTIONS))):
+            or ('max_resolution' in clock and clock['max_resolution'] not in RESOLUTIONS)
+            or (clock['enabled'] and (sensor not in TIMED or 'max_resolution' not in clock))):
         raise ValueError(f'{sensor}: clock_2x must be {{enabled: true|false, max_resolution: WIDTHxHEIGHT}}; only OV sensors '
                          f'support it, and max_resolution is one of {", ".join(RESOLUTIONS)}')
     clock_2x = clock['enabled']

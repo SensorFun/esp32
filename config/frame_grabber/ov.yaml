@@ -11,8 +11,9 @@ common:
   # ESP32-CAM. OV2640: CLKRC bit 7, the internal doubler esp32-cam-fpv enables
   # for JPEG. OV3660 (experimental): PLL pre-divider /3 -> /1.5, with the pixel
   # clock divider doubled so the ESP32 still receives a 10 MHz pixel clock.
+  # Off for stability on the ESP32-CAM; set enabled: true to use it again.
   clock_2x:
-    enabled: true
+    enabled: false
     # Largest resolution (WIDTHxHEIGHT) that runs doubled; larger ones keep the
     # driver's clock. Above 800x600 the OV2640 switches to its UXGA mode, where
     # the doubled pixel clock outran capture and every JPEG lost its end marker.

@@ -4,7 +4,10 @@ esp32_ai-thinker_cam:
   image: images/esp32_ai-thinker_cam.png
   target: esp32
   # SPI flash clock (ESP-IDF CONFIG_ESPTOOLPY_FLASHFREQ_*); code runs from flash.
-  flash_freq: 80m
+  # 40 MHz for stability: 80 MHz sped up sending, but this board's flash and
+  # PSRAM clocks run beside its PCB antenna, and faster clocks brought more
+  # Wi-Fi TX stalls.
+  flash_freq: 40m
   # PSRAM at 80 MHz streamed worse and once lost the access point for 11 s at
   # -41 dBm: its clock runs beside this board's PCB antenna.
   psram_freq: 40m
