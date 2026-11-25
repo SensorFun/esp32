@@ -25,8 +25,9 @@ common:
   # Ranges come from the pinned esp32-camera driver (2.1.6) and agree with
   # Espressif's CameraWebServer limits.
   controls:
-    # The driver accepts 0-63 (lower is better quality, larger frames).
-    jpeg_quality: {default: 12, range: [2, 63]}
+    # The driver accepts 0-63 (lower is better quality, larger frames). 20
+    # makes smaller frames than 12, so more of them fit through the Wi-Fi link.
+    jpeg_quality: {default: 20, range: [2, 63]}
     colorbar: {default: 0, switch: true}
     horizontal_mirror: {default: 0, switch: true}
     vertical_flip: {default: 0, switch: true}

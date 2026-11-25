@@ -177,7 +177,7 @@ class CameraProfileTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         ov2640, ov3660 = self.section(content, 'ov2640'), self.section(content, 'ov3660')
         # Shared controls reach both OV sensors without repeating them per sensor.
-        for line in ('{"jpeg_quality", Kind::range, 12, 2, 63, nullptr, 0}', '{"lens_correction", Kind::toggle, 1, 0, 1,'):
+        for line in ('{"jpeg_quality", Kind::range, 20, 2, 63, nullptr, 0}', '{"lens_correction", Kind::toggle, 1, 0, 1,'):
             self.assertIn(line, ov2640)
             self.assertIn(line, ov3660)
         self.assertNotIn('jpeg_quality', (PROFILES / 'sensors/ov2640.yaml').read_text())
@@ -185,7 +185,7 @@ class CameraProfileTests(unittest.TestCase):
         result, content = self.generate('ov3660', lambda profile: profile['controls'].__setitem__('jpeg_quality', {'default': 20, 'range': [4, 63]}))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('{"jpeg_quality", Kind::range, 20, 4, 63,', self.section(content, 'ov3660'))
-        self.assertIn('{"jpeg_quality", Kind::range, 12, 2, 63,', self.section(content, 'ov2640'))
+        self.assertIn('{"jpeg_quality", Kind::range, 20, 2, 63,', self.section(content, 'ov2640'))
 
 
 class SharedSettingsPanelTests(unittest.TestCase):
