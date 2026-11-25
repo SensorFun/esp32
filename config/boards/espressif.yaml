@@ -7,4 +7,12 @@ esp32s3n16r8_espressif_cam:
   psram_freq: 80m
   wifi_tx_buffers: {type: static, count: 16}
   lwip_iram: false
+  # Largest camera DMA buffer (one contiguous block of internal RAM), bytes. At
+  # 32 KB the GC0308's 640x480 raw capture once found only 31744 contiguous
+  # bytes after connecting and could not start; 16 KB is 12 raw lines.
+  camera_dma_buffer: 16384
+  # Camera DMA straight into the PSRAM frame buffers, with no internal DMA
+  # buffer: with a viewer connected, the largest free internal block fell to
+  # 12800 bytes and even the 15360-byte buffer of 640x480 raw capture failed.
+  camera_psram_dma: true
   supported_frame_grabber: [ov, gc]

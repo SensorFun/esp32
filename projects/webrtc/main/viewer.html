@@ -63,7 +63,13 @@ function fitBlank(s){if(s.analysis_width>0&&s.analysis_height>0){const height=Ma
 function status(text){$('status').textContent=text;$('logs-panel').recordBrowser?.(text);}
 const motionViews=()=>[$('motion-panel'),$('recording-panel'),$('recordings'),$('overlay'),$('logs-panel')];
 Promise.all(['sensorfan-camera-settings','sensorfan-motion-settings','sensorfan-recordings','sensorfan-motion-overlay','sensorfan-camera-logs'].map(name=>customElements.whenDefined(name))).then(()=>{$('connect').disabled=false;});
-for(const id of ['settings-module','motion-module','logs-module'])$(id).addEventListener('error',()=>status('Camera controls could not load. Reload this page to retry.'));
+// A busy ESP32-CAM can drop a TLS handshake; retry a failed module download
+// (a new URL, since browsers remember failed module loads) before giving up.
+function retryModule(script,attempt){script.addEventListener('error',()=>{
+ if(attempt>=3){status('Camera controls could not load. Reload this page to retry.');return;}
+ setTimeout(()=>{const next=document.createElement('script');next.type='module';next.src=script.src.split('?')[0]+'?retry='+(attempt+1);retryModule(next,attempt+1);script.replaceWith(next);},1000*(attempt+1));
+},{once:true});}
+for(const id of ['settings-module','motion-module','logs-module'])retryModule($(id),0);
 async function api(method,body){const response=await fetch('/api/session',{method,headers:{'Content-Type':'application/sdp'},body,cache:'no-store'});if(!response.ok)throw Error(await response.text());return response;}
 function command(value){if(channel?.readyState==='open')channel.send(JSON.stringify(value));}
 document.addEventListener('camera-command',event=>command(event.detail));
@@ -122,13 +128,22 @@ $('login').onsubmit=async event=>{
  if(length&&(length<12||length>96)){status('The camera password is 12–96 bytes long.');return;}
  // Hold the typed password only until it is turned into a key.
  if(length){password=field.value;access=null;}field.value='';
+ connect(0);
+};
+async function connect(attempt){
  $('connect').disabled=true;$('disconnect').disabled=false;$('login').dataset.state='connecting';const current=++run;
  try{
   pc=new RTCPeerConnection({iceServers:[]});const connection=pc;
   channel=pc.createDataChannel('camera',{ordered:true});channel.binaryType='arraybuffer';channel.onmessage=message;
   channel.onopen=()=>{if(current===run)status('Waiting for the camera password check…');};
   channel.onclose=()=>{if(run===current)stop();};
-  pc.onconnectionstatechange=()=>{if(run===current&&['failed','closed'].includes(connection.connectionState))stop();};
+  pc.onconnectionstatechange=async()=>{
+   if(run!==current||!['failed','closed'].includes(connection.connectionState))return;
+   // The camera's connection setup occasionally fails at once; retry once,
+   // keeping the not yet used password (or the derived key) for that attempt.
+   if(!authed&&attempt===0&&(password||access)){const secret=password;await stop();password=secret;status('Connection failed; retrying…');connect(1);return;}
+   stop();
+  };
   status('Gathering local ICE candidates…');
   await pc.setLocalDescription(await pc.createOffer());
   await new Promise((resolve,reject)=>{if(connection.iceGatheringState==='complete'){resolve();return;}const timer=setTimeout(()=>reject(Error('ICE gathering timed out')),10000);connection.onicegatheringstatechange=()=>{if(connection.iceGatheringState==='complete'){clearTimeout(timer);resolve();}};});
@@ -138,6 +153,6 @@ $('login').onsubmit=async event=>{
   for(let i=0;i<60&&current===run;i++){const response=await api('GET');if(response.status===200){await connection.setRemoteDescription({type:'answer',sdp:await response.text()});return;}await new Promise(resolve=>setTimeout(resolve,250));}
   throw Error('Device answer timed out');
  }catch(error){if(current===run){await stop(false);status(error.message);}}
-};
+}
 window.addEventListener('pagehide',()=>{clearInterval(ping);pc?.close();});
 </script></html>

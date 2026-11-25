@@ -213,16 +213,22 @@ def provision_in_browser(url, browser_path, port, ssid, wifi_password, camera_pa
 def discover(port, lines):
     console = serial.Serial(port, 115200, timeout=.2)
     console.dtr = False
-    console.rts = True
-    time.sleep(.1)
-    console.rts = False
-    try:
-        buffer = wait_for(console, 'Remote camera ID:', 'Local camera ready:', 'Private signaling connected',
-                          timeout=60, on_line=lines.append)
-    except Exception:
-        console.close()
-        raise
-    camera = re.search(r'Remote camera ID: ([A-F0-9]{12})', buffer)
+    # Some USB serial adapters (the ESP32-CAM's FT232R) garble the first boot
+    # lines after the reset; reset and read the boot log once more before failing.
+    for attempt in range(2):
+        console.rts = True
+        time.sleep(.1)
+        console.rts = False
+        try:
+            buffer = wait_for(console, 'Remote camera ID:', 'Local camera ready:', 'Private signaling connected',
+                              timeout=60, on_line=lines.append)
+        except Exception:
+            console.close()
+            raise
+        camera = re.search(r'Remote camera ID: ([A-F0-9]{12})', buffer)
+        if camera:
+            break
+        lines.append('Camera ID line unreadable; resetting to read the boot log again')
     if not camera:
         console.close()
         raise RuntimeError('Camera ID not found after provisioning')

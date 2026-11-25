@@ -24,7 +24,7 @@ class BoardCatalogTests(unittest.TestCase):
             '#pragma once\n#define TEST_PIN 12\n'
             'struct BoardConfig { const char *name; };\n'
             'inline constexpr BoardConfig common_board_config{board_display_name};\n')
-        tuning = {'wifi_tx_buffers': {'type': 'static', 'count': 16}, 'lwip_iram': False}
+        tuning = {'wifi_tx_buffers': {'type': 'static', 'count': 16}, 'lwip_iram': False, 'camera_dma_buffer': 32768}
         self.entries = {'first': {'name': 'First "camera"', 'header': 'shared.h', 'target': 'esp32', 'flash_freq': '80m',
                                   'psram_freq': '40m', **tuning},
                         'second': {'name': 'Second camera', 'header': 'shared.h', 'target': 'esp32', 'flash_freq': '40m', **tuning}}
@@ -60,7 +60,7 @@ class BoardCatalogTests(unittest.TestCase):
         defaults = write_board_sdkconfig(self.root, 'first', build)
         self.assertEqual(defaults.read_text().splitlines()[1:], [
             'CONFIG_ESPTOOLPY_FLASHFREQ_80M=y', 'CONFIG_ESP_WIFI_STATIC_TX_BUFFER=y', 'CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM=16',
-            '# CONFIG_LWIP_IRAM_OPTIMIZATION is not set', 'CONFIG_SPIRAM_SPEED_40M=y'])
+            '# CONFIG_LWIP_IRAM_OPTIMIZATION is not set', 'CONFIG_CAMERA_DMA_BUFFER_SIZE_MAX=32768', 'CONFIG_SPIRAM_SPEED_40M=y'])
         # Disagreeing option families (flash and PSRAM clocks) are removed so ESP-IDF re-reads them
         # from the board defaults; matching families and every other setting are kept.
         self.assertEqual(sdkconfig.read_text(), 'CONFIG_A=y\nCONFIG_ESPTOOLPY_FLASHMODE="dio"\nCONFIG_SPIRAM=y\n'
@@ -75,10 +75,18 @@ class BoardCatalogTests(unittest.TestCase):
         self.assertIn('CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=32', (build / 'board.defaults').read_text())
         # An sdkconfig that already matches every board value is left untouched.
         current = ('CONFIG_ESPTOOLPY_FLASHFREQ_80M=y\nCONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER=y\nCONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=32\n'
-                   'CONFIG_LWIP_IRAM_OPTIMIZATION=y\nCONFIG_SPIRAM_SPEED_40M=y\nCONFIG_SPIRAM_SPEED=40\n')
+                   'CONFIG_LWIP_IRAM_OPTIMIZATION=y\nCONFIG_CAMERA_DMA_BUFFER_SIZE_MAX=32768\nCONFIG_SPIRAM_SPEED_40M=y\nCONFIG_SPIRAM_SPEED=40\n')
         sdkconfig.write_text(current)
         write_board_sdkconfig(self.root, 'first', build)
         self.assertEqual(sdkconfig.read_text(), current)
+
+    def test_camera_psram_dma_on_s3_only(self):
+        self.entries['first'].update(target='esp32s3', flash_freq='80m', psram_freq='80m', camera_psram_dma=True)
+        self.entries['second'].update(target='esp32s3', flash_freq='80m')
+        self.save()
+        for board, line in (('first', 'CONFIG_CAMERA_PSRAM_DMA=y'), ('second', '# CONFIG_CAMERA_PSRAM_DMA is not set')):
+            build = self.root / 'build/webrtc' / board
+            self.assertIn(line, write_board_sdkconfig(self.root, board, build).read_text().splitlines())
 
     def test_frame_grabber_must_reference_existing_profile(self):
         profiles = self.root / 'config/frame_grabber'
@@ -112,7 +120,9 @@ class BoardCatalogTests(unittest.TestCase):
                        {'psram_freq': '120m'}, {'flash_freq': '40m', 'psram_freq': '80m'},
                        {'wifi_tx_buffers': None}, {'wifi_tx_buffers': {'type': 'static', 'count': 65}},
                        {'wifi_tx_buffers': {'type': 'cached', 'count': 16}}, {'wifi_tx_buffers': {'type': 'static', 'count': True}},
-                       {'wifi_tx_buffers': {'type': 'static'}}, {'lwip_iram': 'yes'}, {'lwip_iram': None}):
+                       {'wifi_tx_buffers': {'type': 'static'}}, {'lwip_iram': 'yes'}, {'lwip_iram': None},
+                       {'camera_dma_buffer': None}, {'camera_dma_buffer': 4096}, {'camera_dma_buffer': 65536}, {'camera_dma_buffer': '16k'},
+                       {'camera_psram_dma': True}, {'camera_psram_dma': 'yes'}):
             with self.subTest(change=change):
                 original = self.entries['first'].copy()
                 self.entries['first'].update(change)

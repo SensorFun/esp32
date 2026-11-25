@@ -5,5 +5,7 @@ name: gc
 sensors: [gc0308]
 common:
   # Stream resolution (WIDTHxHEIGHT) until saved settings select another; the
-  # settings panel's Default button returns to it. 640x480 is the GC0308's largest.
-  default_resolution: 640x480
+  # settings panel's Default button returns to it. The GC0308 has no hardware
+  # JPEG: at 640x480 (its largest) raw capture and software encoding timed out
+  # after a reboot with that default saved, and the viewer could not connect.
+  default_resolution: 320x240

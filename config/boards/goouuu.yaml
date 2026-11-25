@@ -9,5 +9,9 @@ esp32s3n16r8_goouuu_cam:
   psram_freq: 80m
   wifi_tx_buffers: {type: static, count: 16}
   lwip_iram: false
+  # Largest camera DMA buffer (one contiguous block of internal RAM), bytes. At
+  # 32 KB the GC0308's 640x480 raw capture once found only 31744 contiguous
+  # bytes after connecting and could not start; 16 KB is 12 raw lines.
+  camera_dma_buffer: 16384
   supported_frame_grabber: [ov, gc]
   sdkconfig_defaults: [esp32s3_n16r8.defaults]

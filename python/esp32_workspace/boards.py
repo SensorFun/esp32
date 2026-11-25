@@ -12,6 +12,8 @@ FLASH_FREQS = {'esp32': ('80m', '40m', '26m', '20m'), 'esp32s3': ('120m', '80m',
 # PSRAM clocks per chip (CONFIG_SPIRAM_SPEED_*). On the ESP32, 80 MHz PSRAM
 # requires an 80 MHz flash clock.
 PSRAM_FREQS = {'esp32': ('80m', '40m'), 'esp32s3': ('120m', '80m', '40m')}
+# Chips whose camera DMA can write straight to PSRAM (CONFIG_CAMERA_PSRAM_DMA).
+PSRAM_DMA_TARGETS = ('esp32s2', 'esp32s3')
 # Wi-Fi TX buffer types and their count limits (CONFIG_ESP_WIFI_*_TX_BUFFER_NUM).
 WIFI_TX_BUFFER_LIMITS = {'static': 64, 'dynamic': 128}
 # Generated in each build directory from the board entry; applied after every
@@ -67,7 +69,7 @@ def load_catalog(root: Path) -> dict:
 
 
 def validate_tuning(board: str, metadata: dict) -> None:
-    """Check the board's performance settings: PSRAM clock, Wi-Fi TX buffers, lwIP IRAM."""
+    """Check the board's performance settings: PSRAM clock, Wi-Fi TX buffers, lwIP IRAM, camera DMA buffer."""
     target = metadata['target']
     psram = metadata.get('psram_freq')
     if psram is not None:
@@ -82,6 +84,12 @@ def validate_tuning(board: str, metadata: dict) -> None:
         raise ValueError(f'Invalid wifi_tx_buffers for {board}: use {{type: static, count: 1-64}} or {{type: dynamic, count: 1-128}}')
     if not isinstance(metadata.get('lwip_iram'), bool):
         raise ValueError(f'lwip_iram for {board} must be true or false')
+    dma = metadata.get('camera_dma_buffer')
+    if type(dma) is not int or not 8192 <= dma <= 32768:
+        raise ValueError(f'camera_dma_buffer for {board} must be 8192-32768 bytes')
+    psram_dma = metadata.get('camera_psram_dma', False)
+    if not isinstance(psram_dma, bool) or (psram_dma and target not in PSRAM_DMA_TARGETS):
+        raise ValueError(f'camera_psram_dma for {board} must be true or false, and only {", ".join(PSRAM_DMA_TARGETS)} support it')
 
 
 def board_settings(metadata: dict) -> list[tuple[str, list[str]]]:
@@ -92,9 +100,13 @@ def board_settings(metadata: dict) -> list[tuple[str, list[str]]]:
               (r'CONFIG_ESP_WIFI_(STATIC|DYNAMIC)_TX_BUFFER(_NUM)?|CONFIG_ESP_WIFI_TX_BUFFER_TYPE',
                [f'CONFIG_ESP_WIFI_{kind}_TX_BUFFER=y', f'CONFIG_ESP_WIFI_{kind}_TX_BUFFER_NUM={buffers["count"]}']),
               (r'CONFIG_LWIP_IRAM_OPTIMIZATION',
-               ['CONFIG_LWIP_IRAM_OPTIMIZATION=y' if metadata['lwip_iram'] else '# CONFIG_LWIP_IRAM_OPTIMIZATION is not set'])]
+               ['CONFIG_LWIP_IRAM_OPTIMIZATION=y' if metadata['lwip_iram'] else '# CONFIG_LWIP_IRAM_OPTIMIZATION is not set']),
+              (r'CONFIG_CAMERA_DMA_BUFFER_SIZE_MAX', [f'CONFIG_CAMERA_DMA_BUFFER_SIZE_MAX={metadata["camera_dma_buffer"]}'])]
     if metadata.get('psram_freq') is not None:
         groups.append((r'CONFIG_SPIRAM_SPEED(_\w+)?', [f'CONFIG_SPIRAM_SPEED_{metadata["psram_freq"].upper()}=y']))
+    if metadata['target'] in PSRAM_DMA_TARGETS:
+        groups.append((r'CONFIG_CAMERA_PSRAM_DMA', ['CONFIG_CAMERA_PSRAM_DMA=y' if metadata.get('camera_psram_dma', False)
+                                                     else '# CONFIG_CAMERA_PSRAM_DMA is not set']))
     return groups
 
 

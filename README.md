@@ -196,6 +196,7 @@ esp32_ai-thinker_cam:
   psram_freq: 40m
   wifi_tx_buffers: {type: static, count: 16}
   lwip_iram: true
+  camera_dma_buffer: 32768
   supported_frame_grabber: [ov]
 ```
 
@@ -213,6 +214,13 @@ Each board also sets its memory clocks and network tuning:
   at Wi-Fi start; Espressif recommends them with PSRAM.
 - `lwip_iram` (required): place lwIP's send and receive path in IRAM (about
   10 KB of the IRAM-only heap).
+- `camera_dma_buffer` (required): largest camera DMA buffer, 8192-32768 bytes.
+  It must be one contiguous block of internal RAM; the S3 boards use 16384,
+  because a fragmented heap once left the GC0308 31744 bytes short of 32 KB.
+- `camera_psram_dma` (optional, ESP32-S2/S3 only, default false): the camera
+  DMA writes straight into the PSRAM frame buffers and needs no internal DMA
+  buffer. The S3 WROOM uses it: with a viewer connected its largest free
+  internal block fell to 12800 bytes, too small even for 16 KB.
 
 `header` is relative to `boards/`; several entries may share one header.
 `image` is relative to `config/boards/` and must be a file in `config/boards/images/`. Headers

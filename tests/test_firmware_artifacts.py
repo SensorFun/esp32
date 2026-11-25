@@ -25,7 +25,7 @@ class FirmwareArtifactTests(unittest.TestCase):
         (self.root / 'config/boards').mkdir(parents=True)
         (self.root / 'boards').mkdir()
         (self.root / 'boards/pins.h').write_text('#pragma once\n')
-        (self.root / 'config/boards/maker.yaml').write_text('test_board:\n  name: Test\n  header: pins.h\n  target: esp32s3\n  flash_freq: 80m\n  wifi_tx_buffers: {type: static, count: 16}\n  lwip_iram: false\n')
+        (self.root / 'config/boards/maker.yaml').write_text('test_board:\n  name: Test\n  header: pins.h\n  target: esp32s3\n  flash_freq: 80m\n  wifi_tx_buffers: {type: static, count: 16}\n  lwip_iram: false\n  camera_dma_buffer: 32768\n')
         (self.root / 'config/firmware').mkdir()
         (self.root / 'config/firmware/webrtc.yaml').write_text('name: WebRTC\ndescription: Camera firmware\nboards: all\nprivate_settings: [CONFIG_CAMERA_SIGNALING_API_SECRET]\n')
         (self.root / 'projects/webrtc').mkdir(parents=True)

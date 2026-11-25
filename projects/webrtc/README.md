@@ -159,7 +159,7 @@ clock; High light runs it at twice the native rate. Settings replies report the
 readback as `clock_2x`.
 
 The stream is hardware JPEG, initially at the frame grabber's
-`default_resolution` (640x480 in `ov.yaml` and `gc.yaml`) unless saved settings select
+`default_resolution` (640x480 in `ov.yaml`, 320x240 in `gc.yaml`) unless saved settings select
 another resolution. Streaming has no fixed FPS cap. The viewers' FPS is the
 camera's: frames grabbed per second for live video, motion detection or
 recording, sent in each `motion_status` as `capture_fps`. It stays meaningful

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import { createProof, deriveCameraAccess, normalizeMac, verifyServer } from './access.mjs';
 import { Signaling } from './signaling.mjs';
 import { base, currentRoute } from '../../routes.mjs';
@@ -78,7 +78,7 @@ export function RemoteCamera({ onSessionState }) {
   }
   useEffect(() => () => { generation.current++; onSessionState('idle'); const session = connection.current; if (session) { clearInterval(session.heartbeat); clearTimeout(session.timeout); session.socket?.close({ notifyPeer: Boolean(session.peer) }); session.peer?.close(); if (session.url) URL.revokeObjectURL(session.url); } }, []);
   function command(message) { const channel = connection.current?.channel; if (connection.current?.authenticated && channel?.readyState === 'open') channel.send(JSON.stringify(message)); }
-  async function connect() {
+  async function connect(attempt = 0) {
     let secret = password;
     setPassword('');
     stop();
@@ -127,6 +127,9 @@ export function RemoteCamera({ onSessionState }) {
               session.url = null;
             }
             session.imagesDisabled = disabled;
+            // Straight to the panel: React could batch a save reply with the
+            // heartbeat's refresh and drop the reply's "saved" notice.
+            if (settingsPanel.current) settingsPanel.current.settings = message;
             setSettings(message);
           }
           else if (session.authenticated && message.type === 'error') { setStatus(message.error); if (settingsPanel.current) settingsPanel.current.error = message.error; }
@@ -198,7 +201,13 @@ export function RemoteCamera({ onSessionState }) {
           session.channel = channel; channel.binaryType = 'arraybuffer'; channel.onmessage = data;
           channel.onopen = () => { if (alive()) setStatus('Verifying camera password…'); };
           channel.onclose = () => { if (alive()) stop('Camera disconnected'); };
-          peer.onconnectionstatechange = () => { if (alive() && ['failed', 'closed'].includes(peer.connectionState)) stop('WebRTC connection closed'); };
+          peer.onconnectionstatechange = () => {
+            if (!alive() || !['failed', 'closed'].includes(peer.connectionState)) return;
+            // The camera's connection setup occasionally fails at once; retry
+            // once with the derived key before reporting it.
+            if (!session.authenticated && attempt === 0 && savedAccess.current) { stop('Connection failed; retrying…'); connect(1); return; }
+            stop('WebRTC connection closed');
+          };
           let offerSent = false;
           const localCandidates = [];
           peer.onicecandidate = ({ candidate }) => {
@@ -240,12 +249,14 @@ export function RemoteCamera({ onSessionState }) {
       <form className="remote-bar" onSubmit={event => { event.preventDefault(); if (camera && (password || savedAccess.current) && state === 'idle') connect(); }}>
         <Icon name="signal" />
         {state === 'connected'
-          ? <span className="remote-connected"><i aria-hidden="true" />Connected · {camera}</span>
-          : <><label className="sr-only" htmlFor="camera-mac">Camera MAC address</label><input id="camera-mac" value={camera} placeholder="Camera MAC address" autoComplete="off" spellCheck="false" disabled={state !== 'idle'} onChange={e => { savedAccess.current = null; setCamera(e.target.value); }} />
-            <label className="sr-only" htmlFor="camera-access-password">Camera password</label><input id="camera-access-password" type="password" placeholder="Camera password" autoComplete="current-password" value={password} disabled={state !== 'idle'} onChange={e => setPassword(e.target.value)} /></>}
+          ? <span key="connected" className="remote-connected"><i aria-hidden="true" />Connected · {camera}</span>
+          : <Fragment key="credentials"><label className="sr-only" htmlFor="camera-mac">Camera MAC address</label><input id="camera-mac" value={camera} placeholder="Camera MAC address" autoComplete="off" spellCheck="false" disabled={state !== 'idle'} onChange={e => { savedAccess.current = null; setCamera(e.target.value); }} />
+            <label className="sr-only" htmlFor="camera-access-password">Camera password</label><input id="camera-access-password" type="password" placeholder="Camera password" autoComplete="current-password" value={password} disabled={state !== 'idle'} onChange={e => setPassword(e.target.value)} /></Fragment>}
+        {/* Separate keys: reusing one element would switch the clicked Disconnect
+            button to type=submit mid-click, and the form would reconnect. */}
         {state === 'idle'
-          ? <button type="submit" className="button rtc-primary" aria-label="Connect camera" disabled={(!password && !savedAccess.current) || !camera}>Connect</button>
-          : <button type="button" className="button rtc-secondary" onClick={() => stop()}>Disconnect</button>}
+          ? <button key="connect" type="submit" className="button rtc-primary" aria-label="Connect camera" disabled={(!password && !savedAccess.current) || !camera}>Connect</button>
+          : <button key="disconnect" type="button" className="button rtc-secondary" onClick={() => stop()}>Disconnect</button>}
       </form>
       <p role="status" className="remote-status" data-testid="remote-status">{status}</p>
     </div>

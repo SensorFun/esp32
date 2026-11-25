@@ -3,14 +3,25 @@
 // config/frame_grabber/sensors/<sensor>.yaml): "switch" controls are On/Off
 // switches, "list" controls offer their labelled values, and only "range"
 // controls with many values use a 10-step slider with an exact number beside it.
+// What a settings message says about the camera, without its saved/reset flags.
+const settingsKey = value => JSON.stringify([value.resolution, value.stream_images, value.timing_profile,
+  (value.controls || []).map(control => [control.name, control.value])]);
+
 class CameraSettings extends HTMLElement {
   constructor() { super(); this.attachShadow({ mode: 'open' }); }
   set settings(value) {
+    const before = this.value;
     this.value = value;
     if (this.dirty && !value.saved && !value.reset) { this.sync(value); return; }
     this.dirty = false; this.pending = false;
-    this.render(value.reset ? 'Defaults applied. Select Save to keep them after reboot.' :
-      value.saved ? 'Settings saved on camera.' : 'Changes take effect immediately. Select Save to keep them after reboot.');
+    // Viewers refresh settings periodically; a refresh that reports the same
+    // settings must not erase the notice of the save or reset just made.
+    const unchanged = this.notice && before && !value.saved && !value.reset && settingsKey(before) === settingsKey(value);
+    const message = value.reset ? 'Defaults applied. Select Save to keep them after reboot.' :
+      value.saved ? 'Settings saved on camera.' : unchanged ? this.notice :
+      'Changes take effect immediately. Select Save to keep them after reboot.';
+    this.notice = value.saved || value.reset || unchanged ? message : null;
+    this.render(message);
   }
   // Show what the camera applied during live edits: a driver may clamp a
   // value (the OV3660 limits AEC to the current frame length). The field

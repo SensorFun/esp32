@@ -29,7 +29,7 @@ class FlashTests(unittest.TestCase):
         (self.root / "boards").mkdir()
         (self.root / "config/boards").mkdir(parents=True)
         (self.root / "boards/shared.h").touch()
-        (self.root / "config/boards/test.yaml").write_text("test:\n  name: Test board\n  header: shared.h\n  target: esp32s3\n  flash_freq: 80m\n  wifi_tx_buffers: {type: static, count: 16}\n  lwip_iram: false\n")
+        (self.root / "config/boards/test.yaml").write_text("test:\n  name: Test board\n  header: shared.h\n  target: esp32s3\n  flash_freq: 80m\n  wifi_tx_buffers: {type: static, count: 16}\n  lwip_iram: false\n  camera_dma_buffer: 32768\n")
         self.build = self.root / "build/hello_world/test"
         self.build.mkdir(parents=True)
         self.metadata = {
@@ -123,7 +123,7 @@ class FlashTests(unittest.TestCase):
 
     @patch("esp32_workspace.flashing.subprocess.call")
     def test_wrong_frame_grabber_build_cannot_be_flashed(self, call):
-        (self.root / "config/boards/test.yaml").write_text("test:\n  name: Test board\n  header: shared.h\n  target: esp32s3\n  flash_freq: 80m\n  wifi_tx_buffers: {type: static, count: 16}\n  lwip_iram: false\n  supported_frame_grabber: [ov]\n")
+        (self.root / "config/boards/test.yaml").write_text("test:\n  name: Test board\n  header: shared.h\n  target: esp32s3\n  flash_freq: 80m\n  wifi_tx_buffers: {type: static, count: 16}\n  lwip_iram: false\n  camera_dma_buffer: 32768\n  supported_frame_grabber: [ov]\n")
         (self.root / "config/frame_grabber").mkdir()
         (self.root / "config/frame_grabber/ov.yaml").write_text("name: ov\n")
         self.config.frame_grabber = {"name": "ov"}

@@ -15,4 +15,6 @@ esp32_ai-thinker_cam:
   wifi_tx_buffers: {type: static, count: 16}
   # lwIP's UDP path in IRAM, away from the flash cache camera copies evict.
   lwip_iram: true
+  # Largest camera DMA buffer (one contiguous block of internal RAM), bytes.
+  camera_dma_buffer: 32768
   supported_frame_grabber: [ov, gc]
