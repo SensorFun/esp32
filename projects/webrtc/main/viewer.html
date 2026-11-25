@@ -80,6 +80,9 @@ function settings(data){
   imagesDisabled=disabled;$('stream-off').hidden=!disabled;$('preview').hidden=disabled;$('blank').hidden=!disabled;
   if(disabled)clearPreview();
  }
+ // The placeholder (and the motion cells over it) take the selected resolution's size, streamed or not.
+ const size=data.resolutions?.find(item=>item.value===data.resolution);
+ if(size&&($('blank').width!==size.width||$('blank').height!==size.height)){$('blank').width=size.width;$('blank').height=size.height;}
  $('settings-panel').hidden=false;$('settings-panel').settings=data;
 }
 function authenticated(current){
