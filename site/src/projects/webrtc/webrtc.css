@@ -3,3 +3,19 @@
 .remote-camera{display:grid;gap:20px}.remote-connection label{display:block;font-size:11px;color:#b7c9ab;margin:16px 0 8px}.remote-actions{display:flex;gap:10px;flex-wrap:wrap;margin:10px 0}.remote-actions input,.remote-actions select,.remote-settings input,.remote-settings select{background:#0d180e;color:#d8e8cb;border:1px solid #415335;padding:10px;border-radius:5px;min-width:0;font:inherit;font-size:12px}.remote-actions input{flex:1}.remote-actions select{flex:1}.remote-preview{position:relative;min-height:280px;display:grid;place-items:center;background:#0a110d}.remote-preview img{max-width:100%;max-height:520px;object-fit:contain;display:block}.remote-preview img:not([src]){display:none}.preview-frame{position:relative;max-width:100%}.preview-frame sensorfan-motion-overlay{position:absolute;inset:0}.preview-frame:not(.blank) img:not([src])+sensorfan-motion-overlay{display:none}.remote-preview img[hidden]{display:none}.blank-frame{display:block;max-width:100%;max-height:520px;width:auto;height:auto;background:#17201a}.remote-preview>span{color:#758b68;font-size:12px}.remote-controls{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-top:20px}.remote-settings label{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:11px;color:#b7c9ab}.remote-controls input{width:70px}.remote-settings input:disabled{opacity:.4}.remote-settings select{max-width:190px}.remote-actions button:disabled{opacity:.4;transform:none}
 
 .remote-credentials{max-width:600px}.remote-credentials>input,.remote-credentials>select{display:block;width:100%;background:#0d180e;color:#d8e8cb;border:1px solid #415335;padding:11px;border-radius:5px;font:inherit;font-size:12px}.remote-credentials>.remote-actions{margin-top:20px}
+/* Settings beside the picture, so their effect is visible while they change.
+   Narrow screens: the picture first, sticky and capped at 40% of the screen,
+   with the settings scrolling beneath it. Wide screens: settings on the left,
+   the picture on the right staying in view. */
+.camera-workspace{display:grid;gap:20px;min-width:0}
+.camera-workspace>.monitor{position:sticky;top:0;z-index:2}
+.camera-workspace .remote-preview{min-height:160px}
+.camera-workspace .remote-preview img,.camera-workspace .blank-frame{max-height:40vh}
+.camera-settings{min-width:0}
+@media(min-width:900px){
+.camera-workspace{grid-template-columns:minmax(320px,440px) minmax(0,1fr);align-items:start}
+.camera-settings{grid-column:1;grid-row:1}
+.camera-workspace>.monitor{grid-column:2;grid-row:1;top:16px}
+.camera-workspace .remote-preview{min-height:280px}
+.camera-workspace .remote-preview img,.camera-workspace .blank-frame{max-height:min(520px,calc(100vh - 140px))}
+}

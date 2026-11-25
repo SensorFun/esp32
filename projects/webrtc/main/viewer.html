@@ -1,20 +1,23 @@
 <!doctype html>
 <html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Local WebRTC camera</title>
-<style>body{font:16px system-ui;max-width:1000px;margin:2rem auto;padding:0 1rem;background:#101923;color:#eef4fa}button,input,select{font:inherit;padding:.45rem;margin:.25rem}img{display:block;max-width:100%;min-height:240px;background:#202d3b}#controls{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:.5rem}label{display:flex;align-items:center;justify-content:space-between;background:#202d3b;padding:.5rem}input[type=number]{width:5rem}#status{white-space:pre-wrap}small{color:#b8cddd}#frame{position:relative;width:fit-content;max-width:100%}#frame [hidden]{display:none}#blank{display:block;max-width:100%;height:auto;background:#202d3b}#overlay{position:absolute;inset:0}sensorfan-camera-settings,sensorfan-motion-settings,sensorfan-recordings{margin-top:1rem}button,#camera-password{min-height:44px}#login label{gap:.5rem;flex-wrap:wrap}#camera-password{flex:1;min-width:0}@media(max-width:600px){body{margin:1rem auto}button,input,select{font-size:16px}}</style>
+<style>body{font:16px system-ui;max-width:1000px;margin:2rem auto;padding:0 1rem;background:#101923;color:#eef4fa}button,input,select{font:inherit;padding:.45rem;margin:.25rem}img{display:block;max-width:100%;min-height:240px;background:#202d3b}#controls{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:.5rem}label{display:flex;align-items:center;justify-content:space-between;background:#202d3b;padding:.5rem}input[type=number]{width:5rem}#status{white-space:pre-wrap}small{color:#b8cddd}#frame{position:relative;width:fit-content;max-width:100%}#frame [hidden]{display:none}#blank{display:block;max-width:100%;width:auto;height:auto;background:#202d3b}#preview{width:auto;height:auto}#preview[src]{min-height:0}#workspace{display:grid;gap:1rem;margin-top:1rem}#view{position:sticky;top:0;z-index:2;background:#101923;padding:.5rem 0}#view p{margin:.25rem 0}#preview,#blank{max-height:40vh}@media(min-width:900px){body{max-width:1400px}#workspace{grid-template-columns:minmax(320px,440px) minmax(0,1fr);align-items:start}#settings-column{grid-column:1;grid-row:1}#view{grid-column:2;grid-row:1;top:1rem;padding:0}#preview,#blank{max-height:calc(100vh - 7rem)}}#overlay{position:absolute;inset:0}sensorfan-camera-settings,sensorfan-motion-settings,sensorfan-recordings{margin-top:1rem}button,#camera-password{min-height:44px}#login label{gap:.5rem;flex-wrap:wrap}#camera-password{flex:1;min-width:0}@media(max-width:600px){body{margin:1rem auto}button,input,select{font-size:16px}}</style>
 <h1>Local WebRTC camera</h1>
 <p>Connect directly to the camera on your local network with its camera password.</p>
 <form id="login"><label for="camera-password">Camera password <input id="camera-password" type="password" autocomplete="current-password"></label>
 <button id="connect" disabled>Connect</button><button id="disconnect" type="button" disabled>Disconnect</button></form>
 <p id="status" role="status">Enter the camera password chosen during setup.</p>
-<p><output id="fps" title="Frames the camera grabs per second for live video, motion detection or recording">0.0 FPS</output> <small>(camera, 1-second average)</small></p>
+<div id="workspace">
+<section id="view" aria-label="Camera picture"><p><output id="fps" title="Frames the camera grabs per second for live video, motion detection or recording">0.0 FPS</output> <small>(camera, 1-second average)</small></p>
 <p id="stream-off" hidden role="status">Camera image streaming is off.</p>
-<div id="frame"><img id="preview" alt="Live camera frames"><canvas id="blank" width="640" height="480" hidden aria-label="Camera image streaming is off; motion is still shown"></canvas><sensorfan-motion-overlay id="overlay"></sensorfan-motion-overlay></div><sensorfan-camera-tabs style="margin-top:1rem">
+<div id="frame"><img id="preview" alt="Live camera frames"><canvas id="blank" width="640" height="480" hidden aria-label="Camera image streaming is off; motion is still shown"></canvas><sensorfan-motion-overlay id="overlay"></sensorfan-motion-overlay></div></section>
+<section id="settings-column" aria-label="Camera settings"><sensorfan-camera-tabs>
 <div data-label="Camera settings"><sensorfan-camera-settings id="settings-panel" hidden></sensorfan-camera-settings></div>
 <div data-label="Motion detection" hidden><sensorfan-motion-settings id="motion-panel" group="detection" hidden></sensorfan-motion-settings></div>
 <div data-label="SD card recording" hidden><sensorfan-motion-settings id="recording-panel" group="recording" hidden></sensorfan-motion-settings><sensorfan-recordings id="recordings" hidden></sensorfan-recordings></div>
 <div data-label="Diagnostics" hidden><sensorfan-camera-logs id="logs-panel"></sensorfan-camera-logs></div>
-</sensorfan-camera-tabs>
+</sensorfan-camera-tabs></section>
+</div>
 <p><small>JPEG frames, camera commands, and recordings travel over encrypted WebRTC. Reset to Default applies the firmware’s camera defaults. Select Save to keep them after reboot.</small></p>
 <script id="logs-module" type="module" src="/camera-logs.js"></script><script id="settings-module" type="module" src="/camera-settings.js"></script><script id="motion-module" type="module" src="/camera-motion.js"></script>
 <script>
