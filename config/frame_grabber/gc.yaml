@@ -3,3 +3,7 @@ name: gc
 # allowed values and defaults are in sensors/<sensor>.yaml; the firmware
 # detects the installed sensor at runtime and uses its profile.
 sensors: [gc0308]
+common:
+  # Stream resolution (WIDTHxHEIGHT) until saved settings select another; the
+  # settings panel's Default button returns to it. 640x480 is the GC0308's largest.
+  default_resolution: 640x480

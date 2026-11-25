@@ -29,7 +29,9 @@ TIMING = ('high_light', 'mid_light', 'low_light')
 # Sensors with OV light timing (CLKRC or HTS line period control) and clock_2x.
 TIMED = {'ov2640', 'ov3660'}
 # Keys a sensor profile (shared section merged with the sensor file) may hold.
-PROFILE_KEYS = {'timing_profile', 'clock_2x', 'controls'}
+PROFILE_KEYS = {'timing_profile', 'clock_2x', 'default_resolution', 'controls'}
+# Largest resolution each sensor offers (camera_controls.cpp max_resolution()).
+SENSOR_MAX = {'ov2640': '1600x1200', 'ov3660': '2048x1536', 'gc0308': '640x480'}
 # esp32-camera 2.1.6 framesize_t names by resolution, in the driver's order.
 RESOLUTIONS = {
     '96x96': '96X96', '160x120': 'QQVGA', '128x128': '128X128', '176x144': 'QCIF',
@@ -118,6 +120,11 @@ def load_sensor(root, sensor, common):
         raise ValueError(f'{sensor}: clock_2x must be {{enabled: true|false, max_resolution: WIDTHxHEIGHT}}; only OV sensors '
                          f'support it, and max_resolution is one of {", ".join(RESOLUTIONS)}')
     clock_2x = clock['enabled']
+    # Stream resolution before saved settings, within the sensor's sizes.
+    default = profile.get('default_resolution')
+    order = list(RESOLUTIONS)
+    if default not in RESOLUTIONS or order.index(default) > order.index(SENSOR_MAX[sensor]):
+        raise ValueError(f'{sensor}: default_resolution must be WIDTHxHEIGHT up to {SENSOR_MAX[sensor]}')
     clock_max = 'FRAMESIZE_' + RESOLUTIONS[clock['max_resolution']] if clock_2x else 'FRAMESIZE_INVALID'
     timing = profile.get('timing_profile')
     if (sensor in TIMED) != (timing is not None) or (timing is not None and timing not in TIMING):
@@ -130,7 +137,7 @@ def load_sensor(root, sensor, common):
         raise ValueError(f'{sensor}: unmapped camera controls {sorted(unknown)}')
     specs = [control_spec(sensor, name, controls[name]) for name in MEMBERS if name in controls]
     return {'sensor': sensor, 'timing': TIMING.index(timing) if timing else -1, 'clock_2x': clock_2x,
-            'clock_max': clock_max, 'controls': specs}
+            'clock_max': clock_max, 'default_resolution': 'FRAMESIZE_' + RESOLUTIONS[default], 'controls': specs}
 
 
 def generate(root):
@@ -154,7 +161,7 @@ def generate(root):
               'struct Option { int value; const char *label; };',
               'enum class Kind { range, list, toggle };',
               'struct ControlSpec { const char *name; Kind kind; int value, low, high; const Option *options; size_t option_count; };',
-              'struct SensorProfile { const char *sensor; int timing_profile; bool clock_2x; framesize_t clock_2x_max; const ControlSpec *controls; size_t count; };']
+              'struct SensorProfile { const char *sensor; int timing_profile; bool clock_2x; framesize_t clock_2x_max; framesize_t default_resolution; const ControlSpec *controls; size_t count; };']
     kinds = {'range': 'Kind::range', 'options': 'Kind::list', 'switch': 'Kind::toggle'}
     for profile in profiles:
         for spec in profile['controls']:
@@ -169,7 +176,7 @@ def generate(root):
     lines.append('static const SensorProfile profiles[] = {')
     for profile in profiles:
         sensor = profile['sensor']
-        lines.append(f'{{"{sensor}", {profile["timing"]}, {str(profile["clock_2x"]).lower()}, {profile["clock_max"]}, controls_{sensor}, sizeof(controls_{sensor}) / sizeof(ControlSpec)}},')
+        lines.append(f'{{"{sensor}", {profile["timing"]}, {str(profile["clock_2x"]).lower()}, {profile["clock_max"]}, {profile["default_resolution"]}, controls_{sensor}, sizeof(controls_{sensor}) / sizeof(ControlSpec)}},')
     lines.append('};')
     return '\n'.join(lines) + '\n'
 

@@ -6,6 +6,9 @@ name: ov
 sensors: [ov2640, ov3660]
 common:
   timing_profile: mid_light
+  # Stream resolution (WIDTHxHEIGHT) until saved settings select another; the
+  # settings panel's Default button returns to it.
+  default_resolution: 640x480
   # Double the sensor clock: it doubles the frame-rate ceiling and moves the
   # camera bus frequencies beside the PCB antenna; streaming got faster on the
   # ESP32-CAM. OV2640: CLKRC bit 7, the internal doubler esp32-cam-fpv enables

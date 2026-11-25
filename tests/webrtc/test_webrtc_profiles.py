@@ -44,9 +44,9 @@ class CameraProfileTests(unittest.TestCase):
         result, content = self.generate()
         self.assertEqual(result.returncode, 0, result.stderr)
         # The shipped clock_2x may be on or off; test_clock_doubler_flag covers both.
-        self.assertRegex(content, r'\{"ov2640", 1, (true, FRAMESIZE_SVGA|false, FRAMESIZE_INVALID), controls_ov2640')
-        self.assertRegex(content, r'\{"ov3660", 1, (true, FRAMESIZE_SVGA|false, FRAMESIZE_INVALID), controls_ov3660')
-        self.assertIn('{"gc0308", -1, false, FRAMESIZE_INVALID, controls_gc0308', content)
+        self.assertRegex(content, r'\{"ov2640", 1, (true, FRAMESIZE_SVGA|false, FRAMESIZE_INVALID), FRAMESIZE_VGA, controls_ov2640')
+        self.assertRegex(content, r'\{"ov3660", 1, (true, FRAMESIZE_SVGA|false, FRAMESIZE_INVALID), FRAMESIZE_VGA, controls_ov3660')
+        self.assertIn('{"gc0308", -1, false, FRAMESIZE_INVALID, FRAMESIZE_VGA, controls_gc0308', content)
         self.assertIn('s->set_whitebal(s, v)', content)
         ov2640, ov3660, gc0308 = (self.section(content, s) for s in ('ov2640', 'ov3660', 'gc0308'))
         # The OV2640 driver implements neither sharpness nor denoise.
@@ -90,7 +90,7 @@ class CameraProfileTests(unittest.TestCase):
                             'colorbar', 'hmirror', 'vflip', 'whitebal', 'awb_gain', 'wb_mode', 'gain_ctrl', 'agc_gain', 'exposure_ctrl',
                             'aec_value', 'ae_level', 'aec2', 'dcw', 'bpc', 'wpc', 'raw_gma', 'lenc'))
                   + ' int (*set_gainceiling)(sensor_t *, int); };\nusing gainceiling_t = int;\n'
-                  'enum framesize_t { FRAMESIZE_SVGA = 11, FRAMESIZE_UXGA = 15, FRAMESIZE_INVALID = 25 };\n'
+                  'enum framesize_t { FRAMESIZE_VGA = 10, FRAMESIZE_SVGA = 11, FRAMESIZE_UXGA = 15, FRAMESIZE_INVALID = 25 };\n'
                   'struct Control { const char *name; int (*set)(sensor_t *, int); int (*get)(sensor_t *); };\n' + content
                   + 'static_assert(sizeof(profiles) / sizeof(profiles[0]) == 3);\n')
         result = subprocess.run(['c++', '-x', 'c++', '-std=c++17', '-fsyntax-only', '-Wall', '-Werror', '-Wno-unused-variable', '-'],
@@ -146,31 +146,50 @@ class CameraProfileTests(unittest.TestCase):
             with self.subTest(profile=name):
                 result, content = self.generate('ov2640', lambda profile: profile.__setitem__('timing_profile', name))
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertRegex(content, r'\{"ov2640", ' + str(index) + r', (true|false), FRAMESIZE_\w+, controls_ov2640')
+                self.assertRegex(content, r'\{"ov2640", ' + str(index) + r', (true|false), FRAMESIZE_\w+, FRAMESIZE_VGA, controls_ov2640')
 
     def test_clock_doubler_flag(self):
         on = lambda listed: listed['common'].__setitem__('clock_2x', {'enabled': True, 'max_resolution': '800x600'})
         # Shared by both OV sensors, up to the shared maximum resolution.
         result, content = self.generate(family_change=on)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn(', true, FRAMESIZE_SVGA, controls_ov2640', content)
-        self.assertIn(', true, FRAMESIZE_SVGA, controls_ov3660', content)
+        self.assertIn(', true, FRAMESIZE_SVGA, FRAMESIZE_VGA, controls_ov2640', content)
+        self.assertIn(', true, FRAMESIZE_SVGA, FRAMESIZE_VGA, controls_ov3660', content)
         result, content = self.generate(family_change=lambda listed: listed['common'].__setitem__('clock_2x', {'enabled': False, 'max_resolution': '800x600'}))
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn(', false, FRAMESIZE_INVALID, controls_ov2640', content)
+        self.assertIn(', false, FRAMESIZE_INVALID, FRAMESIZE_VGA, controls_ov2640', content)
         result, _ = self.generate(family_change=lambda listed: listed['common'].__setitem__('clock_2x', {'enabled': True}))
         self.assertNotEqual(result.returncode, 0)  # enabled needs a maximum resolution
         # A sensor file overrides single entries: only the OV3660 changes.
         result, content = self.generate('ov3660', lambda profile: profile.__setitem__('clock_2x', {'max_resolution': '1600x1200'}), family_change=on)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn(', true, FRAMESIZE_SVGA, controls_ov2640', content)
-        self.assertIn(', true, FRAMESIZE_UXGA, controls_ov3660', content)
+        self.assertIn(', true, FRAMESIZE_SVGA, FRAMESIZE_VGA, controls_ov2640', content)
+        self.assertIn(', true, FRAMESIZE_UXGA, FRAMESIZE_VGA, controls_ov3660', content)
         result, content = self.generate('ov3660', lambda profile: profile.__setitem__('clock_2x', {'enabled': False}), family_change=on)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn(', false, FRAMESIZE_INVALID, controls_ov3660', content)
+        self.assertIn(', false, FRAMESIZE_INVALID, FRAMESIZE_VGA, controls_ov3660', content)
         result, content = self.generate(family_change=lambda listed: listed['common'].pop('clock_2x'))
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn(', false, FRAMESIZE_INVALID, controls_ov2640', content)
+        self.assertIn(', false, FRAMESIZE_INVALID, FRAMESIZE_VGA, controls_ov2640', content)
+
+    def test_default_resolution(self):
+        result, content = self.generate()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for sensor in ('ov2640', 'ov3660', 'gc0308'):
+            self.assertRegex(content, r'\{"' + sensor + r'", -?\d, (true|false), FRAMESIZE_\w+, FRAMESIZE_VGA, controls_' + sensor)
+        # A sensor file can override the shared default.
+        result, content = self.generate('ov3660', lambda profile: profile.__setitem__('default_resolution', '1600x1200'))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertRegex(content, r'FRAMESIZE_UXGA, controls_ov3660')
+        self.assertRegex(content, r'FRAMESIZE_VGA, controls_ov2640')
+        for label, sensor, value in (('above GC0308 maximum', 'gc0308', '800x600'), ('above OV2640 maximum', 'ov2640', '2048x1536'),
+                                     ('unknown size', 'ov2640', '640x481'), ('not a string', 'ov2640', 640)):
+            with self.subTest(label):
+                result, _ = self.generate(sensor, lambda profile: profile.__setitem__('default_resolution', value))
+                self.assertNotEqual(result.returncode, 0)
+        with self.subTest('missing'):
+            result, _ = self.generate(family_change=lambda listed: listed['common'].pop('default_resolution'))
+            self.assertNotEqual(result.returncode, 0)
 
     def test_shared_ov_settings(self):
         result, content = self.generate()

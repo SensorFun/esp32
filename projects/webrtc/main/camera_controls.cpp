@@ -149,6 +149,9 @@ esp_err_t camera_start(bool restore_saved) {
     for (const auto &candidate : profiles) if (!strcmp(candidate.sensor, sensor_name)) profile = &candidate;
     if (!profile) return ESP_ERR_NOT_SUPPORTED;
     timing.set_clock_doubler(profile->clock_2x, profile->clock_2x_max);
+    // Capture starts at QVGA (and idles at QQVGA); a viewer gets this size
+    // until saved settings select another (YAML default_resolution).
+    configured_resolution = profile->default_resolution;
     if (sensor->set_framesize(sensor, FRAMESIZE_QVGA) || !restore_timing(0)) return ESP_FAIL;
     // The camera clock and the sensor's pixel bus run beside the PCB antenna.
     // At full drive strength their edges cut ESP32-CAM Wi-Fi throughput by
