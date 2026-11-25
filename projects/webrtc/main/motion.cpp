@@ -87,6 +87,12 @@ motion::Activity activity;
 float area = 0, speed = 0, rate = 0;  // speed: mean of moving cells, px/s
 int cols = 0, rows = 0;
 std::array<uint8_t, motion::kMaxPixels / 25> grid{};
+// Where analysis time goes, logged every 5 s while detection runs: frames the
+// worker offered, ones it handed over, ones skipped because the previous frame
+// was still being analysed, and the analysis time of each handed-over frame.
+std::atomic<uint32_t> offered{0}, accepted{0}, skipped_busy{0}, offered_bytes{0};
+uint32_t analysed = 0;           // Motion task only, like the timings below.
+int64_t analysis_us = 0, analysis_max_us = 0, timing_since = 0;
 
 struct Lock {
     Lock() { xSemaphoreTake(lock, portMAX_DELAY); }
@@ -284,12 +290,36 @@ void analyze(const uint8_t *jpeg, size_t size, int64_t captured) {
     previous = now;
 }
 
+void report_timing(int64_t now) {
+    if (!timing_since) { timing_since = now; return; }
+    const int64_t window = now - timing_since;
+    if (window < 5000000) return;
+    const uint32_t frames = offered.exchange(0), handed = accepted.exchange(0), skipped = skipped_busy.exchange(0);
+    const uint32_t bytes = offered_bytes.exchange(0);
+    const uint32_t dimensions = frame_dimensions.load();
+    ESP_LOGI(TAG, "Motion timing: %u.%u analyses/s, analysis avg %u ms (max %u ms, %u%% busy); frames offered %u, "
+                  "handed over %u, skipped while busy %u; %ux%u avg %u B",
+             unsigned(analysed * 10000000LL / window / 10), unsigned(analysed * 10000000LL / window % 10),
+             unsigned(analysed ? analysis_us / analysed / 1000 : 0), unsigned(analysis_max_us / 1000),
+             unsigned(analysis_us * 100 / window), unsigned(frames), unsigned(handed), unsigned(skipped),
+             unsigned(dimensions >> 16), unsigned(dimensions & 0xffff), unsigned(frames ? bytes / frames : 0));
+    analysed = 0; analysis_us = analysis_max_us = 0; timing_since = now;
+}
+
 void detect(void *) {
     for (;;) {
-        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-        analyze(job, job_length, job_time);
-        cooperate();
-        busy = false;
+        // Wake at least every second so the timing log keeps its 5 s rhythm.
+        if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000))) {
+            const int64_t started = esp_timer_get_time();
+            analyze(job, job_length, job_time);
+            const int64_t spent = esp_timer_get_time() - started;
+            ++analysed; analysis_us += spent;
+            if (spent > analysis_max_us) analysis_max_us = spent;
+            cooperate();
+            busy = false;
+        }
+        if (motion_settings().enabled) report_timing(esp_timer_get_time());
+        else timing_since = 0;
     }
 }
 }  // namespace
@@ -342,6 +372,8 @@ void motion_feed(const camera_fb_t *frame) {
         grid.fill(0);
     }
     const bool settling = now - restarted < kSettleUs;
+    ++offered; offered_bytes += frame->len;
+    if (busy) ++skipped_busy;
     // Every frame goes to the motion task, including small motion-idle ones
     // (a few KB to copy), so the worker can grab the next frame meanwhile.
     if (!busy && !settling) {
@@ -355,6 +387,7 @@ void motion_feed(const camera_fb_t *frame) {
             job_length = frame->len;
             job_time = now;
             busy = true;
+            ++accepted;
             xTaskNotifyGive(task);
         }
     }

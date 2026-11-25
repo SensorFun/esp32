@@ -144,8 +144,9 @@ bool GrayScaler::begin(int width, int height, int out_width, int out_height, uin
     return true;
 }
 
-bool GrayScaler::add(const uint8_t *rgb, int left, int top, int right, int bottom, int stride) {
-    if (!ok_ || left < 0 || top < 0 || right >= width_ || bottom >= height_ || left > right || top > bottom) return ok_ = false;
+bool GrayScaler::add(const uint8_t *pixels, int left, int top, int right, int bottom, int stride, int channels) {
+    if (!ok_ || left < 0 || top < 0 || right >= width_ || bottom >= height_ || left > right || top > bottom ||
+        (channels != 1 && channels != 3)) return ok_ = false;
     const int columns = stride > 0 ? stride : right - left + 1;
     if (columns < right - left + 1) return ok_ = false;
     for (int sy = top; sy <= bottom; ++sy) {
@@ -155,9 +156,9 @@ bool GrayScaler::add(const uint8_t *rgb, int left, int top, int right, int botto
             if (sy < span_end(y, height_, out_height_)) {
                 if (y >= next_row_ + kRing) return ok_ = false;
                 uint16_t *sums = sums_[y % kRing];
-                const uint8_t *p = rgb + size_t(sy - top) * columns * 3;
-                for (int sx = left; sx <= right; ++sx, p += 3) {
-                    const uint8_t value = luma(p);
+                const uint8_t *p = pixels + size_t(sy - top) * columns * channels;
+                for (int sx = left; sx <= right; ++sx, p += channels) {
+                    const uint8_t value = channels == 1 ? *p : luma(p);
                     for (int x = first_x_[sx]; x <= last_x_[sx]; ++x) sums[x] += value;
                 }
             }

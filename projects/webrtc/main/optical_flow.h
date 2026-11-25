@@ -24,8 +24,8 @@ using Cooperate = void (*)();
 void rgb888_to_gray(const uint8_t *rgb, int width, int height, uint8_t *gray, int out_width, int out_height,
                     Cooperate cooperate = nullptr);
 
-// The same box average, fed with decoded RGB888 blocks in raster MCU order, as
-// a JPEG decoder emits them. Only a ring of partial row sums is kept, so the
+// The same box average, fed with decoded blocks (RGB888 or luma) in raster MCU
+// order, as a JPEG decoder emits them. Only a ring of partial row sums is kept, so the
 // full decoded image never has to exist in memory.
 class GrayScaler {
 public:
@@ -35,9 +35,10 @@ public:
     // output is larger than kMaxSource or kMaxPixels.
     bool begin(int width, int height, int out_width, int out_height, uint8_t *gray);
     // One decoded block; rect bounds are inclusive and stride is the block's
-    // row length in pixels (0: right - left + 1). Returns false on a layout the
-    // ring cannot hold; the frame is then unusable.
-    bool add(const uint8_t *rgb, int left, int top, int right, int bottom, int stride = 0);
+    // row length in pixels (0: right - left + 1). channels is 3 for RGB888 or
+    // 1 for luma. Returns false on a layout the ring cannot hold; the frame is
+    // then unusable.
+    bool add(const uint8_t *pixels, int left, int top, int right, int bottom, int stride = 0, int channels = 3);
     // True once every output row was completed.
     bool finish() const { return ok_ && next_row_ == out_height_; }
 

@@ -27,14 +27,12 @@ int output(JDEC *decoder, void *pixels, JRECT *rect) {
     const int right = std::min<int>(rect->right, source.width - 1);
     const int bottom = std::min<int>(rect->bottom, source.height - 1);
     if (rect->left > right || rect->top > bottom) return 1;
-    const auto *rgb = static_cast<const uint8_t *>(pixels);
+    // The decoder emits luma only (motion_jpeg.h).
+    const auto *gray = static_cast<const uint8_t *>(pixels);
     const int stride = rect->right - rect->left + 1;
-    if (!source.direct) return source.scaler.add(rgb, rect->left, rect->top, right, bottom, stride);
-    for (int y = rect->top; y <= bottom; ++y) {
-        const auto *pixel = rgb + (y - rect->top) * stride * 3;
-        for (int x = rect->left; x <= right; ++x, pixel += 3)
-            source.direct[y * source.width + x] = (77u * pixel[0] + 150u * pixel[1] + 29u * pixel[2]) >> 8;
-    }
+    if (!source.direct) return source.scaler.add(gray, rect->left, rect->top, right, bottom, stride, 1);
+    for (int y = rect->top; y <= bottom; ++y)
+        std::memcpy(source.direct + y * source.width + rect->left, gray + (y - rect->top) * stride, size_t(right - rect->left + 1));
     return 1;
 }
 }  // namespace

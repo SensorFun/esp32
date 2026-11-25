@@ -827,6 +827,52 @@ static void block_idct (
 /* Load all blocks in an MCU into working buffer                         */
 /*-----------------------------------------------------------------------*/
 
+#if JD_USE_SCALE && JD_FORMAT == 2
+/*-----------------------------------------------------------------------*/
+/* Reduced inverse DCT for 1/2 and 1/4 grayscale output (motion firmware)*/
+/*-----------------------------------------------------------------------*/
+/* Each output pixel is the exact average of a 2x2 (1/2) or 4x4 (1/4) square
+   of the full IDCT, computed straight from the Arai-prescaled coefficients:
+   out = 128 + sum_{u,v} c[v*8+u] * K[u][qx] * K[v][qy] / 256, where
+   K[u][q] = sqrt(2) * C(u) * (mean of cos((2x+1)u*pi/16) over square q) / s(u)
+   undoes the Arai input scaling s(u). mcu_load() adds each coefficient as it
+   is decoded, so the few non-zero ones (after quantization) are the only work
+   and the full 8x8 transform is never run. The value is stored at the
+   square's top-left pixel, which mcu_output() picks instead of averaging. */
+static const float ReducedK1[8][4] = {  /* 1/2 scale: four 2-pixel squares */
+    {1.000000f, 1.000000f, 1.000000f, 1.000000f}, {0.923880f, 0.382683f, -0.382683f, -0.923880f},
+    {0.707107f, -0.707107f, -0.707107f, 0.707107f}, {0.382683f, -0.923880f, 0.923880f, -0.382683f},
+    {0.000000f, 0.000000f, 0.000000f, 0.000000f}, {-0.382683f, 0.923880f, -0.923880f, 0.382683f},
+    {-0.707107f, 0.707107f, 0.707107f, -0.707107f}, {-0.923880f, -0.382683f, 0.382683f, 0.923880f}
+};
+static const float ReducedK2[8][2] = {  /* 1/4 scale: two 4-pixel squares */
+    {1.000000f, 1.000000f}, {0.653281f, -0.653281f}, {0.000000f, 0.000000f}, {-0.270598f, 0.270598f},
+    {0.000000f, 0.000000f}, {0.270598f, -0.270598f}, {0.000000f, 0.000000f}, {-0.653281f, 0.653281f}
+};
+
+/* Frequencies whose weight is zero at each scale (bit u: ReducedK[u][*] == 0) */
+static const uint8_t ReducedZero[3] = {0x00, 0x10, 0x54};
+
+static void reduced_store (
+    const float *acc,   /* n x n accumulated sums (n = 8 >> scale), in 1/256 pixel units */
+    jd_yuv_t *dst,      /* Destination block; one value per square at its top-left pixel */
+    unsigned int scale  /* 1: 1/2, 2: 1/4 */
+)
+{
+    const unsigned int n = 8 >> scale, w = 1u << scale;
+    unsigned int qx, qy;
+
+    for (qy = 0; qy < n; qy++) {
+        for (qx = 0; qx < n; qx++) {
+            const float f = acc[qy * n + qx] * (1.0f / 256) + 128.0f;    /* Level shift */
+            const int value = (int)(f + 0.5f);
+            dst[qy * w * 8 + qx * w] = (jd_yuv_t)(f < 0 ? 0 : value > 255 ? 255 : value);
+        }
+    }
+}
+#endif
+
+
 static JRESULT mcu_load (
     JDEC *jd        /* Pointer to the decompressor object */
 )
@@ -874,7 +920,23 @@ static JRESULT mcu_load (
 
             /* Extract following 63 AC elements from input stream */
             const int dc_only = JD_USE_SCALE && jd->scale == 3;
-            if (!dc_only) {
+            /* AC values not needed (1/8 scale, or chroma in grayscale output): parse only */
+            const int skip_ac = dc_only || (JD_FORMAT == 2 && cmp);
+#if JD_USE_SCALE && JD_FORMAT == 2
+            /* Luma at 1/2 or 1/4: accumulate the output squares as coefficients arrive */
+            const unsigned int rscale = (!cmp && (jd->scale == 1 || jd->scale == 2)) ? jd->scale : 0;
+            const unsigned int rn = 8 >> rscale;
+            const float *rk = (rscale == 1) ? &ReducedK1[0][0] : &ReducedK2[0][0];
+            float racc[16];
+            if (rscale) {
+                for (i = 0; i < rn * rn; i++) {
+                    racc[i] = (float)tmp[0];    /* DC weight is 1 for every square */
+                }
+            }
+#else
+            const unsigned int rscale = 0;
+#endif
+            if (!skip_ac && !rscale) {
                 memset(&tmp[1], 0, 63 * sizeof (int32_t));  /* Initialize all AC elements */
             }
             z = 1;      /* Top of the AC elements (in zigzag-order) */
@@ -891,7 +953,7 @@ static JRESULT mcu_load (
                 if (z >= 64) {
                     return JDR_FMT1;    /* Too long zero run */
                 }
-                if ((bc &= 0x0F) && dc_only) {      /* 1/8 scale: skip the AC value */
+                if ((bc &= 0x0F) && skip_ac) {      /* Value not needed: skip it */
                     d = bitext(jd, bc);
                     if (d < 0) {
                         return (JRESULT)(0 - d);    /* Err: input device */
@@ -906,13 +968,35 @@ static JRESULT mcu_load (
                         d -= (bc << 1) - 1;    /* Restore negative value if needed */
                     }
                     i = Zig[z];                     /* Get raster-order index */
+#if JD_USE_SCALE && JD_FORMAT == 2
+                    if (rscale) {
+                        const unsigned int u = i & 7, v = i >> 3;
+                        if (!(((ReducedZero[rscale] >> u) | (ReducedZero[rscale] >> v)) & 1)) {
+                            const float c = (float)(d * dqf[i] >> 8);
+                            const float *ku = rk + u * rn, *kv = rk + v * rn;
+                            unsigned int qx, qy;
+                            for (qy = 0; qy < rn; qy++) {
+                                const float t = c * kv[qy];
+                                for (qx = 0; qx < rn; qx++) {
+                                    racc[qy * rn + qx] += t * ku[qx];
+                                }
+                            }
+                        }
+                    } else
+#endif
                     tmp[i] = d * dqf[i] >> 8;       /* De-quantize, apply scale factor of Arai algorithm and descale 8 bits */
                 }
             } while (++z < 64);     /* Next AC element */
 
             if (JD_FORMAT != 2 || !cmp) {   /* C components may not be processed if in grayscale output */
+#if JD_USE_SCALE && JD_FORMAT == 2
+                if (rscale) {
+                    reduced_store(racc, bp, rscale);
+                } else
+#endif
                 if (z == 1 || (JD_USE_SCALE && jd->scale == 3)) {   /* If no AC element or scale ratio is 1/8, IDCT can be omitted and the block is filled with DC value */
-                    d = (jd_yuv_t)((*tmp / 256) + 128);
+                    d = (*tmp / 256) + 128;
+                    d = d < 0 ? 0 : d > 255 ? 255 : d;  /* Grayscale output stores it as is: clip like BYTECLIP */
                     if (dc_only) {
                         bp[0] = d;                  /* Only the DC pixel is read at 1/8 scale */
                     } else if (JD_FASTDECODE >= 1) {
@@ -1003,6 +1087,14 @@ static JRESULT mcu_output (
                     *pix++ = /*B*/ BYTECLIP(yy + ((int)(1.772 * CVACC) * cb) / CVACC);
                 }
             }
+        } else if (JD_USE_SCALE && jd->scale) {    /* Monochrome 1/2 or 1/4: one value per square (see block_idct_reduced) */
+            unsigned int w = 1u << jd->scale;
+            for (iy = 0; iy < my; iy += w) {
+                for (ix = 0; ix < mx; ix += w) {
+                    py = jd->mcubuf + ((my == 16 && iy >= 8) ? ((mx == 16) ? 64 * 2 : 64) : 0) + ((mx == 16 && ix >= 8) ? 64 : 0);
+                    *pix++ = BYTECLIP(py[(iy & 7) * 8 + (ix & 7)]);
+                }
+            }
         } else {    /* Monochrome output (build a grayscale MCU from Y component) */
             for (iy = 0; iy < my; iy++) {
                 py = jd->mcubuf + iy * 8;
@@ -1017,13 +1109,13 @@ static JRESULT mcu_output (
                             py += 64 - 8;    /* Jump to next block if double block height */
                         }
                     }
-                    *pix++ = (uint8_t) * py++;          /* Get and store a Y value as grayscale */
+                    *pix++ = BYTECLIP(*py++);           /* Get and store a Y value as grayscale (JD_FASTDECODE leaves it unclipped) */
                 }
             }
         }
 
-        /* Descale the MCU rectangular if needed */
-        if (JD_USE_SCALE && jd->scale) {
+        /* Descale the MCU rectangular if needed (grayscale output is already descaled) */
+        if (JD_USE_SCALE && jd->scale && JD_FORMAT != 2) {
             unsigned int x, y, r, g, b, s, w, a;
             uint8_t *op;
 

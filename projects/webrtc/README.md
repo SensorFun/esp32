@@ -276,7 +276,13 @@ brightness is not reported as motion.
   live streaming and for recording once motion is confirmed and the SD card is
   ready. Motion analysis uses up to 160 × 120 luma pixels in both
   modes, keeping the camera's aspect ratio (160 × 90 at 16:9). Live frames are
-  downscaled only for analysis.
+  downscaled only for analysis; 160 × 120 frames are decoded at full scale with
+  no downscaling. The private tjpgd copy decodes luma only, skipping the chroma
+  blocks and colour conversion. At 1/2 and 1/4 scale it uses a reduced inverse
+  DCT: each output pixel is the exact average of its 2 × 2 or 4 × 4 square,
+  accumulated from the few non-zero coefficients as they are decoded, so the
+  full 8 × 8 transform never runs (`tests/webrtc/test_motion_jpeg.py` checks
+  every scale in 4:2:2 and 4:2:0 against an exact reference).
   Single-level optical flow then runs over a grid of cells of about
   **Cell size** pixels that tiles the whole image (`main/optical_flow.cpp`), with global
   brightness changes removed. Speeds, cell size and smoothing are in analysis-image
